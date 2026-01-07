@@ -53,9 +53,10 @@ case object Mutate extends Phase[CFG, String] {
               val codeStr = code.toString
               println(s"Original Code: $codeStr")
               val localized = targets.map {
-                case Normal(loc) => s"Normal: ${loc.getString(codeStr)}"
-                case BuiltinThis(thisArg) => s"Builtin this: ${thisArg}"
-                case BuiltinArg(arg, idx) => s"Builtin ${idx}th arg: ${arg}"
+                case Normal(prodName, idx, subIdx, loc) =>
+                  s"[Normal] name: $prodName, idx: $idx, subIdx: $subIdx, loc: $loc"
+                case BuiltinThis(thisArg) => s"[BuiltinThis] $thisArg"
+                case BuiltinArg(arg, idx) => s"[BuiltinArg]: $arg (${idx}th)"
               }
               println("Localized:")
               localized.foreach(target => println(s"- $target"))

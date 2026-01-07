@@ -28,6 +28,7 @@ bin/
 ## temporal files
 .*.js
 .*.json
+*.scala.bak
 
 ## vscode
 .vscode

@@ -73,7 +73,13 @@ class TargetMutator(using cfg: CFG)(
   class Walker(target: Target.Normal, n: Int)
     extends Util.MultiplicativeListWalker {
     override def walk(ast: Syntactic): List[Syntactic] =
-      if ast.loc == Some(target.loc) then TotalWalker(ast, n)
+      val Target.Normal(name, idx, subIdx, loc) = target
+      if (
+        ast.name == name &&
+        ast.rhsIdx == idx &&
+        ast.subIdx == subIdx &&
+        ast.loc == Some(loc)
+      ) TotalWalker(ast, n)
       else super.walk(ast)
   }
 
