@@ -4,7 +4,6 @@ import os
 import re
 import shlex
 import subprocess
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List, Tuple
@@ -13,20 +12,22 @@ FILENAME_RE = re.compile(
     r"^(?P<branch>\d+)-(?P<truth>true|false)\.json$", re.IGNORECASE
 )
 COVERED_RE = re.compile(r"Covered\s+.+?\s+with\s+(?P<iters>\d+)\s+iters", re.IGNORECASE)
-FAILED_RE = re.compile(r"\[ESMeta v[^\]]+\]\s+Failed to cover", re.IGNORECASE)
+TIMEOUT_RE = re.compile(r"(?:java\.util\.concurrent\.)?TimeoutException\b", re.IGNORECASE)
+UNEXPECTED_RE = re.compile(r"\[ESMeta v[^\]]+\]\s+Unexpected error occurred", re.IGNORECASE)
 ESMETA_HOME = (
     Path(os.getenv("ESMETA_HOME") or Path(__file__).resolve().parent.parent)
     .expanduser()
     .resolve()
 )
 
+TRIAL, DURATION = 10, 300
+
 
 @dataclass
 class RunResult:
     file: str
     branch: int
-    truth: str
-    target: str
+    truth: bool
     run_idx: int
     status: str  # "Covered" | "Timeout" | "Unknown"
     iters: Optional[int]
@@ -42,20 +43,18 @@ def last_nonempty_line(text: str) -> str:
 
 
 def run_once(
-    esmeta: str,
     duration: int,
     json_path: Path,
-    target: str,
     branch: int,
-    truth: str,
+    truth: bool,
     run_idx: int,
-    verbose: bool,
 ) -> RunResult:
-    esmeta_argv = shlex.split(esmeta)
+    esmeta_argv = shlex.split(str(ESMETA_HOME / "bin" / "esmeta"))
     argv = esmeta_argv + [
         "mutate",
         "-mutate:mutator=TargetMutator",
-        f"-mutate:target={target}",
+        f"-mutate:target-branch-id={branch}",
+        f"-mutate:target-cond={'true' if truth else 'false'}",
         f"-mutate:duration={duration}",
         str(json_path),
         "-silent",
@@ -68,34 +67,69 @@ def run_once(
             stderr=subprocess.STDOUT,
             text=True,
             check=False,
+            cwd=str(ESMETA_HOME),
+            timeout=duration,
         )
+
+    def _coerce_text(x) -> str:
+        if x is None:
+            return ""
+        if isinstance(x, bytes):
+            return x.decode("utf-8", errors="replace")
+        return str(x)
 
     try:
         proc = _run(argv)
+        out = proc.stdout or ""
+    except subprocess.TimeoutExpired as e:
+        out = _coerce_text(getattr(e, "stdout", None) or getattr(e, "output", None))
+        ll = last_nonempty_line(out)
+        return RunResult(
+            file=json_path.name,
+            branch=branch,
+            truth=truth,
+            run_idx=run_idx,
+            status="Timeout",
+            iters=None,
+            last_line=ll,
+        )
     except OSError:
         shell = os.environ.get("SHELL", "/bin/bash")
         cmd_str = " ".join(shlex.quote(x) for x in argv)
-        proc = _run([shell, "-lc", cmd_str])
-
-    out = proc.stdout or ""
-    if verbose and out:
-        print(out, end="" if out.endswith("\n") else "\n")
+        try:
+            proc = _run([shell, "-lc", cmd_str])
+            out = proc.stdout or ""
+        except subprocess.TimeoutExpired as e:
+            out = _coerce_text(getattr(e, "stdout", None) or getattr(e, "output", None))
+            ll = last_nonempty_line(out)
+            return RunResult(
+                file=json_path.name,
+                branch=branch,
+                truth=truth,
+                run_idx=run_idx,
+                status="Timeout",
+                iters=None,
+                last_line=ll,
+            )
 
     ll = last_nonempty_line(out)
 
     status, iters = "Unknown", None
-    if FAILED_RE.search(ll):
+
+    m_last = None
+    for m in COVERED_RE.finditer(out):
+        m_last = m
+    if m_last:
+        status, iters = "Covered", int(m_last.group("iters"))
+    elif TIMEOUT_RE.search(out):
         status, iters = "Timeout", None
     else:
-        m = COVERED_RE.search(ll)
-        if m:
-            status, iters = "Covered", int(m.group("iters"))
+        pass
 
     return RunResult(
         file=json_path.name,
         branch=branch,
         truth=truth,
-        target=target,
         run_idx=run_idx,
         status=status,
         iters=iters,
@@ -104,27 +138,11 @@ def run_once(
 
 
 def run_file(
-    esmeta: str,
-    duration: int,
-    runs: int,
-    p: Path,
-    branch: int,
-    truth: str,
-    verbose: bool,
+    duration: int, trial: int, p: Path, branch: int, truth: bool
 ) -> List[RunResult]:
-    target = f"Branch[{branch}]:{truth}"
     results: List[RunResult] = []
-    for i in range(1, runs + 1):
-        rr = run_once(
-            esmeta,
-            duration,
-            p,
-            target,
-            branch=branch,
-            truth=truth,
-            run_idx=i,
-            verbose=verbose,
-        )
+    for i in range(1, trial + 1):
+        rr = run_once(duration, p, branch, truth, run_idx=i)
         results.append(rr)
         if rr.status == "Timeout":
             break
@@ -136,61 +154,30 @@ def format_iters_list(iters: List[int]) -> str:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--dir", default="./samples")
-    ap.add_argument("--runs", type=int, default=10)
-    ap.add_argument("--duration", type=int, default=300)
-    ap.add_argument("--esmeta", default=str(ESMETA_HOME / "bin" / "esmeta"))
-    ap.add_argument("--out", default="sample-results")
-    ap.add_argument("--verbose", action="store_true")
-    args = ap.parse_args()
-
-    d = Path(args.dir)
-    if not d.exists() or not d.is_dir():
-        raise SystemExit(f"Directory not found: {d}")
-
-    files: List[Tuple[Path, int, str]] = []
+    d = (Path(__file__).resolve().parent / "samples")
+    files: List[Tuple[Path, int, bool]] = []
     for p in sorted(d.iterdir()):
-        if not p.is_file():
-            continue
         m = FILENAME_RE.match(p.name)
         if not m:
             continue
         branch = int(m.group("branch"))
-        truth = "T" if m.group("truth").lower() == "true" else "F"
-        files.append((p, branch, truth))
+        covered_side = m.group("truth").lower() == "true"
+        target_side = not covered_side
+        files.append((p, branch, target_side))
 
-    if not files:
-        raise SystemExit(f"No matching file in {d}")
-
-    out_path = Path(args.out)
+    out_path = Path("sample-results")
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     with out_path.open("w", encoding="utf-8") as f:
         for i, (p, branch, truth) in enumerate(files):
-            id, condStr = p.stem.split("-", 1)
-            label = f"Branch[{id}]:{'T' if condStr.lower() == 'true' else 'F'}"
-
-            results = run_file(
-                args.esmeta,
-                args.duration,
-                args.runs,
-                p,
-                branch,
-                truth,
-                verbose=args.verbose,
-            )
-
+            label = f"Branch[{branch}]:{'T' if truth else 'F'}"
+            results = run_file(DURATION, TRIAL, p, branch, truth)
             saw_timeout = any(r.status == "Timeout" for r in results)
             if saw_timeout:
                 f.write(f'{label}: "TIMEOUT"\n')
                 f.flush()
             else:
-                iters_list = [
-                    r.iters
-                    for r in results
-                    if r.status == "Covered" and r.iters is not None
-                ]
+                iters_list = [r.iters for r in results if r.status == "Covered"]
                 if iters_list:
                     sorted_iters_list = format_iters_list([int(x) for x in iters_list])
                     f.write(f"{label}: {sorted_iters_list}\n")

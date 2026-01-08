@@ -6,11 +6,10 @@ import esmeta.cfg.CFG
 import esmeta.es.*
 import esmeta.es.util.*
 import esmeta.fuzzer.mutator.*
-import esmeta.parser.ESParser
-import esmeta.spec.Grammar
 import esmeta.util.*
 import esmeta.util.SystemUtils.*
 import esmeta.util.BaseUtils.*
+import java.util.concurrent.TimeoutException
 
 /** `mutate` phase */
 case object Mutate extends Phase[CFG, String] {
@@ -33,36 +32,21 @@ case object Mutate extends Phase[CFG, String] {
     analyzer.analyze
     val cov = Coverage(cfg, timeLimit = Some(1), analyzer = Some(analyzer))
 
-    val target = config.target match
-      case Some(str) =>
-        val (rawId, rawCond) = str.splitAt(str.indexOf(":"))
-        val (prefix, suffix) = ("Branch[", "]")
-        val tid = if (rawId.startsWith(prefix) && rawId.endsWith(suffix)) {
-          rawId.substring(prefix.length, rawId.length - 1).toInt
-        } else raise("invalid target")
-        val tcond = rawCond.drop(1) match
-          case "T" => true; case "F" => false
-          case _   => raise("invalid target")
-        val touchedCondViews = cov.run(code).touchedCondViews
-        val targetCondView = touchedCondViews.filter { (cv, targets) =>
-          cv.cond.branch.id == tid && cv.cond.cond == tcond
-        }.headOption
-        targetCondView match
-          case Some((cv, targets)) =>
-            if (config.debug)
-              val codeStr = code.toString
-              println(s"Original Code: $codeStr")
-              val localized = targets.map {
-                case Normal(prodName, idx, subIdx, loc) =>
-                  s"[Normal] name: $prodName, idx: $idx, subIdx: $subIdx, loc: $loc"
-                case BuiltinThis(thisArg) => s"[BuiltinThis] $thisArg"
-                case BuiltinArg(arg, idx) => s"[BuiltinArg]: $arg (${idx}th)"
-              }
-              println("Localized:")
-              localized.foreach(target => println(s"- $target"))
-            Some((cv, cov))
-          case None => println("Given program doesn't cover target"); None
-      case None => None
+    val coveredCondView: Option[CondView] =
+      (config.targetBranchId, config.targetCond) match
+        case (Some(id), Some(targetSide)) =>
+          val touchedCondViews = cov.run(code).touchedCondViews.keySet
+          val covered = touchedCondViews.filter { cv =>
+            val CondView(Cond(branch, cond), _) = cv
+            val coveredSide = !targetSide
+            branch.id == id && cond == coveredSide
+          }.headOption
+          covered match
+            case Some(covered) => Some(covered)
+            case None => raise("not covering the flipped side of the target")
+        case _ => None
+
+    val targetCondView = coveredCondView.map(_.neg)
 
     val mutator = config.builder(using cfg)
     var blocked = Set[String]()
@@ -73,30 +57,28 @@ case object Mutate extends Phase[CFG, String] {
     def timeout = config.duration.fold(false)(_ * 1000 < elapsed)
 
     // get a mutated code
-    var mutatedCode = mutator(code, target).code
+    var mutatedCode = mutator(code, coveredCondView.map((_, cov))).code
     iter += 1
 
     // get string of mutated code
     def mutated = mutatedCode.toString
 
-    def coversFlipped(code: Code): Boolean = target match
-      case Some((cv, _)) =>
-        val flipped = cv.neg
-        if (config.debug) println(s"[iter: $iter] $code")
-        val covered = cov.run(code).touchedCondViews.keySet.contains(flipped)
-        if (covered) println(s"Covered $flipped with $iter iters")
+    def coversFlipped(code: Code): Boolean = targetCondView match
+      case Some(cv) =>
+        val covered = cov.run(code).touchedCondViews.keySet.contains(cv)
+        if (covered) println(s"Covered $cv with $iter iters")
         covered
       case None => false
 
     // repeat until the mutated program is valid and covers target
-    config.target match
-      case Some(str) =>
+    coveredCondView match
+      case Some(cv) =>
         while (!(ValidityChecker(mutated) && coversFlipped(mutatedCode))) {
           while (blocked.contains(mutated))
-            mutatedCode = mutator(code, target).code
+            mutatedCode = mutator(code, coveredCondView.map((_, cov))).code
             iter += 1
           blocked += mutated
-          if (timeout) raise(s"Failed to cover $str after $iter iters")
+          if (timeout) throw TimeoutException("mutate")
         }
       case None => ()
 
@@ -131,8 +113,18 @@ case object Mutate extends Phase[CFG, String] {
       "select a mutator (default: RandomMutator).",
     ),
     (
-      "target",
-      StrOption((c, s) => c.target = Some(s)),
+      "target-branch-id",
+      NumOption((c, k) => c.targetBranchId = Some(k)),
+      "repeat until the mutated program covers the targeted branch.",
+    ),
+    (
+      "target-cond",
+      StrOption((c, s) =>
+        c.targetCond = s match
+          case "true"  => Some(true)
+          case "false" => Some(false)
+          case _       => None,
+      ),
       "repeat until the mutated program covers the targeted branch.",
     ),
     (
@@ -140,17 +132,13 @@ case object Mutate extends Phase[CFG, String] {
       NumOption((c, k) => c.duration = Some(k)),
       "set the maximum duration for mutation (default: INF).",
     ),
-    (
-      "debug",
-      BoolOption((c, b) => c.debug = b),
-      "turn on debugging mode.",
-    ),
   )
   class Config(
     var out: Option[String] = None,
     var builder: CFG ?=> Mutator = RandomMutator(),
-    var target: Option[String] = None,
+    var targetBranchId: Option[Int] = None,
+    var targetCond: Option[Boolean] = None,
+    // TODO: support feature sensitive targeting (for 1-FCPS)
     var duration: Option[Int] = None,
-    var debug: Boolean = false,
   )
 }
