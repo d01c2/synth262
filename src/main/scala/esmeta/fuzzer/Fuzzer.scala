@@ -274,7 +274,7 @@ class Fuzzer(
     ).asJson
 
   /** light-weight analyzer for fuzzing */
-  lazy val analyzer = ParamFlowAnalyzer(cfg)
+  lazy val analyzer = ParamFlowAnalyzer(cfg, silent = true)
 
   /** coverage */
   val cov: Coverage =

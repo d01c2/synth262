@@ -29,7 +29,7 @@ case object Mutate extends Phase[CFG, String] {
       else if (filename.endsWith(".json")) readJson[Code](filename)
       else raise("invalid filename")
 
-    val analyzer = ParamFlowAnalyzer(cfg)
+    val analyzer = ParamFlowAnalyzer(cfg, silent = true)
     analyzer.analyze
     val cov = Coverage(cfg, timeLimit = Some(1), analyzer = Some(analyzer))
 
