@@ -4,6 +4,7 @@ import esmeta.*
 import esmeta.cfg.CFG
 import esmeta.es.util.*
 import esmeta.llm.*
+import esmeta.llm.JsonProtocol.{*, given}
 import esmeta.test262.{*, given}
 import esmeta.util.*
 import esmeta.util.SystemUtils.*
@@ -19,9 +20,6 @@ case object LLMEvaluate extends Phase[CFG, Yaml] {
   def apply(cfg: CFG, cmdConfig: CommandConfig, config: Config): Yaml =
     import Coverage.*
 
-    val jsonProtocol = new JsonProtocol(cfg)
-    import jsonProtocol.{*, given}
-
     lazy val scriptParser = cfg.scriptParser
 
     TEST_MODE = true
@@ -32,7 +30,7 @@ case object LLMEvaluate extends Phase[CFG, Yaml] {
       useCoverage = true,
       concurrent = ConcurrentPolicy.Auto,
     )
-    println("- target conditions collected based on Test262Test")
+    println("- Target conditions collected based on Test262Test")
 
     lazy val targetConds = (for {
       targetCond <- cov.targetCondViews.keySet
@@ -59,12 +57,12 @@ case object LLMEvaluate extends Phase[CFG, Yaml] {
     // request LLM with requests.jsonl
     val batchId = batchRunner.sendBatchRequests(requestPath)
 
-    // poll for batch completion every 5 minutes (blocking)
+    // poll for batch completion (blocking)
     val responsePath = batchRunner.getBatchResponse(batchId)
 
     val outputDir = s"$LLM_LOG_DIR/out"
     val (written, _) = extractBatchResponses(responsePath, outputDir)
-    println(s"- extracted $written JS files into $outputDir .")
+    println(s"- Extracted $written JS files into $outputDir .")
 
     lazy val uncoveredCondMap: Map[Int, Cond] = (for {
       targetCond <- targetConds
@@ -114,19 +112,19 @@ case object LLMEvaluate extends Phase[CFG, Yaml] {
       noSpace = false,
     )
     dumpJson(
-      name = "reached but failed target branch ids",
+      name = "failed target branch ids (reached but failed)",
       data = failed_reached.map(_.cond.id).toList.asJson,
       filename = s"$LLM_LOG_DIR/failed_reached.json",
       noSpace = false,
     )
     dumpJson(
-      name = "failed to reach target branch ids",
+      name = "failed target branch ids (failed to reach)",
       data = failed_unreached.map(_.cond.id).toList.asJson,
       filename = s"$LLM_LOG_DIR/failed_unreached.json",
       noSpace = false,
     )
     dumpJson(
-      name = "failed to parse target branch ids",
+      name = "failed target branch ids (failed to parse)",
       data = failed_parse.map(_.cond.id).toList.asJson,
       filename = s"$LLM_LOG_DIR/failed_parse.json",
       noSpace = false,
@@ -152,34 +150,15 @@ case object LLMEvaluate extends Phase[CFG, Yaml] {
 
     summary
 
-  private def extractOutputText(json: Json): String =
-    val outputBlocks = json.hcursor
-      .downField("response")
-      .downField("body")
-      .downField("output")
-      .focus
-      .flatMap(_.asArray)
-      .getOrElse(Vector.empty)
-
-    val messageBlocks = outputBlocks.filter { block =>
-      block.hcursor.get[String]("type").toOption.contains("message")
-    }
-
-    val blocksToScan =
-      if (messageBlocks.nonEmpty) messageBlocks
-      else outputBlocks
+  private def extractOutputText(output: Vector[OutputItem]): String =
+    val messageBlocks = output.filter(_.kind.contains("message"))
+    val blocksToScan = if (messageBlocks.nonEmpty) messageBlocks else output
 
     val chunks = Vector.newBuilder[String]
     for (block <- blocksToScan) {
-      val contentItems = block.hcursor
-        .downField("content")
-        .focus
-        .flatMap(_.asArray)
-        .getOrElse(Vector.empty)
-      for (content <- contentItems) {
-        val cCursor = content.hcursor
-        if (cCursor.get[String]("type").toOption.contains("output_text"))
-          cCursor.get[String]("text").toOption.foreach(chunks += _)
+      for (content <- block.content) {
+        if (content.kind.contains("output_text"))
+          content.text.foreach(chunks += _)
       }
     }
 
@@ -192,33 +171,25 @@ case object LLMEvaluate extends Phase[CFG, Yaml] {
     mkdir(logDir)
     Using.resource(Source.fromFile(responsePath, "UTF-8")) { source =>
       source.getLines.zipWithIndex.foldLeft((0, 0)) {
-        case ((written, skipped), (line, idx)) =>
-          val lineNo = idx + 1
-          val trimmed = line.trim
+        case ((written, skipped), (rawLine, _)) =>
+          val trimmed = rawLine.trim
           if (trimmed.isEmpty) (written, skipped)
-          else
+          else {
             parse(trimmed) match
               case Left(_) => (written, skipped + 1)
               case Right(json) =>
-                val cursor = json.hcursor
-                val status = cursor
-                  .downField("response")
-                  .get[Int]("status_code")
-                  .toOption
-                val customId = cursor
-                  .get[String]("custom_id")
-                  .toOption
-                  .orElse(
-                    cursor.get[Int]("custom_id").toOption.map(_.toString),
-                  )
-                (status, customId) match
-                  case (Some(200), Some(id)) =>
-                    val text = extractOutputText(json)
-                    if (text.nonEmpty)
-                      dumpFile(text, s"$logDir/$id.js")
-                      (written + 1, skipped)
-                    else (written, skipped + 1)
-                  case _ => (written, skipped + 1)
+                json.as[BatchResponseLine] match
+                  case Left(_) => (written, skipped + 1)
+                  case Right(batchLine) =>
+                    (batchLine.statusCode, batchLine.customId) match
+                      case (Some(200), Some(id)) =>
+                        val text = extractOutputText(batchLine.output)
+                        if (text.nonEmpty) {
+                          dumpFile(text, s"$logDir/$id.js");
+                          (written + 1, skipped)
+                        } else (written, skipped + 1)
+                      case _ => (written, skipped + 1)
+          }
       }
     }
 

@@ -69,12 +69,12 @@ object BatchRunner {
     val batch = client.batches().create(batchParams)
 
     val batchId = batch.id()
-    println(s"- created batch: $batchId")
+    println(s"- Created batch: $batchId")
     batchId
 
   def getBatchResponse(
     batchId: String,
-    pollInterval: Long = 5L * 60L * 1000L, // 5 min
+    pollInterval: Long = 5L * 60L * 1000L, // 5 min default
   ): String =
     def awaitCompletion(): Batch =
       val batch: Batch = client.batches().retrieve(batchId)
@@ -82,7 +82,7 @@ object BatchRunner {
       if (statusStr.contains("completed")) batch
       else {
         val waitSec = pollInterval / 1000
-        println(s"- batch status=${batch.status()}, polling again...")
+        println(s"- Batch status: ${batch.status()}, polling again...")
         Thread.sleep(pollInterval)
         awaitCompletion()
       }
@@ -101,9 +101,6 @@ object BatchRunner {
         StandardCopyOption.REPLACE_EXISTING,
       )
     }
-
-    println(s"- got response file $outputFileId in $responsePath")
-    println(s"- dumped LLM batch responses into $responsePath.")
+    println(s"- Dumped LLM batch responses into $responsePath .")
     responsePath
-
 }
