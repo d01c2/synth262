@@ -2,20 +2,27 @@ package esmeta.llm
 
 import esmeta.*
 import esmeta.error.NoEnvVarError
+import esmeta.util.BaseUtils.*
 import esmeta.util.SystemUtils.*
 import io.circe.*
 import io.circe.syntax.*
 import io.circe.parser.*
-import scala.sys.process.*
-import scala.util.Try
-import esmeta.util.BaseUtils.raise
+import java.nio.file.*
+import scala.jdk.OptionConverters.*
+import scala.util.Using
+import com.openai.client.OpenAIClient
+import com.openai.client.okhttp.OpenAIOkHttpClient
+import com.openai.models.files.*
+import com.openai.models.batches.*
 
 /** Batch runner for OpenAI Batch API */
 object BatchRunner {
 
   private def apiKey = sys.env.getOrElse("OPENAI_API_KEY", throw NoEnvVarError)
 
-  def dumpBatchRequests(prompts: Seq[Prompt]): Unit =
+  lazy val client = OpenAIOkHttpClient.builder().apiKey(apiKey).build()
+
+  def dumpBatchRequests(prompts: Seq[Prompt]): String =
     val batchRequests = prompts
       .map { prompt =>
         val body = Json.obj(
@@ -36,23 +43,67 @@ object BatchRunner {
         batchRequest.noSpaces
       }
       .mkString("\n")
-    val logDir = s"$LLM_LOG_DIR/requests.jsonl"
-    dumpFile(batchRequests, logDir)
-    println(s"- Dumped LLM batch requests into $logDir.")
 
-  // def uploadBatchInputFileCurl: String =
-  //   val cmd: Seq[String] = Seq(
-  //     Seq("curl", "-sS", "https://api.openai.com/v1/files"),
-  //     Seq("-H", s"Authorization: Bearer $apiKey"),
-  //     Seq("-F", "purpose=batch"),
-  //     Seq("-F", s"file=@$DUMP_LLM_PROMPTS_LOG_DIR/requests.jsonl"),
-  //   ).flatten
+    val requestPath = s"$LLM_LOG_DIR/requests.jsonl"
+    dumpFile(
+      name = "LLM batch requests",
+      data = batchRequests,
+      filename = requestPath,
+    )
+    requestPath
 
-  //   val err = new StringBuilder
-  //   val out = Try(Process(cmd).!!).getOrElse(raise("Batch upload failed"))
+  def sendBatchRequests(requestPath: String): String =
+    val fileParams = FileCreateParams
+      .builder()
+      .purpose(FilePurpose.BATCH)
+      .file(Paths.get(requestPath))
+      .build()
+    val fileObj = client.files().create(fileParams)
 
-  //   parse(out)
-  //     .flatMap(_.hcursor.get[String]("id")) // input File object's ID
-  //     .getOrElse(raise(s"Batch upload failed: Bad JSON"))
+    val batchParams = BatchCreateParams
+      .builder()
+      .inputFileId(fileObj.id())
+      .endpoint(BatchCreateParams.Endpoint.V1_RESPONSES)
+      .completionWindow(BatchCreateParams.CompletionWindow._24H)
+      .build()
+    val batch = client.batches().create(batchParams)
+
+    val batchId = batch.id()
+    println(s"- created batch: $batchId")
+    batchId
+
+  def getBatchResponse(
+    batchId: String,
+    pollInterval: Long = 5L * 60L * 1000L, // 5 min
+  ): String =
+    def awaitCompletion(): Batch =
+      val batch: Batch = client.batches().retrieve(batchId)
+      val statusStr = batch.status().toString.toLowerCase
+      if (statusStr.contains("completed")) batch
+      else {
+        val waitSec = pollInterval / 1000
+        println(s"- batch status=${batch.status()}, polling again...")
+        Thread.sleep(pollInterval)
+        awaitCompletion()
+      }
+
+    val batch = awaitCompletion()
+
+    val outputFileId = batch.outputFileId().toScala match
+      case Some(id) => id
+      case None     => raise(s"$batchId completed without output file id")
+
+    val responsePath = s"$LLM_LOG_DIR/responses.jsonl"
+    Using.resource(client.files().content(outputFileId)) { resp =>
+      Files.copy(
+        resp.body(),
+        Paths.get(responsePath),
+        StandardCopyOption.REPLACE_EXISTING,
+      )
+    }
+
+    println(s"- got response file $outputFileId in $responsePath")
+    println(s"- dumped LLM batch responses into $responsePath.")
+    responsePath
 
 }

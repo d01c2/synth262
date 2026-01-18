@@ -7,8 +7,9 @@ import esmeta.llm.*
 import esmeta.test262.{*, given}
 import esmeta.util.*
 import esmeta.util.SystemUtils.*
-import scala.util.Try
-import io.circe.*, io.circe.syntax.*
+import scala.util.{Try, Using}
+import io.circe.*, io.circe.syntax.*, io.circe.parser.*
+import scala.io.Source
 
 /** `llm-evaluate` phase */
 case object LLMEvaluate extends Phase[CFG, Yaml] {
@@ -31,7 +32,7 @@ case object LLMEvaluate extends Phase[CFG, Yaml] {
       useCoverage = true,
       concurrent = ConcurrentPolicy.Auto,
     )
-    println("- Test262Test finished and loaded target conditions") // fixme
+    println("- target conditions collected based on Test262Test")
 
     lazy val targetConds = (for {
       targetCond <- cov.targetCondViews.keySet
@@ -50,12 +51,20 @@ case object LLMEvaluate extends Phase[CFG, Yaml] {
       remove = true,
     )
 
-    // TODO: request LLM with requests.jsonl
-    // TODO: polling based batch completion checker (per 5 min?)
-    // TODO: extraction from responses.jsonl to output js directory
+    lazy val batchRunner = BatchRunner
 
-    // FIXME: assume we have output js directory (local hard-coded)
-    val path = "/Users/d01c2/Workspace/playground/batch-test/out"
+    // build requests.jsonl based on prompts
+    val requestPath = batchRunner.dumpBatchRequests(prompts)
+
+    // request LLM with requests.jsonl
+    val batchId = batchRunner.sendBatchRequests(requestPath)
+
+    // poll for batch completion every 5 minutes (blocking)
+    val responsePath = batchRunner.getBatchResponse(batchId)
+
+    val outputDir = s"$LLM_LOG_DIR/out"
+    val (written, _) = extractBatchResponses(responsePath, outputDir)
+    println(s"- extracted $written JS files into $outputDir .")
 
     lazy val uncoveredCondMap: Map[Int, Cond] = (for {
       targetCond <- targetConds
@@ -63,7 +72,7 @@ case object LLMEvaluate extends Phase[CFG, Yaml] {
     } yield (uncovered.id, uncovered)).toMap
 
     val results: Seq[Result] = (for {
-      file <- walkTree(path).toList
+      file <- walkTree(outputDir).toList
       filepath = file.getPath
       filename = file.getName
       if jsFilter(filename)
@@ -142,6 +151,76 @@ case object LLMEvaluate extends Phase[CFG, Yaml] {
     )
 
     summary
+
+  private def extractOutputText(json: Json): String =
+    val outputBlocks = json.hcursor
+      .downField("response")
+      .downField("body")
+      .downField("output")
+      .focus
+      .flatMap(_.asArray)
+      .getOrElse(Vector.empty)
+
+    val messageBlocks = outputBlocks.filter { block =>
+      block.hcursor.get[String]("type").toOption.contains("message")
+    }
+
+    val blocksToScan =
+      if (messageBlocks.nonEmpty) messageBlocks
+      else outputBlocks
+
+    val chunks = Vector.newBuilder[String]
+    for (block <- blocksToScan) {
+      val contentItems = block.hcursor
+        .downField("content")
+        .focus
+        .flatMap(_.asArray)
+        .getOrElse(Vector.empty)
+      for (content <- contentItems) {
+        val cCursor = content.hcursor
+        if (cCursor.get[String]("type").toOption.contains("output_text"))
+          cCursor.get[String]("text").toOption.foreach(chunks += _)
+      }
+    }
+
+    chunks.result().mkString("\n")
+
+  private def extractBatchResponses(
+    responsePath: String,
+    logDir: String,
+  ): (Int, Int) =
+    mkdir(logDir)
+    Using.resource(Source.fromFile(responsePath, "UTF-8")) { source =>
+      source.getLines.zipWithIndex.foldLeft((0, 0)) {
+        case ((written, skipped), (line, idx)) =>
+          val lineNo = idx + 1
+          val trimmed = line.trim
+          if (trimmed.isEmpty) (written, skipped)
+          else
+            parse(trimmed) match
+              case Left(_) => (written, skipped + 1)
+              case Right(json) =>
+                val cursor = json.hcursor
+                val status = cursor
+                  .downField("response")
+                  .get[Int]("status_code")
+                  .toOption
+                val customId = cursor
+                  .get[String]("custom_id")
+                  .toOption
+                  .orElse(
+                    cursor.get[Int]("custom_id").toOption.map(_.toString),
+                  )
+                (status, customId) match
+                  case (Some(200), Some(id)) =>
+                    val text = extractOutputText(json)
+                    if (text.nonEmpty)
+                      dumpFile(text, s"$logDir/$id.js")
+                      (written + 1, skipped)
+                    else (written, skipped + 1)
+                  case _ => (written, skipped + 1)
+      }
+    }
 
   def defaultConfig: Config = Config()
   val options: List[PhaseOption[Config]] = List(
