@@ -139,7 +139,7 @@ case class Test262(
     timeLimit: Option[Int] = None, // default: no limit
     concurrent: CP = CP.Single,
     verbose: Boolean = false,
-  ): Summary = {
+  ): (Coverage, Summary) = {
     // extract tests from paths
     val tests: List[Test] = getTests(paths, features)
 
@@ -226,7 +226,7 @@ case class Test262(
     // close log file
     logPW.close()
 
-    progressBar.summary
+    (cov, progressBar.summary)
   }
 
   /** parse test */

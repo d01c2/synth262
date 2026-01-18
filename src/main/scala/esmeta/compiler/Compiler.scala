@@ -150,6 +150,7 @@ class Compiler(
                 IPush(xExpr, toERef(Name(name)), false),
               ),
             ),
+            isFiltered = true,
           ),
         )
       case Param(name, _, kind) =>
@@ -164,6 +165,7 @@ class Compiler(
               ),
             ),
             ILet(Name(name), EUndef()),
+            isFiltered = true,
           ),
         )
     }
@@ -431,7 +433,9 @@ class Compiler(
       val x = if (isPure(e)) e else fb.newTIdWithExpr(e)._2
       val (y, yExpr) = fb.newTIdWithExpr
       if (!x.isLiteral)
-        fb.addInst(IIf(isCompletion(x), IReturn(x), emptyInst))
+        fb.addInst(
+          IIf(isCompletion(x), IReturn(x), emptyInst, isFiltered = true),
+        )
       fb.addInst(
         ICall(y, EClo("NormalCompletion", Nil), List(x)),
         IReturn(yExpr),

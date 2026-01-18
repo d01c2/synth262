@@ -42,11 +42,6 @@ case object Eval extends Phase[CFG, State] {
       "set the time limit in seconds (default: no limit).",
     ),
     (
-      "multiple",
-      BoolOption(_.multiple = _),
-      "execute multiple programs (result is the state of the last program).",
-    ),
-    (
       "tycheck",
       BoolOption(_.tyCheck = _),
       "perform dynamic type checking.",
@@ -64,7 +59,6 @@ case object Eval extends Phase[CFG, State] {
   )
   case class Config(
     var timeLimit: Option[Int] = None,
-    var multiple: Boolean = false,
     var tyCheck: Boolean = false,
     var log: Boolean = false,
     var detail: Boolean = false,

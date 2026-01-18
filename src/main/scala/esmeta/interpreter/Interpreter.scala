@@ -427,7 +427,7 @@ class Interpreter(
   private def grammar = cfg.grammar
 
   /** iteration count */
-  private var iter = 0
+  protected var iter = 0
 
   /** count of passed instruction */
   case class StepLocation(fid: Int, loc: Loc)

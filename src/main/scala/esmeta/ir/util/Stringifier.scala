@@ -104,13 +104,13 @@ class Stringifier(detail: Boolean, location: Boolean) {
       case ISeq(insts) =>
         if (insts.isEmpty) app >> "{}"
         else app.wrap(for { i <- insts } app :> i)
-      case IIf(cond, thenInst, elseInst, _) =>
+      case IIf(cond, thenInst, elseInst, _, _) =>
         app >> "if " >> cond >> " " >> thenInst
         (thenInst, elseInst) match
           case (_, ISeq(List())) => app
           case (ISeq(_), _)      => app >> " else " >> elseInst
           case _                 => app :> "else " >> elseInst
-      case IWhile(cond, body) =>
+      case IWhile(cond, body, _) =>
         app >> "while " >> cond >> " " >> body
       case ICall(lhs, fexpr, args) =>
         given Rule[List[Expr]] = iterableRule("(", ", ", ")")

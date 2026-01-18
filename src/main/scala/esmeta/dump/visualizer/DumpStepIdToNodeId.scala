@@ -74,7 +74,7 @@ object DumpStepToNodeId {
           add(node.loc, prevLocOpt)
           next
             .foreach(walk(_, node.loc, stepToNodeId, abruptMap))
-        case Branch(_, _, cond, isAbruptNode, thenNode, elseNode) =>
+        case Branch(_, _, cond, isAbruptNode, thenNode, elseNode, _) =>
           if (isAbruptNode && node.loc.isDefined && thenNode.isDefined)
             abruptMap.getOrElseUpdate(
               node.loc.get.stepString,

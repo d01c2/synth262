@@ -9,7 +9,7 @@ import esmeta.ir.*
 import esmeta.parser.AstFrom
 import esmeta.spec.*
 import esmeta.ty.{*, given}
-import esmeta.error.NotSupported
+import esmeta.error.{NotSupported, ESMetaError}
 import esmeta.es.*
 import esmeta.es.util.*
 import esmeta.es.util.Coverage.Interp
@@ -48,7 +48,7 @@ case class Coverage(
   private var nodeViewMap: Map[Node, Map[View, Set[Script]]] = Map()
   private var nodeViews: Set[NodeView] = Set()
   private var condViewMap: Map[Cond, Map[View, Set[Script]]] = Map()
-  var condViews: Set[CondView] = Set() // temporal public for instrumentation
+  private var condViews: Set[CondView] = Set()
 
   // meta-info for -test262test:all-tests
   private val pathMap: Map[String, Int] = if (all) {
@@ -102,6 +102,16 @@ case class Coverage(
     val sourceText = code.toString
     val ast = scriptParser.from(sourceText)
     run(sourceText, ast, Some(code), None)
+
+  /** evaluate a given ECMAScript program */
+  def run(sourceText: String): Interp =
+    val ast = scriptParser.from(sourceText)
+    run(sourceText, ast, Some(Code.Normal(sourceText)), None)
+
+  /** evaluate a given ECMAScript program */
+  def run(ast: Ast): Interp =
+    val sourceText = ast.toString(grammar = Some(cfg.grammar))
+    run(sourceText, ast, Some(Code.Normal(sourceText)), None)
 
   /** evaluate a given ECMAScript program */
   def run(
@@ -204,7 +214,7 @@ case class Coverage(
     baseDir = baseDir,
     withScripts = true,
     withScriptInfo = true,
-    withTargetCondViews = true,
+    withTargetCondIds = true,
     withUnreachableFuncs = true,
     withMsg = withMsg,
   )
@@ -214,15 +224,16 @@ case class Coverage(
     baseDir: String,
     withScripts: Boolean = false,
     withScriptInfo: Boolean = false,
-    withTargetCondViews: Boolean = false,
+    withTargetCondIds: Boolean = false,
     withUnreachableFuncs: Boolean = false,
     withMsg: Boolean = false,
   ): Unit = {
     mkdir(baseDir)
     lazy val orderedNodeViews = nodeViews.toList.sorted
     lazy val orderedCondViews = condViews.toList.sorted
-    lazy val getNodeViewsId = orderedNodeViews.map(nv => (nv, nv.node.id)).toMap
-    lazy val getCondViewsId = orderedCondViews.map(cv => (cv, cv.cond.id)).toMap
+    lazy val targetCondIds = (for {
+      targetCond <- _targetCondViews.keySet
+    } yield targetCond.id).toList.sorted
     dumpJson(
       CoverageConstructor(kFs, cp, timeLimit),
       s"$baseDir/constructor.json",
@@ -274,13 +285,10 @@ case class Coverage(
     // TODO     remove = true,
     // TODO   )
     // TODO   log("Dumped assertions")
-    if (withTargetCondViews)
+    if (withTargetCondIds)
       dumpJson(
-        name = "target conditional branches",
-        data = (for {
-          (cond, viewMap) <- _targetCondViews
-          (view, _) <- viewMap
-        } yield getCondViewsId(CondView(cond, view))).toSeq.sorted.asJson,
+        name = "target conditional branch ids",
+        data = targetCondIds.asJson,
         filename = s"$baseDir/target-conds.json",
         noSpace = false,
       )
@@ -350,7 +358,7 @@ case class Coverage(
     val neg = condView.neg
     cond.branch match
       case _ if !script.name.contains("test262") && targets.isEmpty =>
-      case Branch(_, _, EBool(_), _, _, _)                          =>
+      case Branch(_, _, EBool(_), _, _, _, _)                       =>
       case _ if getScript(neg).isDefined => removeTargetCond(neg)
       case _                             => addTargetCond(condView, targets)
 
@@ -455,16 +463,36 @@ object Coverage {
   ) extends Interpreter(initSt, tyCheck = tyCheck, timeLimit = timeLimit) {
     var touchedNodeViews: Map[NodeView, Option[Target]] = Map()
     var touchedCondViews: Map[CondView, Set[Target]] = Map()
-    var supported = true
+    var (supported, isTimeout) = (true, false)
 
     def isTest262Test: Boolean = initSt.filename.exists(_.contains("test262"))
+
+    // override step to collect coverage from timeout program
+    override def step: Boolean =
+      try {
+        // garbage collection
+        iter += 1
+        if (iter % ITER_CYCLE == 0) {
+          for (limit <- timeLimit)
+            val duration = System.currentTimeMillis - startTime
+            if (duration / 1000 > limit) isTimeout = true
+          GC(st)
+        }
+
+        // cursor
+        if (isTimeout) false
+        else eval(st.context.cursor)
+      } catch case e => throw e
 
     // override eval for cursor
     override def eval(cursor: Cursor): Boolean = cursor match
       case NodeCursor(_, node, _) if !isTest262Test =>
         st.context.visited += node
         try { eval(node); true }
-        catch { case _: NotSupported => supported = false; false }
+        catch {
+          case _: NotSupported => supported = false; false
+          case _: ESMetaError  => false
+        }
       case _ => super.eval(cursor)
 
     // override eval for node
@@ -615,7 +643,7 @@ object Coverage {
   given Ordering[CallPath] = Ordering.by(_.toString)
   given Ordering[Node] = Ordering.by(_.id)
   given Ordering[NodeView] = Ordering.by(v => (v.node, v.view))
-  given Ordering[Cond] = Ordering.by(cond => cond.id)
+  given Ordering[Cond] = Ordering.by(_.id)
   given Ordering[CondView] = Ordering.by(v => (v.cond, v.view))
 
   // meta-info for each view or features

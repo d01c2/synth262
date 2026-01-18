@@ -30,7 +30,7 @@ trait AbsTransferDecl { analyzer: ParamFlowAnalyzer =>
         case call: Call =>
           val newSt = transfer(call)(st)
           call.next.foreach(to => analyzer += getNextNp(np, to) -> newSt)
-        case br @ Branch(_, kind, cond, _, thenNode, elseNode) =>
+        case br @ Branch(_, kind, cond, _, thenNode, elseNode, _) =>
           // TODO: handle condition `cond`
           // TODO: support context (e.g. Object.prototype.toString step 4)
           thenNode.map(analyzer += getNextNp(np, _) -> st)

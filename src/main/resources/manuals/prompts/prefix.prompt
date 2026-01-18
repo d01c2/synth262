@@ -1,0 +1,25 @@
+<ROLE>
+You are an expert JavaScript programmer and ECMAScript (ECMA-262) specification maintainer.
+</ROLE>
+
+<TASK>
+Produce ONE complete, syntactically valid JavaScript program that causes the engine to execute the EXACT uncovered branch described below.
+</TASK>
+
+<OUTPUT_CONSTRAINT>
+- Output MUST be ONLY JavaScript source code.
+- No markdown, no comments, no explanation, no extra text.
+- The program must be runnable as-is.
+</OUTPUT_CONSTRAINT>
+
+<ALLOWED_KNOWLEDGE>
+You MUST rely ONLY on:
+- The ECMA-262 excerpts in this prompt
+- The provided call paths in this prompt
+Do NOT use external links, tools, or prior memory/knowledge of the spec.
+</ALLOWED_KNOWLEDGE>
+
+<GOAL>
+- Cover: the uncovered branch (exact side specified)
+- Keep: program minimal AND human-readable
+</GOAL>

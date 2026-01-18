@@ -14,6 +14,7 @@ class ReturnModifier(fb: FuncBuilder) extends Walker {
             isCompletion(x),
             IReturn(x),
             emptyInst,
+            isFiltered = true,
           ),
           ICall(y, EClo("NormalCompletion", Nil), List(x)),
           IReturn(yExpr),

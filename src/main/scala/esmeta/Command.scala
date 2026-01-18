@@ -202,6 +202,15 @@ case object CmdMutate extends Command("mutate", CmdBuildCFG >> Mutate) {
   )
 }
 
+/** `llm-evaluate` command */
+case object CmdLLMEvaluate
+  extends Command("llm-evaluate", CmdBuildCFG >> LLMEvaluate) {
+  def help = "builds prompts based on test262 targets, and evaluate LLM."
+  val examples = List(
+    "esmeta llm-evaluate                          # evaluate LLM",
+  )
+}
+
 /** `dump-debugger` command */
 case object CmdDumpDebugger
   extends Command("dump-debugger", CmdBuildCFG >> DumpDebugger) {

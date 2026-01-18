@@ -20,7 +20,6 @@ import java.util.concurrent.TimeoutException
 import scala.collection.mutable.{Map => MMap}
 import scala.collection.parallel.CollectionConverters.*
 import scala.util.*
-import esmeta.fuzzer.util.Instr
 
 /** ECMAScript program fuzzer with ECMA-262 */
 object Fuzzer {
@@ -170,26 +169,6 @@ class Fuzzer(
       update(selectorName, selectorStat, result)
       update(mutatorName, mutatorStat, result)
 
-    condView match // instrumentation
-      case Some(cv) =>
-        val mutatorName = mutants.head._1.name
-        val origCodeStr = code.toString
-        val isFlipped = cov.condViews.contains(cv.neg)
-        val mutatedCodeStr =
-          if (isFlipped) cov.getScript(cv.neg).get.toString
-          else "NOT_FLIPPED_YET"
-        instMap.update(
-          cv,
-          Instr(
-            isFlipped = isFlipped,
-            trial = cvCounter.getOrElse(cv, 0) + 1,
-            mutationEvent = Some((mutatorName, origCodeStr, mutatedCodeStr)),
-            progress = Some((iter, Time(elapsed).simpleString)),
-          ),
-        )
-        cvCounter.update(cv, cvCounter.getOrElse(cv, 0) + 1)
-      case None => ()
-
     val duration = Time(System.currentTimeMillis - startTime)
     debugging(s"iter/end: $iter - $duration")
   }
@@ -303,12 +282,6 @@ class Fuzzer(
 
   /** mutator stat */
   val mutatorStat: MMap[String, Counter] = MMap()
-
-  /** selected CondView (instrumentation) */
-  val cvCounter: MMap[Coverage.CondView, Int] = MMap()
-
-  /** instrumentation */
-  val instMap: MMap[Coverage.CondView, Instr] = MMap()
 
   /** initial pool */
   val initPool =
@@ -453,26 +426,6 @@ class Fuzzer(
         }
         .mkString(LINE_SEP + LINE_SEP),
       filename = s"$logDir/esmeta-errors",
-    )
-    // dump instrumentation
-    dumpFile(
-      name = "instrumentation",
-      data = instMap.toList
-        .sortBy(-_._2.trial)
-        .map {
-          case (cv, instr) =>
-            val key = cv.toString
-            val obj = JsonObject(
-              "covered" -> instr.covered.asJson,
-              "isFlipped" -> instr.isFlipped.asJson,
-              "trial" -> instr.trial.asJson,
-              "mutationEvent" -> instr.mutationEvent.asJson,
-              "progress" -> instr.progress.asJson,
-            ).asJson
-            s"$key: ${obj.noSpaces}"
-        }
-        .mkString(LINE_SEP),
-      filename = s"$logDir/instrumentation",
     )
 
   private def addRow(data: Iterable[Any], nf: PrintWriter = summaryTsv): Unit =

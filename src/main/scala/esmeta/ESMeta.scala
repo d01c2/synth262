@@ -86,6 +86,8 @@ object ESMeta extends Git(BASE_DIR) {
     CmdMutate,
     CmdDumpDebugger,
     CmdDumpVisualizer,
+    // Evaluation of LLM in test suite generation task
+    CmdLLMEvaluate,
   )
   val cmdMap = commands.foldLeft[Map[String, Command[_]]](Map()) {
     case (map, cmd) => map + (cmd.name -> cmd)
@@ -113,6 +115,8 @@ object ESMeta extends Git(BASE_DIR) {
     Mutate,
     DumpDebugger,
     DumpVisualizer,
+    // Evaluation of LLM in test suite generation task
+    LLMEvaluate,
   )
 
   /** command options */

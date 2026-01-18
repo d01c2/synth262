@@ -43,7 +43,7 @@ case object Test262Test extends Phase[CFG, Summary] {
       )
 
     // run test262 eval test
-    val summary = test262.evalTest(
+    val (_, summary) = test262.evalTest(
       targets,
       config.features,
       config.tyCheck,

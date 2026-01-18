@@ -25,16 +25,11 @@ object SerializationSanitizer extends IRWalker {
   }
 
   override def walk(inst: Inst): Inst = inst match
-    case IIf(cond, thenInst, elseInst, isAbruptInst) =>
-      IIf(
-        walk(cond),
-        walk(thenInst),
-        walk(elseInst),
-        false, // as default
-      )
-    case IWhile(cond, body) => IWhile(walk(cond), walk(body))
-    case ISeq(insts)        => ISeq(insts.map(walk))
-    case _                  => super.walk(inst)
+    case IIf(cond, thenInst, elseInst, _, _) =>
+      IIf(walk(cond), walk(thenInst), walk(elseInst))
+    case IWhile(cond, body, _) => IWhile(walk(cond), walk(body))
+    case ISeq(insts)           => ISeq(insts.map(walk))
+    case _                     => super.walk(inst)
 
   override def walk(ty: IRType): IRType = ty match
     case IRType(ty, _) => IRType(ty, None)

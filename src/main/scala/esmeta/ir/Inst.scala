@@ -33,8 +33,13 @@ case class IIf(
   thenInst: Inst,
   elseInst: Inst,
   isAbruptInst: Boolean = false,
+  isFiltered: Boolean = false, // non-reportable for Test262
 ) extends BranchInst
-case class IWhile(cond: Expr, body: Inst) extends BranchInst
+case class IWhile(
+  cond: Expr,
+  body: Inst,
+  isFiltered: Boolean = false, // non-reportable for Test262
+) extends BranchInst
 object BranchInst extends Parser.From(Parser.branchInst)
 
 // call instructions
