@@ -168,7 +168,7 @@ case object LLMEvaluate extends Phase[CFG, Yaml] {
     responsePath: String,
     logDir: String,
   ): (Int, Int) =
-    mkdir(logDir)
+    mkdir(logDir, remove = true)
     Using.resource(Source.fromFile(responsePath, "UTF-8")) { source =>
       source.getLines.zipWithIndex.foldLeft((0, 0)) {
         case ((written, skipped), (rawLine, _)) =>
