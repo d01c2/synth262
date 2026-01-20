@@ -80,8 +80,7 @@ case object LLMEvaluate extends Phase[CFG, Yaml] {
       Try(scriptParser.fromFile(filepath)).toOption match
         case Some(ast) => {
           val cov = Coverage(cfg, timeLimit = Some(1))
-          val touched: Set[Cond] =
-            cov.run(ast).touchedCondViews.keySet.map(_.cond)
+          val touched = cov.run(ast).touchedCondViews.keySet.map(_.cond)
           val covered: Boolean = touched.exists(_ == uncoveredCond)
           val reached: Boolean = touched.exists(_ == uncoveredCond.neg)
           if (covered) Result(uncoveredCond, true, None)
