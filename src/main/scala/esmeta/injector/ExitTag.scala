@@ -18,7 +18,7 @@ enum ExitTag extends InjectorElem {
   case SpecError(error: ESMetaError, cursor: Cursor)
 
   /** an error is thrown with an ECMAScript value */
-  case ThrowValue(values: Vector[Value])
+  case ThrowValue(values: Vector[Value], errorName: Option[String])
 
   /** check if the tag is normal */
   def isNormal: Boolean = this == Normal
@@ -31,8 +31,14 @@ object ExitTag {
       case Undef => Normal
       case addr: Addr =>
         st(addr) match
-          case obj @ ListObj(values) => ThrowValue(values)
-          case _                     => errorWith(addr)
+          case obj @ ListObj(values) =>
+            val errorName = for {
+              error <-
+                values.headOption // TODO: only head? or all? (for syntax/early errors)
+              case NamedAddr(name) <- Some(st(error, Str("Prototype")))
+            } yield name.stripPrefix("INTRINSICS.").stripSuffix(".prototype")
+            ThrowValue(values, errorName)
+          case _ => errorWith(addr)
       case v => errorWith(v)
   } catch {
     case _: TimeoutException   => Timeout
