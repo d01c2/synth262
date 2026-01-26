@@ -1,241 +1,183 @@
-// hidden constructors
-var AsyncArrowFunction = Object.getPrototypeOf(async () => {}).constructor;
-var AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-var AsyncGeneratorFunction = Object.getPrototypeOf(
-  async function* () {}
-).constructor;
-var GeneratorFunction = Object.getPrototypeOf(function* () {}).constructor;
+// Copyright (c) 2012 Ecma International.  All rights reserved.
+// https://github.com/tc39/test262/blob/main/harness/sta.js
 
-// logging errors
-var $error = (globalThis.console && globalThis.console.log) || globalThis.print;
-
-// algo map
-var $algo = new Map();
-
-// conversion to string
-function $toString(value) {
-  if (value === 0 && 1 / value === -Infinity) return "«-0»";
-  if (value instanceof Error) return "a " + value.constructor.name;
-  if (typeof value === "string") return '"' + value + '"';
-  return String(value);
+function Test262Error(message) {
+  this.message = message || "";
 }
 
-function $isSameValue(x, y) {
-  if (x === y) return x !== 0 || 1 / x === 1 / y;
-  return x !== x && y !== y;
-}
-
-// assertion
-function $assert(mustBeTrue) {
-  if (mustBeTrue === true) return;
-  $error("Expected true but got " + $toString(mustBeTrue));
-}
-
-// assertion for comparing two thrown values
-$assert.sameThrows = function (thrown, expected) {
-  var thrownStr = $toString(thrown);
-  if (typeof expected !== "function") {
-    if (thrown !== expected)
-      $error("Expected " + $toString(expected) + " but got " + thrownStr);
-  } else if (!(thrown instanceof expected)) {
-    $error("Expected a " + expected.name + " but got " + thrownStr);
-  }
+Test262Error.prototype.toString = function () {
+  return "Test262Error: " + this.message;
 };
 
-// assertion for thrown values that were expected to be thrown but not thrown
-$assert.shouldveThrown = function (expected) {
-  $error(
-    "Expected a " +
-      expected.name +
-      " to be thrown but no exception was thrown at all"
-  );
+Test262Error.thrower = function (message) {
+  throw new Test262Error(message);
 };
 
-// assertion for no exception
-$assert.notThrows = function (func) {
-  if (typeof func !== "function") {
-    $error("$assert.notThrows requires a function.");
+function $DONOTEVALUATE() {
+  throw "Test262: This statement should not be evaluated.";
+}
+
+// Copyright (C) 2017 Ecma International. All rights reserved.
+// https://github.com/tc39/test262/blob/main/harness/assert.js
+
+function assert(mustBeTrue, message) {
+  if (mustBeTrue === true) {
     return;
   }
+
+  if (message === undefined) {
+    message = 'Expected true but got ' + assert._toString(mustBeTrue);
+  }
+  throw new Test262Error(message);
+}
+
+assert._isSameValue = function (a, b) {
+  if (a === b) {
+    // Handle +/-0 vs. -/+0
+    return a !== 0 || 1 / a === 1 / b;
+  }
+
+  // Handle NaN vs. NaN
+  return a !== a && b !== b;
+};
+
+assert.sameValue = function (actual, expected, message) {
+  try {
+    if (assert._isSameValue(actual, expected)) {
+      return;
+    }
+  } catch (error) {
+    throw new Test262Error(message + ' (_isSameValue operation threw) ' + error);
+    return;
+  }
+
+  if (message === undefined) {
+    message = '';
+  } else {
+    message += ' ';
+  }
+
+  message += 'Expected SameValue(«' + assert._toString(actual) + '», «' + assert._toString(expected) + '») to be true';
+
+  throw new Test262Error(message);
+};
+
+assert.notSameValue = function (actual, unexpected, message) {
+  if (!assert._isSameValue(actual, unexpected)) {
+    return;
+  }
+
+  if (message === undefined) {
+    message = '';
+  } else {
+    message += ' ';
+  }
+
+  message += 'Expected SameValue(«' + assert._toString(actual) + '», «' + assert._toString(unexpected) + '») to be false';
+
+  throw new Test262Error(message);
+};
+
+assert.throws = function (expectedErrorConstructor, func, message) {
+  var expectedName, actualName;
+  if (typeof func !== "function") {
+    throw new Test262Error('assert.throws requires two arguments: the error constructor ' +
+      'and a function to run');
+    return;
+  }
+  if (message === undefined) {
+    message = '';
+  } else {
+    message += ' ';
+  }
+
   try {
     func();
   } catch (thrown) {
-    $error("Expected no exception but " + $toString(thrown) + " is thrown.");
+    if (typeof thrown !== 'object' || thrown === null) {
+      message += 'Thrown value was not an object!';
+      throw new Test262Error(message);
+    } else if (thrown.constructor !== expectedErrorConstructor) {
+      expectedName = expectedErrorConstructor.name;
+      actualName = thrown.constructor.name;
+      if (expectedName === actualName) {
+        message += 'Expected a ' + expectedName + ' but got a different error constructor with the same name';
+      } else {
+        message += 'Expected a ' + expectedName + ' but got a ' + actualName;
+      }
+      throw new Test262Error(message);
+    }
     return;
   }
+
+  message += 'Expected a ' + expectedErrorConstructor.name + ' to be thrown but no exception was thrown at all';
+  throw new Test262Error(message);
 };
 
-// assertion for same values
-$assert.sameValue = function (actual, expected) {
-  if ($isSameValue(actual, expected)) return;
-  $error(
-    "Expected " + $toString(expected) + " but got " + $toString(actual) + "."
-  );
+function isPrimitive(value) {
+  return !value || (typeof value !== 'object' && typeof value !== 'function');
+}
+
+assert.compareArray = function (actual, expected, message) {
+  message = message === undefined ? '' : message;
+
+  if (typeof message === 'symbol') {
+    message = message.toString();
+  }
+
+  if (isPrimitive(actual)) {
+    assert(false, `Actual argument [${actual}] shouldn't be primitive. ${message}`);
+  } else if (isPrimitive(expected)) {
+    assert(false, `Expected argument [${expected}] shouldn't be primitive. ${message}`);
+  }
+  var result = compareArray(actual, expected);
+  if (result) return;
+
+  var format = compareArray.format;
+  assert(false, `Actual ${format(actual)} and expected ${format(expected)} should have the same contents. ${message}`);
 };
 
-// assertion for same values
-$assert.notSameValue = function (actual, unexpected) {
-  if (!$isSameValue(actual, unexpected)) return;
-  $error(
-    "Not expected " +
-      $toString(unexpected) +
-      " but got " +
-      $toString(actual) +
-      "."
-  );
-};
-
-// assertion for [[Call]]
-$assert.isCallable = function (f) {
-  return typeof f === "function";
-};
-$assert.callable = function (f) {
-  if (!$assert.isCallable(f))
-    $error("Expected " + $toString(f) + " has [[Call]] but does not.");
-};
-$assert.notCallable = function (f) {
-  if ($assert.isCallable(f))
-    $error("Expected " + $toString(f) + " does not have [[Call]] but does.");
-};
-
-// assertion for [[Construct]]
-$assert.isConstructable = function (f) {
-  try {
-    Reflect.construct(function () {}, [], f);
-    return true;
-  } catch (e) {
+function compareArray(a, b) {
+  if (b.length !== a.length) {
     return false;
   }
-};
-$assert.constructable = function (f) {
-  if (!$assert.isConstructable(f))
-    $error("Expected " + $toString(f) + " has [[Construct]] but does not.");
-};
-$assert.notConstructable = function (f) {
-  if ($assert.isConstructable(f))
-    $error(
-      "Expected " + $toString(f) + " does not have [[Construct]] but does."
-    );
-};
-
-// assertion to compare arrays
-function $compareArray(a, b) {
-  if (b.length !== a.length) return false;
   for (var i = 0; i < a.length; i++) {
-    if (!$isSameValue(a[i], b[i])) return false;
+    if (!assert._isSameValue(b[i], a[i])) {
+      return false;
+    }
   }
   return true;
 }
 
-$assert.compareArray = function (actual, expected, obj) {
-  function format(array) {
-    return "[" + array.map($toString).join(", ") + "]";
-  }
-  function getObjDesc(obj) {
-    var algo = $algo.get(obj) || "Nothing";
-    var ty = Object.prototype.toString.call(obj);
-    ty = ty.substring("[object ".length, ty.length - "]".length);
-    return `${algo} for ${ty}`;
-  }
-  if ($compareArray(actual, expected)) return;
-  $error(
-    "Expected " +
-      format(expected) +
-      " but got " +
-      format(actual) +
-      " in " +
-      getObjDesc(obj) +
-      "."
-  );
+compareArray.format = function (arrayLike) {
+  return `[${Array.prototype.map.call(arrayLike, String).join(', ')}]`;
 };
 
-// assertion to compare iterators
-$assert.compareIterator = function (iter, validators) {
-  var i, result;
-  for (i = 0; i < validators.length; i++) {
-    result = iter.next();
-    $error(
-      !result.done,
-      "Expected " +
-        i +
-        " values(s). Instead iterator only produced " +
-        (i - 1) +
-        " value(s)."
-    );
-    validators[i](result.value);
+assert._formatIdentityFreeValue = function formatIdentityFreeValue(value) {
+  switch (value === null ? 'null' : typeof value) {
+    case 'string':
+      return typeof JSON !== "undefined" ? JSON.stringify(value) : `"${value}"`;
+    case 'bigint':
+      return `${value}n`;
+    case 'number':
+      if (value === 0 && 1 / value === -Infinity) return '-0';
+    // falls through
+    case 'boolean':
+    case 'undefined':
+    case 'null':
+      return String(value);
   }
-  result = iter.next();
-  $error(
-    result.done,
-    "Expected only " + i + " values(s). Instead iterator produced more."
-  );
-  $assert.sameValue(
-    result.value,
-    undefined,
-    "Expected value of `undefined` when iterator completes."
-  );
 };
 
-// verify properties
-function $verifyProperty(obj, prop, desc) {
-  // check property type
-  var propType = typeof prop;
-  if (propType !== "string" && propType !== "symbol") {
-    $error(
-      "$verifyProperty requires a string or symbol property but " +
-        $toString(prop) +
-        " given."
-    );
-    return;
+assert._toString = function (value) {
+  var basic = assert._formatIdentityFreeValue(value);
+  if (basic) return basic;
+  try {
+    return String(value);
+  } catch (err) {
+    if (err.name === 'TypeError') {
+      return Object.prototype.toString.call(value);
+    }
+    throw err;
   }
-
-  var originalDesc = Object.getOwnPropertyDescriptor(obj, prop);
-
-  // Allows checking for undefined descriptor if it's explicitly given.
-  if (desc === undefined) {
-    $assert.sameValue(originalDesc, undefined);
-    return;
-  }
-
-  var hasOwnProperty = Object.prototype.hasOwnProperty;
-  $assert(hasOwnProperty.call(obj, prop));
-  $assert.notSameValue(desc, null);
-  $assert.sameValue(typeof desc, "object");
-
-  function check(name) {
-    try {
-      if (!hasOwnProperty.call(desc, name)) return;
-      if ($isSameValue(desc[name], originalDesc[name])) return;
-      var message;
-      if (name === "value")
-        message =
-          "descriptor value should be " +
-          $toString(desc.value) +
-          " but " +
-          $toString(originalDesc.value);
-      else
-        message =
-          "descriptor should " + (desc[name] ? "" : "not ") + "be " + name;
-      $error(message);
-    } catch (e) {}
-  }
-  check("value");
-  check("writable");
-  check("enumerable");
-  check("configurable");
-}
-
-// delay checking assertions
-function $delay(f) {
-  var DELAY = 100;
-  var setTimeout = globalThis.setTimeout;
-  import("os")
-    .then((os) => {
-      // qjs
-      if (!setTimeout) setTimeout = os?.setTimeout;
-    })
-    .catch(() => {})
-    .finally(() => {
-      setTimeout(f, DELAY);
-    });
-}
+};
