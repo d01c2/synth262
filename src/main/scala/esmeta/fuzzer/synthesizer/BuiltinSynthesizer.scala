@@ -54,13 +54,17 @@ class BuiltinSynthesizer(algorithms: List[Algorithm]) extends Synthesizer {
       case path =>
         val MAX_ARGS = 5
         val pathStr = getString(path)
+        val thisCands = getBase(path) match
+          case Some(base) => List("0", s"new $base")
+          case None       => List("0")
         // calls
         val calls = for {
+          thisArg <- thisCands
           argsLen <- Range(0, MAX_ARGS).toList
           args = List.fill(argsLen)("0")
         } yield Builtin(
           func = s"$pathStr.call",
-          thisArg = Some("0"),
+          thisArg = Some(thisArg),
           args = args,
           preStmts = None,
           postStmts = None,
@@ -71,7 +75,7 @@ class BuiltinSynthesizer(algorithms: List[Algorithm]) extends Synthesizer {
           args = List.fill(argsLen)("0")
         } yield Builtin(
           func = s"new $pathStr",
-          thisArg = None,
+          thisArg = None, // intended
           args = args,
           preStmts = None,
           postStmts = None,
@@ -115,6 +119,16 @@ class BuiltinSynthesizer(algorithms: List[Algorithm]) extends Synthesizer {
       case SymbolAccess(base, symbol) =>
         app >> base >> "[Symbol." >> symbol >> "]"
       case YetPath(name) => app >> "yet:" >> name.replace(" ", "")
+
+  // get base of builtin path
+  private def getBase(path: BuiltinPath): Option[String] = path match
+    case NormalAccess(NormalAccess(base, "prototype"), _) =>
+      Some(getString(base))
+    case SymbolAccess(NormalAccess(base, "prototype"), _) =>
+      Some(getString(base))
+    case Getter(base) => getBase(base)
+    case Setter(base) => getBase(base)
+    case _            => None
 
   /** for syntactic production */
   def apply(

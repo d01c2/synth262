@@ -80,8 +80,7 @@ case object LLMEvaluate extends Phase[CFG, Yaml] {
       Try(scriptParser.fromFile(filepath)).toOption match
         case Some(ast) => {
           val cov = Coverage(cfg, timeLimit = Some(1))
-          val touched: Set[Cond] =
-            cov.run(ast).touchedCondViews.keySet.map(_.cond)
+          val touched = cov.run(ast).touchedCondViews.keySet.map(_.cond)
           val covered: Boolean = touched.exists(_ == uncoveredCond)
           val reached: Boolean = touched.exists(_ == uncoveredCond.neg)
           if (covered) Result(uncoveredCond, true, None)
@@ -168,7 +167,7 @@ case object LLMEvaluate extends Phase[CFG, Yaml] {
     responsePath: String,
     logDir: String,
   ): (Int, Int) =
-    mkdir(logDir)
+    mkdir(logDir, remove = true)
     Using.resource(Source.fromFile(responsePath, "UTF-8")) { source =>
       source.getLines.zipWithIndex.foldLeft((0, 0)) {
         case ((written, skipped), (rawLine, _)) =>

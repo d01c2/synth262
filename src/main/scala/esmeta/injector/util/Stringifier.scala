@@ -18,27 +18,39 @@ class Stringifier(detail: Boolean) {
 
   // conformance tests
   given testRule: Rule[ConformTest] = (app, test) =>
+    import ExitTag.*
     val ConformTest(id, script, exitTag, isAsync, assertions) = test
     val delayHead = "$delay(() => {"
     val delayTail = "});"
 
     if (detail) app >> "\"use strict\";" >> LINE_SEP
     app >> "// [EXIT] " >> exitTag
-    app :> script
-    if (exitTag.isNormal) {
-      app :> "// Assertions"
-      def body = {
-        // prepend auxiliary definitions for assertions
-        if (detail) app >> header
-        // handle async tests by delaying the execution
-        if (isAsync) app.wrap(delayHead, delayTail) {
-          assertions.foreach(app :> _)
+    exitTag match
+      case Normal =>
+        app :> script
+        app :> "// Assertions"
+        def body = {
+          // prepend auxiliary definitions for assertions
+          if (detail) app >> header
+          // handle async tests by delaying the execution
+          if (isAsync) app.wrap(delayHead, delayTail) {
+            assertions.foreach(app :> _)
+          }
+          else assertions.foreach(app :> _)
         }
-        else assertions.foreach(app :> _)
-      }
-      if (detail) (app :> "").wrap("(() => {", "})();")(body)
-      else body
-    }
+        if (detail) (app :> "").wrap("(() => {", "})();")(body)
+        else body
+      case ThrowValue(_, Some(name)) =>
+        def body = {
+          if (detail) app >> header
+          (app :> "").wrap(
+            s"$$assert.throws($name, function () {",
+            "}, \"detailed description needed\");",
+          ) { app :> script }
+        }
+        if (detail) (app :> "").wrap("(() => {", "})();")(body)
+        else body
+      case _ => ()
     app
 
   // exit tags
@@ -48,7 +60,10 @@ class Stringifier(detail: Boolean) {
       case Normal                   => app >> s"normal"
       case Timeout                  => app >> s"timeout"
       case SpecError(error, cursor) => app >> s"spec-error: $cursor"
-      case ThrowValue(values)       => app >> s"throw: ${values.mkString(", ")}"
+      case ThrowValue(values, errorName) =>
+        errorName match
+          case Some(name) => app >> s"throw: $name"
+          case None       => app >> s"throw: ${values.mkString(", ")}"
 
   // assertions
   given assertRule: Rule[Assertion] = (app, assert) =>
