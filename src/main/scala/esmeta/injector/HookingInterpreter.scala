@@ -1,9 +1,9 @@
 package esmeta.injector
 
 import esmeta.error.*
-import esmeta.es.{Ast, Syntactic}
-import esmeta.interpreter.Interpreter
-import esmeta.ir.{Expr, ERandom, NAME_THIS}
+import esmeta.es.*
+import esmeta.interpreter.*
+import esmeta.ir.*
 import esmeta.state.*
 import esmeta.util.BaseUtils.*
 import java.util.concurrent.TimeoutException
@@ -68,22 +68,10 @@ class HookingInterpreter(val initSt: State) extends Interpreter(initSt) {
   /** Compute exit tag from final state */
   private def computeExitTag(st: State): ExitTag =
     try {
-      // Access object property (via __MAP__) and get its [[Value]]
-      def getPropValue(base: Value, prop: String): Option[Value] = for {
-        case baseAddr: Addr <- Some(base)
-        case baseObj: RecordObj <- Some(st(baseAddr))
-        case mapAddr: Addr <- baseObj.map.get("__MAP__")
-        case mapObj: MapObj <- Some(st(mapAddr))
-        case propAddr: Addr <- mapObj.map.get(Str(prop))
-        case propDesc: RecordObj <- Some(st(propAddr))
-        value <- propDesc.map.get("Value")
-      } yield value
-
-      // Get error name from [[Prototype]].constructor.name
       def getErrorName(error: Value): Option[String] = for {
         case proto: Addr <- Some(st(error, Str("Prototype")))
-        case ctor: Addr <- getPropValue(proto, "constructor")
-        case Str(name) <- getPropValue(ctor, "name")
+        case ctor: Addr <- st.getProp(proto, "constructor")
+        case Str(name) <- st.getProp(ctor, "name")
       } yield name
 
       st(GLOBAL_RESULT) match

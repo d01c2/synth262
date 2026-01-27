@@ -9,6 +9,7 @@ trait InjectorTest extends ESMetaTest {
 
   lazy val cfg = ESMetaTest.cfg
 
-  lazy val normalExitTest = Injector(cfg, "42;")
-  lazy val throwExitTest = Injector(cfg, "null.foo;")
+  lazy val sameValueTest = Injector(cfg, "42;")
+  lazy val throwsTest = Injector(cfg, "null.x;")
+  lazy val compareArrayTest = Injector(cfg, "[1, 2, 3];")
 }

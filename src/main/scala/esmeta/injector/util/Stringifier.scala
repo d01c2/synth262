@@ -1,8 +1,9 @@
 package esmeta.injector.util
 
 import esmeta.injector.*
-import esmeta.util.*
+import esmeta.state.*
 import esmeta.util.Appender.*
+import esmeta.util.BaseUtils.*
 
 /** stringifier for injector elements */
 object Stringifier {
@@ -11,6 +12,8 @@ object Stringifier {
 }
 
 class Stringifier {
+  import Assertion.*, ExpectedValue.*
+
   val msg = "\"detailed description needed\""
 
   given conformTestRule: Rule[ConformTest] = (app, test) =>
@@ -27,4 +30,30 @@ class Stringifier {
         }
       case _ => ()
     app
+
+  given assertionRule: Rule[Assertion] = (app, assertion) =>
+    assertion match
+      case SameValue(variable, expected) =>
+        app >> s"assert.sameValue($variable, ${expectedValueStr(Simple(expected))}, $msg);"
+      case CompareArray(variable, elements) =>
+        app >> s"assert.compareArray($variable, ${expectedValueStr(Array(elements))}, $msg);"
+
+  private def expectedValueStr(ev: ExpectedValue): String = ev match
+    case Simple(sv)   => simpleValueStr(sv)
+    case Array(elems) => arrayValueStr(elems)
+
+  private def simpleValueStr(sv: SimpleValue): String = sv match
+    case Number(Double.PositiveInfinity) => "Infinity"
+    case Number(Double.NegativeInfinity) => "-Infinity"
+    case Number(n) if n.isNaN            => "NaN"
+    case Number(n)                       => n.toString
+    case BigInt(n)                       => s"${n}n"
+    case Str(s)                          => s"\"$s\""
+    case Bool(b)                         => b.toString
+    case Undef                           => "undefined"
+    case Null                            => "null"
+
+  private def arrayValueStr(elems: Vector[ExpectedValue]): String =
+    elems.map(expectedValueStr).mkString("[", ", ", "]")
+
 }

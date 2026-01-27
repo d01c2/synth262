@@ -15,6 +15,7 @@ case class Injector(
   testContent: String,
   log: Boolean,
 ) {
+  import Assertion.*, ExpectedValue.*
 
   /** exit state */
   private lazy val exitSt: State = interp.result
@@ -96,25 +97,32 @@ case class Injector(
         result.toString.trim
 
     // Generate temp var declarations and assertions
-    val captured: Vector[(String, SimpleValue)] =
-      exprsToCapture.flatMap {
-        case (expr, value) =>
-          val exprText = expr.toString(grammar = Some(cfg.grammar))
-          extractSimpleValue(value).map(sv => (exprText, sv))
-      }
+    val captured: Vector[(String, ExpectedValue)] = exprsToCapture.flatMap {
+      case (expr, value) =>
+        val exprText = expr.toString(grammar = Some(cfg.grammar))
+        extractValue(value).map(ev => (exprText, ev))
+    }
 
     val tempVars = captured.zipWithIndex.map {
       case ((exprText, _), idx) =>
         s"var __temp${idx + 1} = $exprText;"
     }
-    val assertions = captured.zipWithIndex.map {
-      case ((_, value), idx) =>
-        s"assert.sameValue(__temp${idx + 1}, ${valueToString(value)}, $msg);"
+
+    val assertions: Vector[Assertion] = captured.zipWithIndex.map {
+      case ((_, expected), idx) =>
+        val tempVar = s"__temp${idx + 1}"
+        expected match
+          case Simple(sv)      => SameValue(tempVar, sv)
+          case Array(elements) => CompareArray(tempVar, elements)
     }
+
+    import esmeta.injector.util.Stringifier.given
+    import esmeta.util.BaseUtils.stringify
+    val assertionStrs = assertions.map(a => stringify(a))
 
     // Combine: remaining script + temp vars + assertions
     val parts =
-      Vector(remainingScript).filter(_.nonEmpty) ++ tempVars ++ assertions
+      Vector(remainingScript).filter(_.nonEmpty) ++ tempVars ++ assertionStrs
     parts.mkString("\n")
 
   /** exit status tag */
@@ -133,24 +141,34 @@ case class Injector(
     getPrintWriter(s"$INJECT_LOG_DIR/log")
   private def log(data: Any): Unit = if (log) { pw.println(data); pw.flush() }
 
-  // extract SimpleValue from a Value, unwrapping CompletionRecords
-  private def extractSimpleValue(value: Value): Option[SimpleValue] =
+  // Only extracts assertable values (Primitive, Array) - skips reference types
+  private def extractValue(value: Value): Option[ExpectedValue] =
     value match
-      case sv: SimpleValue => Some(sv)
+      case sv: SimpleValue => Some(Simple(sv))
       case addr: Addr =>
-        exitSt(addr) match
-          case RecordObj("CompletionRecord", map) =>
-            map.get("Type") match
-              case Some(Enum("normal")) =>
-                map.get("Value").flatMap(extractSimpleValue)
-              case _ => None
-          case _ => None // TODO: handle object values
+        exitSt.unwrapComp(value) match
+          case Some(unwrapped) => extractValue(unwrapped)
+          case None =>
+            exitSt(addr) match
+              case obj: RecordObj => extractArray(obj) // None if not array
+              case _              => None
       case _ => None
 
-  // convert SimpleValue to string for assertion
-  private def valueToString(value: SimpleValue): String = value match
-    case Number(n) => n.toString
-    case v         => v.toString
+  // extract array elements from RecordObj (returns None if not an array)
+  private def extractArray(obj: RecordObj): Option[ExpectedValue.Array] =
+    for {
+      mapObj <- exitSt.getMapObj(obj)
+      case Number(lengthDouble) <- exitSt.getMapProp(mapObj, "length")
+      length = lengthDouble.toInt
+    } yield {
+      val elements = (0 until length).toVector.flatMap { i =>
+        for {
+          propValue <- exitSt.getMapProp(mapObj, i.toString)
+          extracted <- extractValue(propValue)
+        } yield extracted
+      }
+      Array(elements)
+    }
 }
 
 object Injector {

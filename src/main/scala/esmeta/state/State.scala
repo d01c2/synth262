@@ -194,6 +194,38 @@ case class State(
   def getString(value: Value): String = value match
     case addr: Addr => addr.toString + " -> " + heap(addr).toString
     case _          => value.toString
+
+  /** unwrap normal CompletionRecord, returning inner [[Value]] */
+  def unwrapComp(value: Value): Option[Value] = value match
+    case addr: Addr =>
+      apply(addr) match
+        case RecordObj("CompletionRecord", map) =>
+          map.get("Type") match
+            case Some(Enum("normal")) => map.get("Value")
+            case _                    => None
+        case _ => None
+    case _ => None
+
+  /** get __MAP__ from RecordObj */
+  def getMapObj(obj: RecordObj): Option[MapObj] = for {
+    case addr: Addr <- obj.map.get("__MAP__")
+    case mapObj: MapObj <- Some(apply(addr))
+  } yield mapObj
+
+  /** get property [[Value]] from MapObj */
+  def getMapProp(mapObj: MapObj, prop: String): Option[Value] = for {
+    case addr: Addr <- mapObj.map.get(Str(prop))
+    case desc: RecordObj <- Some(apply(addr))
+    value <- desc.map.get("Value")
+  } yield value
+
+  /** get property [[Value]] from RecordObj */
+  def getProp(base: Value, prop: String): Option[Value] = for {
+    case addr: Addr <- Some(base)
+    case obj: RecordObj <- Some(apply(addr))
+    mapObj <- getMapObj(obj)
+    value <- getMapProp(mapObj, prop)
+  } yield value
 }
 object State {
 
