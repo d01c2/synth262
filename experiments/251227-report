@@ -890,7 +890,7 @@ Branch[23363]   : Test262 covered false branch with "test262/test/built-ins/Stri
 > [!NOTE]
 > loc: [String.prototype.match step 1](https://tc39.es/ecma262/2025/#sec-string.prototype.match)
 > uncovered: RequireObjectCoercible return abrupt case
-> isValid: ???
+> isValid: false "test\built-ins\String\prototype\match\this-value-not-obj-coercible.js"
 > memo:
 > - String.prototype.match(regexp)로 접근 가능
 > - RequireObjectCoercible(this value)에서 터질 수 있음, this value가 Undefined거나 Null이면 됨
@@ -901,8 +901,8 @@ Branch[23367]   : Test262 covered true branch with "test262/test/built-ins/Strin
 
 > [!NOTE]
 > loc: [String.prototype.match step 2](https://tc39.es/ecma262/2025/#sec-string.prototype.match)
-> uncovered: regexp == undefined || regexp == null
-> isValid: ???
+> uncovered: regexp == undefined || regexp == null   <- 이거 이해안감
+> isValid: false "test/built-ins/String/prototype/match/S15.5.4.10_A1_T7.js"
 > memo:
 > - String.prototype.match(regexp)로 접근 가능
 > - regexp에 Undefined 또는 Null이 들어가면 됨
@@ -914,9 +914,9 @@ Branch[23374]   : Test262 covered true branch with "test262/test/built-ins/Strin
 > [!NOTE]
 > loc: [String.prototype.match step 2.b](https://tc39.es/ecma262/2025/#sec-string.prototype.match)
 > uncovered: matcher == undefined
-> isValid: ???
+> isValid: false "test/built-ins/String/prototype/match/S15.5.4.10_A1_T7.js"
 > memo:
-> - String.prototype.match(regexp)로 접근 가능
+> - String.prototype.match(regexp)로 접근 가능 
 > - regexp에 "Symbol.match" field가 존재하지 않으면 됨
 
 Branch[23377]:T : String.prototype.match.call(0, { [ Symbol . match ] : x => await } );
@@ -926,7 +926,7 @@ Branch[23377]   : Test262 covered false branch with "test262/test/built-ins/Stri
 > [!NOTE]
 > loc: [String.prototype.match step 2.b.i](https://tc39.es/ecma262/2025/#sec-string.prototype.match)
 > uncovered: Call return abrupt case
-> isValid: ???
+> isValid: false "test\built-ins\String\prototype\match\cstm-matcher-get-err.js"
 > memo:
 > - String.prototype.match(regexp)로 접근 가능
 > - 
@@ -937,15 +937,20 @@ Branch[23407]   : Test262 covered true branch with "test262/test/built-ins/Strin
 
 > [!NOTE]
 > loc: [String.prototype.matchAll step 2](https://tc39.es/ecma262/2025/#sec-string.prototype.matchall)
-> uncovered: regexp == undefined || regexp == 
+> isValid: false "test/built-ins/String/prototype/matchAll/regexp-is-undefined-or-null-invokes-matchAll.js"
 
 Branch[23437]:T : String.prototype.matchAll.call(0 , { [ Symbol . matchAll ] : 0 } );
 Branch[23437]:F : String.prototype.matchAll.call(0 , { [ NaN ] : `` } );
 Branch[23437]   : Test262 covered false branch with "test262/test/built-ins/String/prototype/matchAll/regexp-matchAll-invocation.js"
 
+> [!NOTE]
+> isValid: false "test\built-ins\String\prototype\matchAll\regexp-get-matchAll-throws.js"
+
 Branch[23441]:T : String.prototype.matchAll.call(0 , { [ Symbol . matchAll ] : x => x } );
 Branch[23441]:F : String.prototype.matchAll.call(0 , { [ NaN ] : `` } );
 Branch[23441]   : Test262 covered true branch with "test262/test/built-ins/String/prototype/matchAll/regexp-matchAll-invocation.js"
+
+
 
 Branch[23444]:T : String.prototype.matchAll.call(1 , { [ Symbol . matchAll ] : ( ) => x } );
 Branch[23444]:F : String.prototype.matchAll.call(0 , { [ Symbol . matchAll ] : x => x } );
@@ -955,17 +960,29 @@ Branch[23480]:T : String.prototype.normalize.call(0);
 Branch[23480]:F : String.prototype.normalize.call(0, 0);
 Branch[23480]   : Test262 covered false branch with "test262/test/built-ins/String/prototype/normalize/return-abrupt-from-form-as-symbol.js"
 
+> [!NOTE]
+> isValid: false "test262/test/staging/sm/String/normalize-parameter.js"
+
 Branch[23488]:T : String.prototype.normalize.call(0, 0);
 Branch[23488]:F : String.prototype.normalize.call(0);
 Branch[23488]   : Test262 covered true branch with "test262/test/built-ins/String/prototype/normalize/form-is-not-valid-throws.js"
+
+> [!NOTE]
+> isValid: false "test262/test/built-ins/String/prototype/normalize/form-is-not-valid-throws.js"
 
 Branch[23541]:T : String.prototype.padStart.call(0, 1n , 0);
 Branch[23541]:F : String.prototype.padEnd.call(0);
 Branch[23541]   : Test262 covered false branch with "test262/test/built-ins/String/prototype/padEnd/fill-string-empty.js"
 
+> [!NOTE]
+> isValid: false "test262/test/staging/sm/String/string-pad-start-end.js"
+
 Branch[23601]:T : String.prototype.repeat.call(0);
 Branch[23601]:F : String.prototype.repeat.call(0, 1 );
 Branch[23601]   : Test262 covered true branch with "test262/test/built-ins/String/prototype/repeat/count-is-zero-returns-empty-string.js"
+
+> [!NOTE]
+> isValid: false "test262/test/built-ins/String/prototype/repeat/repeat-string-n-times.js"
 
 Branch[23633]:T : String.prototype.replace.call(Symbol ( ) );
 Branch[23633]:F : String.prototype.replace.call(0);
@@ -974,6 +991,8 @@ Branch[23633]   : Test262 covered false branch with "test262/test/language/funct
 Branch[23661]:T : String.prototype.replace.call(1 , 1 , x => x );
 Branch[23661]:F : String.prototype.replace.call(0, 0);
 Branch[23661]   : Test262 covered true branch with "test262/test/language/function-code/10.4.3-1-100gs.js"
+
+regexp는 skip
 
 Branch[23664]:T : String.prototype.replace.call(1 , 1 , ( ) => x );
 Branch[23664]:F : String.prototype.replace.call(1 , 1 , x => x );
@@ -1046,6 +1065,9 @@ Branch[24159]   : Test262 covered true branch with "test262/test/built-ins/Strin
 Branch[26198]:T : Array.from.call(function ( [ ] ) { } , 0);
 Branch[26198]:F : Array.from.call(class { } , 0);
 Branch[26198]   : Test262 covered false branch with "test262/test/built-ins/Array/from/source-object-without.js"
+
+> [!NOTE]
+> loc: [Array.from step 9.a]
 
 Branch[26302]:T : Array.prototype.at.call({ get length ( ) { x ; } } );
 Branch[26302]:F : Array.prototype.at.call(0);
