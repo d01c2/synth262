@@ -215,9 +215,9 @@ case class Test262(
       // dump coverage
       postJob = logDir => {
         // dump type errors (dump names only when there are multiple tests)
-        if (tyCheck) collector.dumpTo(logDir, withNames = multiple)
+        if (log && tyCheck) collector.dumpTo(logDir, withNames = multiple)
         // dump coverage
-        if (useCoverage)
+        if (log && useCoverage)
           if (detail) cov.dumpToWithDetail(logDir)
           else cov.dumpTo(logDir)
       },

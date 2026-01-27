@@ -1,5 +1,4 @@
 {
-  "Assertion" : true,
-  "ConformTest" : true,
-  "ExitTag" : true
+  "Normal Exit ConformTest" : true,
+  "Throw Exit ConformTest" : true
 }

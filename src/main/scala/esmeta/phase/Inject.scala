@@ -21,7 +21,7 @@ case object Inject extends Phase[CFG, String] {
   ): String =
     val filename = getFirstFilename(cmdConfig, this.name)
     val test = Injector.fromFile(cfg, filename, config.log)
-    val injected = test.toString(detail = config.defs)
+    val injected = test.toString
 
     // dump the assertion-injected ECMAScript program
     for (filename <- config.out)
@@ -35,11 +35,6 @@ case object Inject extends Phase[CFG, String] {
   def defaultConfig: Config = Config()
   val options: List[PhaseOption[Config]] = List(
     (
-      "defs",
-      BoolOption(_.defs = _),
-      "prepend definitions of helpers for assertions.",
-    ),
-    (
       "out",
       StrOption((c, s) => c.out = Some(s)),
       "dump an assertion-injected ECMAScript program to a given path.",
@@ -51,7 +46,6 @@ case object Inject extends Phase[CFG, String] {
     ),
   )
   case class Config(
-    var defs: Boolean = false,
     var out: Option[String] = None,
     var log: Boolean = false,
   )

@@ -1,29 +1,24 @@
 package esmeta.injector
 
-import esmeta.*
 import esmeta.cfg.CFG
-import esmeta.error.NoGraalError
-import java.util.concurrent.TimeoutException
-import esmeta.es.*
-import esmeta.es.util.*
-import esmeta.state.State
-import esmeta.util.*
-import esmeta.util.SystemUtils.*
-import scala.util.*
+import esmeta.injector.util.*
+import esmeta.util.BaseUtils.*
 
 /** conformance test */
 case class ConformTest(
-  id: Int,
+  harness: String,
   script: String,
   exitTag: ExitTag,
-  async: Boolean,
-  assertions: Vector[Assertion],
-) extends InjectorElem
-  with UId
+  throwingExpr: Option[String],
+) {
+  import Stringifier.{*, given}
+  override def toString: String = stringify(this)
+}
 
 object ConformTest {
 
-  /** Create a test using init state and exit state */
-  def createTest(cfg: CFG, exitSt: State): ConformTest =
-    new Injector(cfg, exitSt, false).conformTest
+  /** Create a test using a hooking interpreter */
+  def createTest(cfg: CFG, interp: HookingInterpreter): ConformTest =
+    val sourceText = interp.result.cachedSourceText.getOrElse("")
+    new Injector(cfg, interp, "", sourceText, log = false).conformTest
 }
