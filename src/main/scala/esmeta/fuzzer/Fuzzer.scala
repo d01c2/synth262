@@ -75,7 +75,7 @@ class Fuzzer(
   kFs: Int,
   cp: Boolean,
 ) {
-  import Fuzzer.*
+  import Coverage.*, Fuzzer.*
 
   val jsonProtocol = new JsonProtocol(cfg)
   import jsonProtocol.{*, given}
@@ -162,10 +162,10 @@ class Fuzzer(
       val results = mutator(code, 100, condView.map((_, cov))).par
       results.map(result => (result, getCandInfo(result.code))).toList
 
-    for ((Mutator.Result(mutatorName, mutatedCode), info) <- mutants)
-      debugging(f"----- $mutatorName%-20s-----> $mutatedCode")
+    for ((Mutator.Result(mutatorName, mutant), info) <- mutants)
+      debugging(f"----- $mutatorName%-20s-----> $mutant")
 
-      val result = add(mutatedCode, info)
+      val result = add(code, mutant, info)
       update(selectorName, selectorStat, result)
       update(mutatorName, mutatorStat, result)
 
@@ -188,27 +188,31 @@ class Fuzzer(
     else CandInfo(interp = Some(Try(cov.run(code))))
 
   /** add new program */
-  def add(code: Code): Boolean = add(code, getCandInfo(code))
+  def add(code: Code): Boolean = add(code, code, getCandInfo(code))
 
-  /** add new program with precomputed info */
-  def add(code: Code, info: CandInfo): Boolean = handleResult(
-    code,
-    Try {
-      if (info.visited) fail("ALREADY VISITED")
-      visited += code.toString
-      if (info.invalid) fail("INVALID PROGRAM")
-      val interp = info.interp.get match
-        case Success(v) => v
-        case Failure(e) => throw e
-      val finalState = interp.result
-      val supported = interp.supported
-      val script = toScript(code, supported)
-      if (tyCheck) collector.add(code.toString, finalState.typeErrors)
-      val (_, updated, covered) = cov.check(script, interp)
-      if (!updated) fail("NO UPDATE")
-      (covered, supported)
-    },
-  )
+  /** add mutant with precomputed info */
+  // NOTE: pass both original and mutant to cache code snippet
+  // if the mutant covers abrubt branches with abrupt completion
+  def add(orig: Code, mutant: Code, info: CandInfo): Boolean =
+    handleResult(
+      mutant,
+      Try {
+        if (info.visited) fail("ALREADY VISITED")
+        visited += mutant.toString
+        if (info.invalid) fail("INVALID PROGRAM")
+        val interp = info.interp.get match
+          case Success(v) => v
+          case Failure(e) => throw e
+        val finalState = interp.result
+        val supported = interp.supported
+        val script = toScript(mutant, supported)
+        if (tyCheck) collector.add(mutant.toString, finalState.typeErrors)
+        val (_, updated, covered) = cov.check(script, interp)
+        if (!updated) fail("NO UPDATE")
+        if (covered) snippetStorage.cache(orig, mutant, interp.touchedCondViews)
+        (covered, supported)
+      },
+    )
 
   /** handle add result */
   def handleResult(code: Code, result: Try[(Boolean, Boolean)]): Boolean = {
@@ -270,10 +274,12 @@ class Fuzzer(
   val selectorStat: MMap[String, Counter] = MMap()
 
   given CFG = cfg
+  given snippetStorage: SnippetStorage = new SnippetStorage
 
   /** mutator */
   val mutator: Mutator = WeightedMutator(
     TargetMutator() -> 6,
+    AbruptMutator() -> 6,
     RandomMutator() -> 3,
     StatementInserter() -> 1,
     Remover() -> 1,
@@ -414,6 +420,12 @@ class Fuzzer(
     dumpStat(mutator.names, mutatorStat, mutStatTsv)
     // dump spec type error
     if (tyCheck) collector.dumpTo(logDir)
+    // dump snippet storage
+    dumpFile(
+      name = "abrupt completion triggering code snippets",
+      data = snippetStorage.dumpContent,
+      filename = s"$logDir/snippet-storage.json",
+    )
     // dump ESMeta errors
     dumpFile(
       name = "found ESMeta errors",
