@@ -1105,13 +1105,22 @@ Branch[27910]:T : Array.prototype.sort.call(0, 0);
 Branch[27910]:F : Array.prototype.sort.call();
 Branch[27910]   : Test262 covered true branch with "test262/test/built-ins/Array/prototype/methods-called-as-functions.js"
 
+> [!NOTE]
+> isValid: false "test\built-ins\Array\prototype\sort\call-with-primitive.js"에서 cover
+
 Branch[27914]:T : Array.prototype.sort.call(0, 0);
 Branch[27914]:F : Array.prototype.sort.call();
 Branch[27914]   : Test262 covered true branch with "test262/test/built-ins/Array/prototype/methods-called-as-functions.js"
 
+> [!NOTE]
+> isValid: false "test\built-ins\Array\prototype\sort\call-with-primitive.js"에서 cover
+
 Branch[27923]:T : Array.prototype.sort.call();
 Branch[27923]:F : Array.prototype.sort.call(( x ) => x );
 Branch[27923]   : Test262 covered true branch with "test262/test/built-ins/Array/prototype/methods-called-as-functions.js"
+
+> [!NOTE]
+> isValid: false "test\built-ins\Array\prototype\sort\call-with-primitive.js"에서 cover함
 
 Branch[28061]:T : Array.prototype.splice.call(0, 0n );
 Branch[28061]:F : Array.prototype.splice.call(0);
@@ -1185,6 +1194,9 @@ Branch[32802]:T : new WeakSet([ , ] );
 Branch[32802]:F : new WeakSet([ x => x ] );
 Branch[32802]   : Test262 covered false branch with "test262/test/built-ins/WeakSet/prototype/add/returns-this.js"
 
+> [!NOTE]
+> isValid: false "test/built-ins/WeakSet/prototype/add/throw-when-value-cannot-be-held-weakly.js"에 있는데 안잡힘 이상함
+
 Branch[33095]:T : new Float16Array([ , ] );
 Branch[33095]:F : new Int8Array([ , ] );
 Branch[33095]   : Test262 covered false branch with "test262/test/language/statements/for-of/int8array.js"
@@ -1196,6 +1208,10 @@ Branch[33097]   : Test262 covered false branch with "test262/test/language/state
 Branch[33099]:T : new Float64Array([ , ] );
 Branch[33099]:F : new Int8Array([ , ] );
 Branch[33099]   : Test262 covered false branch with "test262/test/language/statements/for-of/int8array.js"
+
+> [!NOTE] 
+> new Float**Array(...) 같은 패턴이 있으면 당연히 cover됐어야 했는데 esmeta에서 못잡아줌 (esmata bug)
+> nativeError와 비슷한 이유인 것 같음. TypedArray를 공유하는 여러 instance를 묶어놔서 그런것 같은데 사실 잘 모르겠음
 
 Branch[37336]:T : Promise.try.call();
 Branch[37336]:F : Promise.try.call({ } );
