@@ -42,10 +42,14 @@ class TargetMutator(using cfg: CFG)(
         } // FIXME: temporal patch for bug in localization
         if (filtered.nonEmpty) {
           val mutationCite = choose(filtered)
-          Walker(mutationCite, n)
-            .walk(scriptParser.from(str))
-            .map(_.toString(grammar = Some(cfg.grammar)))
-            .map(str => Result(name, Normal(str)))
+          scriptParser.from(str) match
+            case syn: Syntactic =>
+              Walker(mutationCite, n)
+                .walk(syn)
+                .map(_.toString(grammar = Some(cfg.grammar)))
+                .map(str => Result(name, Normal(str)))
+            case _ =>
+              apply(str, n, target).map(str => Result(name, Normal(str)))
         } else apply(str, n, target).map(str => Result(name, Normal(str)))
       case builtin: Builtin =>
         val filtered = builtinTargets.filter { bt =>
@@ -69,18 +73,14 @@ class TargetMutator(using cfg: CFG)(
   def apply(ast: Ast, n: Int, target: Option[(CondView, Coverage)]): Seq[Ast] =
     randomMutator(ast, n, target)
 
-  /** internal walker for mutating normal target */
-  class Walker(target: Target.Normal, n: Int)
-    extends Util.MultiplicativeListWalker {
-    override def walk(ast: Syntactic): List[Syntactic] =
-      val Target.Normal(name, idx, subIdx, loc) = target
-      if (
-        ast.name == name &&
-        ast.rhsIdx == idx &&
-        ast.subIdx == subIdx &&
-        ast.loc == Some(loc)
-      ) TotalWalker(ast, n)
-      else super.walk(ast)
+  /** internal walker for finding and mutating normal target */
+  class Walker(normalTarget: Target.Normal, n: Int)
+    extends Util.SingleListWalker {
+    val Target.Normal(name, idx, subIdx, loc) = normalTarget
+    def isTarget(ast: Syntactic): Boolean =
+      ast.name == name && ast.rhsIdx == idx &&
+      ast.subIdx == subIdx && ast.loc == Some(loc)
+    def transform(ast: Syntactic): List[Syntactic] = TotalWalker(ast, n)
   }
 
   /** internal walker that mutates all internal nodes with same prob. */

@@ -94,4 +94,36 @@ object Util {
       newStat._1.map(newChildren => Syntactic(name, args, rhsIdx, newChildren))
   }
 
+  /** Walker that finds a single target, transforms it to multiple results */
+  trait SingleListWalker extends ListWalker {
+    def isTarget(ast: Syntactic): Boolean
+    def transform(ast: Syntactic): List[Syntactic]
+
+    override def walk(ast: Lexical): List[Lexical] = Nil // no target in Lexical
+
+    def walk(ast: Syntactic): List[Syntactic] =
+      if (isTarget(ast)) transform(ast)
+      else
+        ast.children.zipWithIndex.foldLeft(List.empty[Syntactic]) {
+          case (acc, _) if acc.nonEmpty => acc
+          case (_, (Some(child: Syntactic), i)) =>
+            walk(child).map { replaced =>
+              Syntactic(
+                ast.name,
+                ast.args,
+                ast.rhsIdx,
+                ast.children.updated(i, Some(replaced)),
+              )
+            }
+          case (acc, _) => acc
+        }
+  }
+
+  /** Walker that finds a single target, transforms it to single result */
+  trait SingleOptionWalker extends SingleListWalker {
+    def transformOpt(ast: Syntactic): Option[Syntactic]
+    def transform(ast: Syntactic): List[Syntactic] = transformOpt(ast).toList
+    def walkOpt(ast: Syntactic): Option[Syntactic] = walk(ast).headOption
+  }
+
 }

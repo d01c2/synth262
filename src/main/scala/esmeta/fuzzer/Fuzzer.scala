@@ -16,7 +16,7 @@ import esmeta.util.SystemUtils.*
 import esmeta.{ESMeta, FUZZ_LOG_DIR, LINE_SEP}
 import io.circe.*, io.circe.syntax.*
 import java.io.PrintWriter
-import java.util.concurrent.TimeoutException
+import java.util.concurrent.{ConcurrentHashMap => CMMap, TimeoutException}
 import scala.collection.mutable.{Map => MMap}
 import scala.collection.parallel.CollectionConverters.*
 import scala.util.*
@@ -183,7 +183,7 @@ class Fuzzer(
   /** get candidate information */
   def getCandInfo(code: Code): CandInfo =
     val sourceText = code.toString
-    if (visited contains sourceText) CandInfo(visited = true)
+    if (!visited.add(sourceText)) CandInfo(visited = true)
     else if (!ValidityChecker(sourceText)) CandInfo(invalid = true)
     else CandInfo(interp = Some(Try(cov.run(code))))
 
@@ -198,7 +198,6 @@ class Fuzzer(
       mutant,
       Try {
         if (info.visited) fail("ALREADY VISITED")
-        visited += mutant.toString
         if (info.invalid) fail("INVALID PROGRAM")
         val interp = info.interp.get match
           case Success(v) => v
@@ -336,8 +335,9 @@ class Fuzzer(
   private def toScript(code: Code, supported: Boolean): Script =
     Script(code, s"$nextId.js", supported)
 
-  // check if the added code is visited
-  private var visited: Set[String] = Set()
+  // check if the added code is visited (thread-safe)
+  // NOTE: Scala has no concurrent Set impl so used Java's ConcurrentHashMap
+  private val visited: java.util.Set[String] = CMMap.newKeySet()
 
   // indicating that add failed
   private def fail(msg: String) = throw Exception(msg)

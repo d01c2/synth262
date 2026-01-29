@@ -33,8 +33,8 @@ class AbruptMutator(using cfg: CFG, snippetStorage: SnippetStorage)
   } yield {
     val results = for {
       snippet <- snippets
-      target <- targets
-      result <- mutate(code, target, snippet)
+      t <- targets
+      result <- mutate(code, t, snippet)
     } yield result
     val taken = shuffle(results.toSeq).take(n)
     if (taken.size >= n) taken
@@ -52,27 +52,31 @@ class AbruptMutator(using cfg: CFG, snippetStorage: SnippetStorage)
     snippet: String,
   ): Option[Result] = (code, target) match
     case (Normal(str), t: Target.Normal) =>
-      Walker(t, snippet).walk(scriptParser.from(str)).headOption.map { ast =>
-        Result(name, Normal(ast.toString(grammar = Some(cfg.grammar))))
+      Try(scriptParser.from(str)).toOption.flatMap {
+        case syn: Syntactic =>
+          Walker(t, snippet).walkOpt(syn).map { ast =>
+            Result(name, Normal(ast.toString(grammar = Some(cfg.grammar))))
+          }
+        case _ => None
       }
-    case (b: Builtin, _: Target.BuiltinThis | _: Target.BuiltinArg) =>
+    case (b: Builtin, Target.BuiltinThis(thisArg))
+        if b.thisArg == Some(thisArg) =>
+      Some(Result(name, b.replace(target, snippet)))
+    case (b: Builtin, Target.BuiltinArg(arg, i))
+        if b.args.lift(i) == Some(arg) =>
       Some(Result(name, b.replace(target, snippet)))
     case _ => None
 
   /** walker that replaces target AST with snippet */
-  class Walker(target: Target.Normal, snippet: String)
-    extends Util.MultiplicativeListWalker {
-    override def walk(ast: Syntactic): List[Syntactic] =
-      val Target.Normal(n, idx, subIdx, loc) = target
-      if (
-        ast.name == n &&
-        ast.rhsIdx == idx &&
-        ast.subIdx == subIdx &&
-        ast.loc == Some(loc)
-      )
-        Try(
-          esParser(ast.name, ast.args).from(snippet).asInstanceOf[Syntactic],
-        ).toOption.map(List(_)).getOrElse(super.walk(ast))
-      else super.walk(ast)
+  class Walker(normalTarget: Target.Normal, snippet: String)
+    extends Util.SingleOptionWalker {
+    val Target.Normal(name, idx, subIdx, loc) = normalTarget
+    def isTarget(ast: Syntactic): Boolean =
+      ast.name == name && ast.rhsIdx == idx &&
+      ast.subIdx == subIdx && ast.loc == Some(loc)
+    def transformOpt(ast: Syntactic): Option[Syntactic] =
+      Try(
+        esParser(ast.name, ast.args).from(snippet).asInstanceOf[Syntactic],
+      ).toOption
   }
 }
