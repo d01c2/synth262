@@ -566,13 +566,22 @@ object Coverage {
       } yield target
     }
 
+    // check if a target's location is valid for the current source code
+    // (filters out targets from dynamically re-parsed code like Function constructor)
+    private def isValidTarget(target: Target): Boolean = target match
+      case Target.Normal(_, _, _, loc) =>
+        val sourceLen = st.sourceCode.map(_.toString.length).getOrElse(0)
+        loc.start.offset >= 0 && loc.end.offset <= sourceLen
+      case _ => true // Target.Builtin don't use locations
+
     // override branch move
     override def moveBranch(branch: Branch, b: Boolean): Unit =
       // record touched conditional branch if it is a target branch
       if (isTargetBranch(branch, st))
         val cond = Cond(branch, b)
         val targets = getTargets(st.context, st.callStack, branch, branch.cond)
-        touchedCondViews += CondView(cond, getView(cond)) -> targets
+        val validTargets = targets.filter(isValidTarget)
+        touchedCondViews += CondView(cond, getView(cond)) -> validTargets
       super.moveBranch(branch, b)
 
     // get syntax-sensitive views

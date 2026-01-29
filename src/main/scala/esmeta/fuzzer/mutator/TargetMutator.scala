@@ -37,11 +37,8 @@ class TargetMutator(using cfg: CFG)(
   } yield {
     code match
       case Normal(str) =>
-        val filtered = normalTargets.filter { nt =>
-          scala.util.Try(str == nt.loc.getString(str)).toOption.getOrElse(false)
-        } // FIXME: temporal patch for bug in localization
-        if (filtered.nonEmpty) {
-          val mutationCite = choose(filtered)
+        if (normalTargets.nonEmpty) {
+          val mutationCite = choose(normalTargets)
           scriptParser.from(str) match
             case syn: Syntactic =>
               Walker(mutationCite, n)
@@ -52,20 +49,34 @@ class TargetMutator(using cfg: CFG)(
               apply(str, n, target).map(str => Result(name, Normal(str)))
         } else apply(str, n, target).map(str => Result(name, Normal(str)))
       case builtin: Builtin =>
-        val filtered = builtinTargets.filter { bt =>
+        val filteredBuiltin = builtinTargets.filter { bt =>
           bt match
             case Target.BuiltinThis(thisArg) => builtin.thisArg == Some(thisArg)
             case Target.BuiltinArg(arg, i) => builtin.args.lift(i) == Some(arg)
             case _                         => false
-        } // FIXME: temporal patch for bug in localization
-        if (filtered.nonEmpty) {
-          val mutationCite = choose(filtered)
+        }
+        val sourceLen = builtin.toString.length
+        val filteredNormal = normalTargets.filter { nt =>
+          nt.loc.start.offset >= 0 && nt.loc.end.offset <= sourceLen
+        }
+        if (filteredBuiltin.nonEmpty) {
+          val mutationCite = choose(filteredBuiltin)
           val argStr = mutationCite.argStr
           for {
             mutatedAst <- apply(argumentListParser.from(argStr), n, target)
             mutatedStr = mutatedAst.toString(grammar = Some(cfg.grammar))
             mutatedCode = builtin.replace(mutationCite, mutatedStr)
           } yield Result(name, mutatedCode)
+        } else if (filteredNormal.nonEmpty) {
+          val str = builtin.toString
+          val mutationCite = choose(filteredNormal)
+          scriptParser.from(str) match
+            case syn: Syntactic =>
+              Walker(mutationCite, n)
+                .walk(syn)
+                .map(_.toString(grammar = Some(cfg.grammar)))
+                .map(str => Result(name, Normal(str)))
+            case _ => randomMutator(builtin, n, target)
         } else randomMutator(builtin, n, target)
   }).getOrElse(randomMutator(code, n, target))
 
