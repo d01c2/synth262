@@ -14,8 +14,7 @@ trait Mutator(using val cfg: CFG) {
   /** ECMAScript parser */
   lazy val esParser: ESParser = cfg.esParser
   lazy val scriptParser: AstFrom = esParser("Script")
-  lazy val argumentListParser: AstFrom =
-    esParser("ArgumentList", List(false, false))
+  lazy val argListParser: AstFrom = esParser("ArgumentList", List(false, false))
 
   /** mutate code */
   def apply(
@@ -72,18 +71,32 @@ trait Mutator(using val cfg: CFG) {
       postStmts <- builtin.postStmts.toSeq
       mutatedStmts <- apply(postStmts, n, target)
     } yield Result(name, builtin.copy(postStmts = Some(mutatedStmts)))
+
+    /** Mutate ALL builtin args exhaustively */
     def mutateArgStr(
       n: Int,
       target: Option[(CondView, Coverage)],
+    ): Seq[Result] = mutateTargets(builtin.targetArgs, n, target)
+
+    /** Mutate specific builtin targets (shared logic for exhaustive iteration)
+      */
+    def mutateTargets(
+      targets: Seq[Target],
+      n: Int,
+      target: Option[(CondView, Coverage)],
     ): Seq[Result] =
-      if (builtin.targetArgs.nonEmpty)
-        val mutationCite = choose(builtin.targetArgs)
-        val argStr = mutationCite.argStr
-        for {
-          mutatedAst <- apply(argumentListParser.from(argStr), n, target)
-          mutatedStr = mutatedAst.toString(grammar = Some(cfg.grammar))
-          mutatedCode = builtin.replace(mutationCite, mutatedStr)
-        } yield Result(name, mutatedCode)
+      if (targets.nonEmpty)
+        // Exhaustive: mutate ALL targets, distribute n across them
+        val numTargets = targets.size
+        val perTarget = (n + numTargets - 1) / numTargets
+        targets.flatMap { mutationCite =>
+          val argStr = mutationCite.argStr
+          for {
+            mutatedAst <- apply(argListParser.from(argStr), perTarget, target)
+            mutatedStr = mutatedAst.toString(grammar = Some(cfg.grammar))
+            mutatedCode = builtin.replace(mutationCite, mutatedStr)
+          } yield Result(name, mutatedCode)
+        }
       else List.fill(n)(builtin).map(Result(name, _))
   }
 }

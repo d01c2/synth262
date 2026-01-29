@@ -54,22 +54,12 @@ class TargetMutator(using cfg: CFG)(
             case Target.BuiltinThis(thisArg) => builtin.thisArg == Some(thisArg)
             case Target.BuiltinArg(arg, i) => builtin.args.lift(i) == Some(arg)
             case _                         => false
-        }
-        val sourceLen = builtin.toString.length
-        val filteredNormal = normalTargets.filter { nt =>
-          nt.loc.start.offset >= 0 && nt.loc.end.offset <= sourceLen
-        }
-        if (filteredBuiltin.nonEmpty) {
-          val mutationCite = choose(filteredBuiltin)
-          val argStr = mutationCite.argStr
-          for {
-            mutatedAst <- apply(argumentListParser.from(argStr), n, target)
-            mutatedStr = mutatedAst.toString(grammar = Some(cfg.grammar))
-            mutatedCode = builtin.replace(mutationCite, mutatedStr)
-          } yield Result(name, mutatedCode)
-        } else if (filteredNormal.nonEmpty) {
+        }.toSeq
+        if (filteredBuiltin.nonEmpty)
+          builtin.mutateTargets(filteredBuiltin, n, target)
+        else if (normalTargets.nonEmpty) {
           val str = builtin.toString
-          val mutationCite = choose(filteredNormal)
+          val mutationCite = choose(normalTargets)
           scriptParser.from(str) match
             case syn: Syntactic =>
               Walker(mutationCite, n)
