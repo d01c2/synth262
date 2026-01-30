@@ -52,12 +52,8 @@ class AbruptMutator(using cfg: CFG, snippetStorage: SnippetStorage)
     snippet: String,
   ): Option[Result] = (code, target) match
     case (Normal(str), t: Target.Normal) =>
-      Try(scriptParser.from(str)).toOption.flatMap {
-        case syn: Syntactic =>
-          Walker(t, snippet).walkOpt(syn).map { ast =>
-            Result(name, Normal(ast.toString(grammar = Some(cfg.grammar))))
-          }
-        case _ => None
+      Walker(t, snippet).walk(scriptParser.from(str)).headOption.map { ast =>
+        Result(name, Normal(ast.toString(grammar = Some(cfg.grammar))))
       }
     case (b: Builtin, Target.BuiltinThis(thisArg))
         if b.thisArg == Some(thisArg) =>
@@ -69,14 +65,18 @@ class AbruptMutator(using cfg: CFG, snippetStorage: SnippetStorage)
 
   /** walker that replaces target AST with snippet */
   class Walker(normalTarget: Target.Normal, snippet: String)
-    extends Util.SingleOptionWalker {
+    extends Util.MultiplicativeListWalker {
     val Target.Normal(name, idx, subIdx, loc) = normalTarget
-    def isTarget(ast: Syntactic): Boolean =
-      ast.name == name && ast.rhsIdx == idx &&
-      ast.subIdx == subIdx && ast.loc == Some(loc)
-    def transformOpt(ast: Syntactic): Option[Syntactic] =
-      Try(
-        esParser(ast.name, ast.args).from(snippet).asInstanceOf[Syntactic],
-      ).toOption
+    override def walk(ast: Syntactic): List[Syntactic] =
+      if (
+        ast.name == name &&
+        ast.rhsIdx == idx &&
+        ast.subIdx == subIdx &&
+        ast.loc == Some(loc)
+      )
+        Try(
+          esParser(ast.name, ast.args).from(snippet).asInstanceOf[Syntactic],
+        ).toOption.map(List(_)).getOrElse(super.walk(ast))
+      else super.walk(ast)
   }
 }

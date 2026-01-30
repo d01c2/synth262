@@ -76,12 +76,16 @@ class TargetMutator(using cfg: CFG)(
 
   /** internal walker for finding and mutating normal target */
   class Walker(normalTarget: Target.Normal, n: Int)
-    extends Util.SingleListWalker {
+    extends Util.MultiplicativeListWalker {
     val Target.Normal(name, idx, subIdx, loc) = normalTarget
-    def isTarget(ast: Syntactic): Boolean =
-      ast.name == name && ast.rhsIdx == idx &&
-      ast.subIdx == subIdx && ast.loc == Some(loc)
-    def transform(ast: Syntactic): List[Syntactic] = TotalWalker(ast, n)
+    override def walk(ast: Syntactic): List[Syntactic] =
+      if (
+        ast.name == name &&
+        ast.rhsIdx == idx &&
+        ast.subIdx == subIdx &&
+        ast.loc == Some(loc)
+      ) TotalWalker(ast, n)
+      else super.walk(ast)
   }
 
   /** internal walker that mutates all internal nodes with same prob. */
