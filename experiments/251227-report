@@ -1225,15 +1225,24 @@ Branch[38179]:T : Reflect.construct.call(0, class { } , 0, 0);
 Branch[38179]:F : Reflect.construct.call(0, class { } , 0, class { } );
 Branch[38179]   : Test262 covered false branch with "test262/test/language/expressions/new.target/value-via-reflect-construct.js"
 
+> [!NOTE]
+> isValid: false "test\built-ins\Reflect\construct\newtarget-is-not-constructor-throws.js"에 존재, esmeta에도 잘 돌아가는데 왜 안되는지 모르겠음
+
 ---
 
 Branch[307]:T : class x { } while ( x ) do ; while ( x , x = - Infinity , x ^= x ** x ) ;
 Branch[307]:F : var x = 0 ** ! x ;
 Branch[307]   : Test262 covered false branch with "test262/test/built-ins/Array/prototype/indexOf/15.4.4.14-5-12.js"
 
+> [!NOTE]
+> isValid: false "test\language\expressions\exponentiation\applying-the-exp-operator_A5.js" 이미있음
+
 Branch[315]:T : class x { } while ( x ) do ; while ( x , x = - 0 , x ^= x -- ** x ) ;
 Branch[315]:F : var x = 1 ** ! x ;
 Branch[315]   : Test262 covered false branch with "test262/test/built-ins/Array/prototype/indexOf/15.4.4.14-5-12.js"
+
+> [!NOTE]
+> isValid: false "test\language\expressions\exponentiation\applying-the-exp-operator_A9.js" 이미있음
 
 Branch[357]:T : var x = x >= [ ~ x * - ! ~ x , ] ;
 Branch[357]:F : '' * - `` ;
@@ -1247,6 +1256,9 @@ Branch[522]:T : class x { } while ( x ) do ; while ( x , x = 1n , x %= x / - x )
 Branch[522]:F : class x { } while ( x ) do ; while ( x , x = 1n , x %= x / x ) ;
 Branch[522]   : Test262 covered false branch with "test262/test/language/expressions/division/bigint-wrapped-values.js"
 
+> [!NOTE]
+> truncate 안의 if, filter돼야 함
+
 Branch[534]:T : class x { } while ( x ) do ; while ( x , x = 0n , x ^= x % ~ x ) ;
 Branch[534]:F : class x { } while ( x ) do ; while ( x , x = 1n , x %= x ) ;
 Branch[534]   : Test262 covered false branch with "test262/test/language/expressions/modulus/bigint-wrapped-values.js"
@@ -1255,9 +1267,15 @@ Branch[538]:T : class x { } while ( x ) do { } while ( x , x = 1n , x %= - x ) ;
 Branch[538]:F : class x { } while ( x ) do ; while ( x , x = 1n , x %= x ) ;
 Branch[538]   : Test262 covered false branch with "test262/test/language/expressions/modulus/bigint-wrapped-values.js"
 
+> [!NOTE]
+> truncate 안의 if, filter돼야 함
+
 Branch[677]:T : var x = ++ x ?. x . x ;
 Branch[677]:F : x = 1 ;
 Branch[677]   : Test262 covered false branch with "test262/test/language/types/reference/8.7.2-3-1-s.js"
+
+> [!NOTE]
+> fuzzing으로 만들어낸 코드가 early error가 뜸, 결과적으로 ReferenceError를 던지는 곳으로 도달하지 못함.
 
 Branch[2521]:T : class x { static { for await ( x of x ) ; } }
 Branch[2521]:F : class x { static { for await ( x of ~ x + x ) ; } }
