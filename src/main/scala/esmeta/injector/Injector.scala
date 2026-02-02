@@ -116,13 +116,24 @@ case class Injector(
           case Array(elements) => CompareArray(tempVar, elements)
     }
 
+    // Generate negative property assertions for property checking branches
+    val negativeAssertions: Vector[Assertion] = interp.negativePropAssertions
+      .filterNot { case (expr, _) => interp.nondetExprs.contains(expr) }
+      .map {
+        case (expr, propName) =>
+          val exprText = expr.toString(grammar = Some(cfg.grammar))
+          VerifyProperty(exprText, propName)
+      }
+
     import esmeta.injector.util.Stringifier.given
     import esmeta.util.BaseUtils.stringify
     val assertionStrs = assertions.map(a => stringify(a))
+    val negativeAssertionStrs = negativeAssertions.map(a => stringify(a))
 
-    // Combine: remaining script + temp vars + assertions
+    // Combine: remaining script + temp vars + assertions + negative assertions
     val parts =
-      Vector(remainingScript).filter(_.nonEmpty) ++ tempVars ++ assertionStrs
+      Vector(remainingScript).filter(_.nonEmpty) ++
+      tempVars ++ assertionStrs ++ negativeAssertionStrs
     parts.mkString("\n")
 
   /** exit status tag */
@@ -180,6 +191,9 @@ object Injector {
   private def mergeCodeVec(a: CodeVec, b: CodeVec): CodeVec =
     (a._1 ++ b._1, a._2 + b._2)
 
+  private def mergeCodeVecs(vs: CodeVec*): CodeVec =
+    vs.foldLeft((Vector[Ast](), ""))((acc, cv) => mergeCodeVec(acc, cv))
+
   def apply(cfg: CFG, src: String, log: Boolean = false): ConformTest =
     val interp = HookingInterpreter(cfg.init.from(src))
     new Injector(cfg, interp, "", src, log).result
@@ -187,14 +201,17 @@ object Injector {
   /** injection from files with harness */
   def fromFile(cfg: CFG, filename: String, log: Boolean = false): ConformTest =
     val scriptParser = cfg.scriptParser
-    // Parse harness files (sta.js + assert.js) from test262/harness
+    // Parse harness files (sta.js + assert.js + propertyHelper.js) from test262/harness
     def getHarness(name: String): CodeVec =
       val (ast, str) = scriptParser.fromFileWithSourceText(
         s"$TEST262_DIR/harness/$name",
       )
       (flattenStmt(ast), str)
-    val harness: CodeVec =
-      mergeCodeVec(getHarness("sta.js"), getHarness("assert.js"))
+    val harness: CodeVec = mergeCodeVecs(
+      getHarness("sta.js"), // default
+      getHarness("assert.js"), // default
+      getHarness("propertyHelper.js"), // for verifyProperty
+    )
     val (harnessStmts, harnessStr) = harness
     // Parse test file with its filename preserved
     val (testAst, testStr) = scriptParser.fromFileWithSourceText(filename)

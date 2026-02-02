@@ -6,6 +6,7 @@ import esmeta.state.*
 enum Assertion:
   case SameValue(variable: String, expected: SimpleValue)
   case CompareArray(variable: String, elements: Vector[ExpectedValue])
+  case VerifyProperty(expr: String, property: String)
 
 /** expected value */
 enum ExpectedValue:

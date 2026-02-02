@@ -37,6 +37,8 @@ class Stringifier {
         app >> s"assert.sameValue($variable, ${expectedValueStr(Simple(expected))}, $msg);"
       case CompareArray(variable, elements) =>
         app >> s"assert.compareArray($variable, ${expectedValueStr(Array(elements))}, $msg);"
+      case VerifyProperty(expr, property) =>
+        app >> s"verifyProperty($expr, \"$property\", undefined);"
 
   private def expectedValueStr(ev: ExpectedValue): String = ev match
     case Simple(sv)   => simpleValueStr(sv)
