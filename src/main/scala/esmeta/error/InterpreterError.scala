@@ -113,3 +113,10 @@ case class AssertionFail(expr: Expr)
   extends InterpreterError(s"assertion failure: $expr")
 case class OutOfRange(list: ListObj, k: Int)
   extends InterpreterError(s"out of range: $k of $list")
+
+// string length exceeded
+// FIXME: ad-hoc guard for preventing OOM, needs a better solution
+case class StringLengthExceeded(length: Long, limit: Long)
+  extends InterpreterError(
+    s"string length exceeded: $length > $limit (limit)",
+  )

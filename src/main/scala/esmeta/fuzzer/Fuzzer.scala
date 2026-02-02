@@ -181,17 +181,11 @@ class Fuzzer(
   )
 
   /** get candidate information */
-  def getCandInfo(code: Code): CandInfo = try {
+  def getCandInfo(code: Code): CandInfo =
     val sourceText = code.toString
     if (!visited.add(sourceText)) CandInfo(visited = true)
     else if (!ValidityChecker(sourceText)) CandInfo(invalid = true)
-    else CandInfo(interp = Some(Success(cov.run(code))))
-  } catch {
-    case e: OutOfMemoryError =>
-      System.gc() // NOTE: Help JVM to recover from OOM
-      CandInfo(interp = Some(Failure(e)))
-    case e: Throwable => CandInfo(interp = Some(Failure(e)))
-  }
+    else CandInfo(interp = Some(Try(cov.run(code))))
 
   /** add new program */
   def add(code: Code): Boolean = add(code, code, getCandInfo(code))

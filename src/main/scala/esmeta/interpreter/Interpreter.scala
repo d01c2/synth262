@@ -505,6 +505,10 @@ class Interpreter(
 
 /** IR interpreter with a CFG */
 object Interpreter {
+
+  /** maximum allowed string length (100MB of chars = 200MB memory) */
+  val MAX_STRING_LENGTH: Long = 100_000_000L
+
   def apply(
     st: State,
     tyCheck: Boolean = false,
@@ -688,7 +692,11 @@ object Interpreter {
           case Str(s)      => s
           case CodeUnit(c) => c.toString
           case v           => throw NoString(v)
-        vopEval(toString, _ + _, Str(_), vs)
+        val strings = vs.map(toString)
+        val totalLength = strings.map(_.length.toLong).sum
+        if (totalLength > MAX_STRING_LENGTH)
+          throw StringLengthExceeded(totalLength, MAX_STRING_LENGTH)
+        Str(strings.reduce(_ + _))
 
   /** transition for mathematical operators */
   def eval(mop: MOp, st: State, vs: List[Value]): Value =
