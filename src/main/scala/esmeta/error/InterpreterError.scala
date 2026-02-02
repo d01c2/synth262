@@ -117,6 +117,4 @@ case class OutOfRange(list: ListObj, k: Int)
 // string length exceeded
 // FIXME: ad-hoc guard for preventing OOM, needs a better solution
 case class StringLengthExceeded(length: Long, limit: Long)
-  extends InterpreterError(
-    s"string length exceeded: $length > $limit (limit)",
-  )
+  extends InterpreterError(s"string length exceeded: $length > $limit (limit)")
