@@ -60,9 +60,28 @@ class RandomMutator(using cfg: CFG)(
       if (isTarget(ast))
         val manuals =
           if (ast.name == "AssignmentExpression")
-            val negNums = List("-0.1", "-0", "-1", "-0n", "-1n", "-Infinity")
-            val specials = List("NaN", "Symbol()")
-            (negNums ++ specials)
+            val nullish = List("null", "undefined")
+            val symbols = List("Symbol()", "Symbol.iterator")
+            val empties = List("\"\"", "[]", "{}")
+            val numericEdges = List(
+              "-0.1",
+              "-0",
+              "-1",
+              "-0n",
+              "-1n",
+              "NaN",
+              "Infinity",
+              "-Infinity",
+              "Number.MAX_SAFE_INTEGER",
+              "Number.MIN_SAFE_INTEGER",
+              "Number.MAX_SAFE_INTEGER + 1",
+              "Number.MAX_VALUE",
+              "-Number.MAX_VALUE",
+              "Number.MIN_VALUE",
+              "-Number.MIN_VALUE",
+              "Number.EPSILON",
+            )
+            (nullish ++ symbols ++ empties ++ numericEdges)
               .map(esParser("AssignmentExpression", ast.args).from)
               .map(_.asInstanceOf[Syntactic])
           else Nil
@@ -72,9 +91,10 @@ class RandomMutator(using cfg: CFG)(
       case "BooleanLiteral" =>
         List("true", "false").map(b => Lexical(lex.name, b))
       case "NumericLiteral" =>
-        List("0.1", "0", "1", "0n", "1n").map(n => Lexical(lex.name, n))
-      case "StringNumericLiteral" => List(Lexical(lex.name, "Infininty"))
-      case _                      => List(lex)
+        List("0", "1", "0.1", "0n", "1n").map(n => Lexical(lex.name, n))
+      case "StringNumericLiteral" =>
+        List("Infinity", "-Infinity", "0", "-0").map(s => Lexical(lex.name, s))
+      case _ => List(lex)
     }
   }
 }
