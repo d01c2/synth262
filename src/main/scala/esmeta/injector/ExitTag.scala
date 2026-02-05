@@ -6,6 +6,6 @@ import esmeta.state.*
 /** exit status tag */
 enum ExitTag:
   case Normal
-  case ThrowValue(errorName: Option[String])
+  case Throw(errorName: Option[String])
   case Timeout
   case SpecError(error: ESMetaError, cursor: Cursor)

@@ -8,10 +8,7 @@ class InjectSmallTest extends InjectorTest {
     val msg = "\"detailed description needed\""
 
     checkStringify("SameValue Assertion")(
-      sameValueTest -> s"""
-      |var __temp1 = 42 ;
-      |assert.sameValue(__temp1, 42.0, $msg);
-      |""".stripMargin.trim,
+      sameValueTest -> s"""assert.sameValue(42 , 42.0, $msg);""",
     )
 
     checkStringify("Throws Assertion")(
@@ -23,10 +20,7 @@ class InjectSmallTest extends InjectorTest {
     )
 
     checkStringify("CompareArray Assertion")(
-      compareArrayTest -> s"""
-      |var __temp1 = [ 1 , 2 , 3 ] ;
-      |assert.compareArray(__temp1, [1.0, 2.0, 3.0], $msg);
-      |""".stripMargin.trim,
+      compareArrayTest -> s"""assert.compareArray([ 1 , 2 , 3 ] , [1.0, 2.0, 3.0], $msg);""",
     )
   }
 

@@ -20,18 +20,15 @@ case class Injector(
   /** exit state */
   private lazy val exitSt: State = interp.result
 
-  /** captured (Expression, expected value) pairs */
-  private lazy val capturedExprs: Vector[(Ast, Value)] =
+  /** capture last ExpressionStatement evaluation and its value */
+  private lazy val lastCapturedExpr: Option[(Ast, Value)] =
     exitSt
-    interp.capturedExprs.toVector
+    interp.lastCapturedExpr
 
-  /** the last expression text (for throw wrapping) */
+  /** the last Expression text (for throw wrapping) */
   lazy val throwingExprText: Option[String] =
     if (normalExit) None
-    else
-      capturedExprs.lastOption.map {
-        case (expr, _) => expr.toString(grammar = Some(cfg.grammar))
-      }
+    else lastCapturedExpr.map(_._1.toString(grammar = Some(cfg.grammar)))
 
   /** generated conformance test */
   lazy val conformTest: ConformTest =
@@ -43,15 +40,13 @@ case class Injector(
   /** original script (merged harness + test) */
   lazy val originalScript: String = exitSt.cachedSourceText.get
 
-  /** Expressions to capture with temp variables */
-  private lazy val exprsToCapture: Vector[(Ast, Value)] =
-    val candidates =
-      if (normalExit) capturedExprs // all expressions
-      else capturedExprs.dropRight(1) // all except the throwing one
-    // Filter out non-deterministic expressions
-    candidates.filterNot { case (expr, _) => interp.nondetExprs.contains(expr) }
+  /** Last expression to wrap (only for normal exit) */
+  private lazy val exprToWrap: Option[(Ast, Value)] =
+    if (normalExit)
+      lastCapturedExpr.filterNot((expr, _) => interp.nondetExprs.contains(expr))
+    else None
 
-  /** Full script with temp vars and assertions */
+  /** Full script with assertion wrapping the last expression */
   lazy val injectedScript: String =
     val msg = "\"detailed description needed\""
 
@@ -60,7 +55,7 @@ case class Injector(
       if (normalExit) testContent.length
       else
         (for {
-          (ast, _) <- capturedExprs.lastOption
+          (ast, _) <- lastCapturedExpr
           loc <- ast.loc
         } yield loc.start.offset).getOrElse(testContent.length)
 
@@ -70,70 +65,51 @@ case class Injector(
       while (i < testContent.length && testContent(i).isWhitespace) i += 1
       if (i < testContent.length && testContent(i) == ';') i + 1 else end
 
-    // Build remaining script
-    val remainingScript: String =
-      if (exprsToCapture.isEmpty)
-        if (truncateAt >= testContent.length) testContent
-        else testContent.substring(0, truncateAt).trim
-      else
-        val removals = (for {
-          (expr, _) <- exprsToCapture
+    // Build remaining script (with last expression removed if we're wrapping it)
+    val remainingScript: String = exprToWrap match
+      case Some((expr, _)) =>
+        // Remove the last expression from the script
+        (for {
           loc <- expr.loc
-          (start, end) = (loc.start.offset, loc.end.offset)
-        } yield (start, extendToSemicolon(end))).sortBy(_._1)
-        val result = new StringBuilder
-        var lastEnd = 0
-        for (
-          (start, end) <- removals
-          if start >= lastEnd && start < truncateAt
-        ) do
-          if (start > lastEnd)
-            result.append(
-              testContent.substring(lastEnd, math.min(start, truncateAt)),
-            )
-          lastEnd = end
-        if (lastEnd < truncateAt)
-          result.append(testContent.substring(lastEnd, truncateAt))
-        result.toString.trim
+          (start, end) = (loc.start.offset, extendToSemicolon(loc.end.offset))
+        } yield {
+          val before = testContent.substring(0, start)
+          val after =
+            if (end < testContent.length) testContent.substring(end)
+            else ""
+          (before + after).trim
+        }).getOrElse(testContent.trim)
+      case None =>
+        if (truncateAt >= testContent.length) testContent.trim
+        else testContent.substring(0, truncateAt).trim
 
-    // Generate temp var declarations and assertions
-    val captured: Vector[(String, ExpectedValue)] = exprsToCapture.flatMap {
+    // Generate assertion for the last expression (wrap directly, no temp var)
+    val assertion: Option[Assertion] = exprToWrap.flatMap {
       case (expr, value) =>
         val exprText = expr.toString(grammar = Some(cfg.grammar))
-        extractValue(value).map(ev => (exprText, ev))
-    }
-
-    val tempVars = captured.zipWithIndex.map {
-      case ((exprText, _), idx) =>
-        s"var __temp${idx + 1} = $exprText;"
-    }
-
-    val assertions: Vector[Assertion] = captured.zipWithIndex.map {
-      case ((_, expected), idx) =>
-        val tempVar = s"__temp${idx + 1}"
-        expected match
-          case Simple(sv)      => SameValue(tempVar, sv)
-          case Array(elements) => CompareArray(tempVar, elements)
+        extractValue(value).map {
+          case Simple(sv)      => SameValue(exprText, sv)
+          case Array(elements) => CompareArray(exprText, elements)
+        }
     }
 
     // Generate negative property assertions for property checking branches
     val negativeAssertions: Vector[Assertion] = interp.negativePropAssertions
-      .filterNot { case (expr, _) => interp.nondetExprs.contains(expr) }
-      .map {
-        case (expr, propName) =>
-          val exprText = expr.toString(grammar = Some(cfg.grammar))
-          VerifyProperty(exprText, propName)
-      }
+      .filterNot((expr, _) => interp.nondetExprs.contains(expr))
+      .map((expr, propName) =>
+        val exprText = expr.toString(grammar = Some(cfg.grammar))
+        VerifyProperty(exprText, propName),
+      )
 
     import esmeta.injector.util.Stringifier.given
     import esmeta.util.BaseUtils.stringify
-    val assertionStrs = assertions.map(a => stringify(a))
+    val assertionStrs = assertion.map(a => stringify(a)).toVector
     val negativeAssertionStrs = negativeAssertions.map(a => stringify(a))
 
-    // Combine: remaining script + temp vars + assertions + negative assertions
+    // Combine: remaining script + assertion + negative assertions
     val parts =
       Vector(remainingScript).filter(_.nonEmpty) ++
-      tempVars ++ assertionStrs ++ negativeAssertionStrs
+      assertionStrs ++ negativeAssertionStrs
     parts.mkString("\n")
 
   /** exit status tag */

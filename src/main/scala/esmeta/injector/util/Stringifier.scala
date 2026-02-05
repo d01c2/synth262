@@ -22,21 +22,22 @@ class Stringifier {
     if (script.nonEmpty) app >> script
 
     exitTag match
-      case ExitTag.ThrowValue(Some(name)) =>
+      case ExitTag.Throw(Some(name)) =>
         throwExpr.foreach { expr =>
-          app.wrap(s"assert.throws($name, function () {", s"}, $msg);") {
-            app :> expr >> ";"
-          }
+          app.wrap(
+            s"assert.throws($name, function () {",
+            s"}, $msg);",
+          ) { app :> expr >> ";" }
         }
       case _ => ()
     app
 
   given assertionRule: Rule[Assertion] = (app, assertion) =>
     assertion match
-      case SameValue(variable, expected) =>
-        app >> s"assert.sameValue($variable, ${expectedValueStr(Simple(expected))}, $msg);"
-      case CompareArray(variable, elements) =>
-        app >> s"assert.compareArray($variable, ${expectedValueStr(Array(elements))}, $msg);"
+      case SameValue(expr, expected) =>
+        app >> s"assert.sameValue($expr, ${expectedValueStr(Simple(expected))}, $msg);"
+      case CompareArray(expr, elements) =>
+        app >> s"assert.compareArray($expr, ${expectedValueStr(Array(elements))}, $msg);"
       case VerifyProperty(expr, property) =>
         app >> s"verifyProperty($expr, \"$property\", undefined);"
 
@@ -48,10 +49,10 @@ class Stringifier {
     case Number(Double.PositiveInfinity) => "Infinity"
     case Number(Double.NegativeInfinity) => "-Infinity"
     case Number(n) if n.isNaN            => "NaN"
-    case Number(n)                       => n.toString
+    case Number(n)                       => s"$n"
     case BigInt(n)                       => s"${n}n"
     case Str(s)                          => s"\"$s\""
-    case Bool(b)                         => b.toString
+    case Bool(b)                         => s"$b"
     case Undef                           => "undefined"
     case Null                            => "null"
 

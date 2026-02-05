@@ -4,8 +4,8 @@ import esmeta.state.*
 
 /** assertions for conformance tests */
 enum Assertion:
-  case SameValue(variable: String, expected: SimpleValue)
-  case CompareArray(variable: String, elements: Vector[ExpectedValue])
+  case SameValue(expr: String, expected: SimpleValue)
+  case CompareArray(expr: String, elements: Vector[ExpectedValue])
   case VerifyProperty(expr: String, property: String)
 
 /** expected value */

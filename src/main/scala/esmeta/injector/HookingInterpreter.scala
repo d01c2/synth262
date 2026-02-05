@@ -15,8 +15,8 @@ import scala.util.matching.Regex
 class HookingInterpreter(val initSt: State) extends Interpreter(initSt) {
   import HookingInterpreter.*
 
-  /** captured (Expression, Value) pairs from ExpressionStatement evaluations */
-  val capturedExprs: ListBuffer[(Ast, Value)] = ListBuffer()
+  /** capture last ExpressionStatement evaluation and capture its value */
+  var lastCapturedExpr: Option[(Ast, Value)] = None
 
   /** Expression ASTs whose evaluation involved non-deterministic operations */
   // TODO: Only tracks ERandom for now; need to consider other non-deterministic operations
@@ -103,7 +103,7 @@ class HookingInterpreter(val initSt: State) extends Interpreter(initSt) {
         exprStmt = astValue.asAst
         if !isFromHarness(exprStmt)
         expr = extractExpr(exprStmt)
-      } capturedExprs += ((expr, value))
+      } lastCapturedExpr = Some((expr, value))
       try super.eval(cursor)
       catch { case e: InterpreterError => throw InterpreterErrorAt(e, cursor) }
     case _ =>
@@ -124,7 +124,7 @@ class HookingInterpreter(val initSt: State) extends Interpreter(initSt) {
         case addr: Addr =>
           st(addr) match
             case ListObj(values) =>
-              ExitTag.ThrowValue(values.headOption.flatMap(getErrorName))
+              ExitTag.Throw(values.headOption.flatMap(getErrorName))
             case _ => raise(s"unexpected exit status: ${st.getString(addr)}")
         case v => raise(s"unexpected exit status: ${st.getString(v)}")
     } catch {
