@@ -8,4 +8,4 @@ enum ExitTag:
   case Normal
   case Throw(errorName: Option[String])
   case Timeout
-  case SpecError(error: ESMetaError, cursor: Cursor)
+  case SpecError(error: ESMetaError)

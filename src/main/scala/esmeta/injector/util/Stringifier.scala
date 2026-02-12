@@ -6,40 +6,33 @@ import esmeta.util.Appender.*
 import esmeta.util.BaseUtils.*
 
 /** stringifier for injector elements */
-object Stringifier {
-  val stringifier = new Stringifier()
-  export stringifier.given
-}
-
 class Stringifier {
   import Assertion.*, ExpectedValue.*
 
-  val msg = "\"detailed description needed\""
+  val description = "\"detailed description needed\""
 
   given conformTestRule: Rule[ConformTest] = (app, test) =>
-    val ConformTest(_, script, exitTag, throwExpr) = test
+    val ConformTest(script, exitTag, throwTarget) = test
 
     if (script.nonEmpty) app >> script
 
-    exitTag match
-      case ExitTag.Throw(Some(name)) =>
-        throwExpr.foreach { expr =>
-          app.wrap(
-            s"assert.throws($name, function () {",
-            s"}, $msg);",
-          ) { app :> expr >> ";" }
-        }
-      case _ => ()
+    (exitTag, throwTarget) match
+      case (ExitTag.Throw(Some(error)), Some(expr)) =>
+        app.wrap(
+          s"assert.throws($error, function () {",
+          s"}, $description);",
+        ) { app :> expr >> ";" }
+      case _ =>
     app
 
   given assertionRule: Rule[Assertion] = (app, assertion) =>
     assertion match
-      case SameValue(expr, expected) =>
-        app >> s"assert.sameValue($expr, ${expectedValueStr(Simple(expected))}, $msg);"
-      case CompareArray(expr, elements) =>
-        app >> s"assert.compareArray($expr, ${expectedValueStr(Array(elements))}, $msg);"
-      case VerifyProperty(expr, property) =>
-        app >> s"verifyProperty($expr, \"$property\", undefined);"
+      case SameValue(exprSource, expected) =>
+        app >> s"assert.sameValue($exprSource, ${expectedValueStr(Simple(expected))}, $description);"
+      case CompareArray(exprSource, elements) =>
+        app >> s"assert.compareArray($exprSource, ${expectedValueStr(Array(elements))}, $description);"
+      case VerifyProperty(objSource, property) =>
+        app >> s"verifyProperty($objSource, \"$property\", undefined);"
 
   private def expectedValueStr(ev: ExpectedValue): String = ev match
     case Simple(sv)   => simpleValueStr(sv)

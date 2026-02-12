@@ -4,114 +4,148 @@ import esmeta.cfg.*
 import esmeta.error.*
 import esmeta.es.*
 import esmeta.interpreter.*
-import esmeta.ir.*
+import esmeta.ir.{Func => IRFunc, *}
 import esmeta.state.*
 import esmeta.util.BaseUtils.*
 import java.util.concurrent.TimeoutException
-import scala.collection.mutable.{ListBuffer, Map => MMap, Set => MSet}
+import scala.collection.mutable.{ListBuffer, Set => MSet}
 import scala.util.matching.Regex
 
 /** Hooking interpreter for assertion generation */
 class HookingInterpreter(val initSt: State) extends Interpreter(initSt) {
   import HookingInterpreter.*
 
-  /** capture last ExpressionStatement evaluation and capture its value */
-  var lastCapturedExpr: Option[(Ast, Value)] = None
+  // last ExpressionStatement result captured during evaluation
+  var lastEvaluatedExpr: Option[(Ast, Value)] = None
 
-  /** Expression ASTs whose evaluation involved non-deterministic operations */
-  // TODO: Only tracks ERandom for now; need to consider other non-deterministic operations
-  val nondetExprs: MSet[Ast] = MSet()
+  // whether the last evaluated expression involved non-deterministic operations
+  // FIXME: Only tracks ERandom for now; need to consider other non-deterministic operations
+  var isLastExprNonDeterministic: Boolean = false
 
-  /** tracked property checking calls */
-  private val propCheckCalls: MMap[Local, String] = MMap()
+  // whether the current ExpressionStatement evaluation is non-deterministic
+  private var _isNonDeterministic: Boolean = false
 
-  /** negative property assertions */
-  private val negativeProps: MSet[(Ast, String)] = MSet()
-  def negativePropAssertions: Vector[(Ast, String)] = negativeProps.toVector
+  // locals assigned by property-reading algorithm calls, scoped by function
+  private val propertyCheckLocals: MSet[(Func, Local)] = MSet()
 
-  /** Exit tag computed from final state */
-  lazy val exitTag: ExitTag = computeExitTag(result)
+  // pending effects from untaken branches, awaiting validation at ExprStmt exit
+  private val pendingEffects: ListBuffer[(Addr, String)] = ListBuffer()
 
-  private val ExprStmtEvalFuncName: Regex =
+  // validated (expression, property) pairs for absent-property assertions
+  private val validatedAbsentProperties: MSet[(Ast, String)] = MSet()
+  def absentPropertyAssertions: Vector[(Ast, String)] =
+    validatedAbsentProperties.toVector
+
+  // Exit tag computed from final state
+  lazy val exitTag: ExitTag = getExitTag(result)
+
+  private val exprStmtEvalPattern: Regex =
     """^ExpressionStatement\[\d+,\d+\]\.Evaluation$""".r
 
-  /** Check if AST is from harness */
-  private def isFromHarness(ast: Ast): Boolean = (for {
-    loc <- ast.loc
-    filename <- loc.filename
-  } yield filename.contains("test262/harness")).getOrElse(false)
+  private def getExpression(exprStmt: Ast): Ast = exprStmt.children(0).get
 
-  /** Extract Expression from ExpressionStatement AST */
-  private def extractExpr(exprStmt: Ast): Ast = exprStmt.children(0).get
-
-  /** Find enclosing ExpressionStatement from call stack */
-  private def enclosingExprStmt: Option[Ast] =
-    (st.context :: st.callStack.map(_.context)).collectFirst {
-      case ctxt if ExprStmtEvalFuncName.matches(ctxt.func.name) =>
-        ctxt.locals.get(NAME_THIS).map(astValue => extractExpr(astValue.asAst))
-    }.flatten
-
-  /** Hook expression evaluation to track non-deterministic Expressions */
+  // Hook expression evaluation to track non-deterministic Expressions
   override def eval(expr: Expr): Value = expr match
-    case ERandom() =>
-      enclosingExprStmt.foreach(nondetExprs += _)
-      super.eval(expr)
-    case _ => super.eval(expr)
+    case ERandom() => _isNonDeterministic = true; super.eval(expr)
+    case _         => super.eval(expr)
 
-  /** hook call evaluation to track property checking calls */
+  // Hook call evaluation to track property-checking calls
   override def eval(call: Call): Unit = call.callInst match
-    case ICall(lhs, EClo(name, _), args) if propCheckAlgos.contains(name) =>
-      extractPropName(args).foreach(propCheckCalls += lhs -> _)
+    case ICall(lhs, EClo(name, _), _) if propReadingAlgos.contains(name) =>
+      propertyCheckLocals += ((st.func, lhs))
       super.eval(call)
     case _ => super.eval(call)
 
-  /** hook branch movement to track false property checking branches */
+  // Hook branch movement to record pending effects from untaken branches
   override def moveBranch(branch: Branch, cond: Boolean): Unit =
-    if (!cond) for {
-      propName <- findPropForBranch(branch)
-      expr <- enclosingExprStmt
-    } negativeProps += ((expr, propName))
+    if (!cond && isPropertyCheckBranch(branch)) for {
+      (targetExpr, writtenProp) <- extractEffects(branch.thenNode)
+      targetAddr <- resolveExprToAddr(targetExpr)
+    } pendingEffects += ((targetAddr, writtenProp))
     super.moveBranch(branch, cond)
 
-  /** find property name if branch depends on a property checking call */
-  private def findPropForBranch(branch: Branch): Option[String] =
+  // Check if a branch condition depends on a property-check result
+  private def isPropertyCheckBranch(branch: Branch): Boolean =
     branch.cond match
-      case ERef(x: Local) => findPropFromVar(x)
-      case _ => extractLocal(branch.cond).flatMap(propCheckCalls.get)
+      case ERef(x: Local) => isTracedToPropertyCheck(st.func, x)
+      case _ =>
+        extractLocalVar(branch.cond).exists(
+          propertyCheckLocals.contains(st.func, _),
+        )
 
-  /** trace variable back to property checking call */
-  private def findPropFromVar(x: Local): Option[String] =
-    propCheckCalls.get(x) match
-      case Some(prop) => Some(prop)
-      case None =>
-        (for {
-          case block: Block <- st.func.nodes
-          inst <- block.insts
-          y <- inst match
-            case ILet(lhs, expr) if lhs == x           => extractLocal(expr)
-            case IAssign(lhs: Local, expr) if lhs == x => extractLocal(expr)
-            case _                                     => None
-          prop <- propCheckCalls.get(y)
-        } yield prop).headOption
+  // Trace a variable back through assignments to a property-check origin
+  private def isTracedToPropertyCheck(func: Func, x: Local): Boolean =
+    propertyCheckLocals.contains((func, x)) || (for {
+      case block: Block <- func.nodes
+      inst <- block.insts
+      y <- inst match
+        case ILet(lhs, expr) if lhs == x           => extractLocalVar(expr)
+        case IAssign(lhs: Local, expr) if lhs == x => extractLocalVar(expr)
+        case _                                     => None
+      if propertyCheckLocals.contains((func, y))
+    } yield ()).nonEmpty
 
-  /** transition for cursors - hooks ExpressionStatement exit */
+  // Walk the untaken true branch for property-writing call effects
+  private def extractEffects(node: Option[Node]): List[(Expr, String)] =
+    val results = ListBuffer[(Expr, String)]()
+    var current = node
+    var depth = 0
+    while (current.isDefined && depth < 20) {
+      current.get match
+        case block: Block => current = block.next
+        case call: Call =>
+          call.callInst match
+            case ICall(_, EClo(name, _), target :: EStr(prop) :: _)
+                if propWritingAlgos.contains(name) =>
+              results += ((target, prop))
+              current = call.next
+            case _ => current = call.next
+        case branch: Branch if branch.isAbruptNode => current = branch.elseNode
+        case _: Branch                             => current = None
+      depth += 1
+    }
+    results.toList
+
+  // Resolve a local-variable expression to its runtime address
+  private def resolveExprToAddr(expr: Expr): Option[Addr] = expr match
+    case ERef(x: Local) =>
+      st.context.locals.get(x).collect { case addr: Addr => addr }
+    case _ => None
+
+  // Resolve a result value to an address, unwrapping CompletionRecord
+  private def resolveResultToAddr(value: Value): Option[Addr] = value match
+    case addr: Addr =>
+      st.unwrapComp(addr) match
+        case Some(inner: Addr) => Some(inner)
+        case _                 => Some(addr)
+    case _ => None
+
+  // Hook cursor transition to capture ExpressionStatement exit
   override def eval(cursor: Cursor): Boolean = cursor match
-    case ExitCursor(func) if ExprStmtEvalFuncName.matches(func.name) =>
+    case ExitCursor(func) if exprStmtEvalPattern.matches(func.name) =>
       for {
         (_, value) <- st.context.retVal
         astValue <- st.context.locals.get(NAME_THIS)
-        exprStmt = astValue.asAst
-        if !isFromHarness(exprStmt)
-        expr = extractExpr(exprStmt)
-      } lastCapturedExpr = Some((expr, value))
+        expr = getExpression(astValue.asAst)
+      } {
+        lastEvaluatedExpr = Some((expr, value))
+        isLastExprNonDeterministic = _isNonDeterministic
+        if (!_isNonDeterministic) for {
+          resultAddr <- resolveResultToAddr(value)
+          (targetAddr, propName) <- pendingEffects
+          if targetAddr == resultAddr
+        } validatedAbsentProperties += ((expr, propName))
+      }
+      pendingEffects.clear()
+      _isNonDeterministic = false // reset
       try super.eval(cursor)
-      catch { case e: InterpreterError => throw InterpreterErrorAt(e, cursor) }
+      catch { case e: InterpreterError => throw e }
     case _ =>
       try super.eval(cursor)
-      catch { case e: InterpreterError => throw InterpreterErrorAt(e, cursor) }
+      catch { case e: InterpreterError => throw e }
 
-  /** Compute exit tag from final state */
-  private def computeExitTag(st: State): ExitTag =
+  // get ExitTag from final state
+  private def getExitTag(st: State): ExitTag =
     try {
       def getErrorName(error: Value): Option[String] = for {
         case proto: Addr <- Some(st(error, Str("Prototype")))
@@ -128,21 +162,34 @@ class HookingInterpreter(val initSt: State) extends Interpreter(initSt) {
             case _ => raise(s"unexpected exit status: ${st.getString(addr)}")
         case v => raise(s"unexpected exit status: ${st.getString(v)}")
     } catch {
-      case _: TimeoutException   => ExitTag.Timeout
-      case e: InterpreterErrorAt => ExitTag.SpecError(e.error, e.cursor)
+      case _: TimeoutException => ExitTag.Timeout
+      case e: InterpreterError => ExitTag.SpecError(e)
     }
 }
 
 object HookingInterpreter {
-  // property checking algorithms
-  val propCheckAlgos: Set[String] = Set("HasProperty")
 
-  // extract first string literal from arguments
-  def extractPropName(args: List[Expr]): Option[String] =
-    args.collectFirst { case EStr(s) => s }
+  // manually selected algorithms, whose purpose is reading property
+  val propReadingAlgos: Set[String] = Set(
+    "Get",
+    "GetMethod",
+    "HasOwnProperty",
+    "HasProperty",
+    "OrdinaryGetOwnProperty",
+  )
 
-  // extract Local from expression
-  def extractLocal(expr: Expr): Option[Local] = expr match
+  // manually selected algorithms, whose purpose is writing property
+  val propWritingAlgos: Set[String] = Set(
+    "CreateDataProperty",
+    "CreateDataPropertyOrThrow",
+    "CreateNonEnumerableDataPropertyOrThrow",
+    "DefineMethodProperty",
+    "DefinePropertyOrThrow",
+    "Set",
+  )
+
+  // extract a Local variable reference from an expression
+  def extractLocalVar(expr: Expr): Option[Local] = expr match
     case EBinary(BOp.Eq, ERef(x: Local), EBool(_)) => Some(x)
     case EBinary(BOp.Eq, EBool(_), ERef(x: Local)) => Some(x)
     case ERef(x: Local)                            => Some(x)

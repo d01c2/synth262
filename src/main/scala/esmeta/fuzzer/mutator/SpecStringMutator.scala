@@ -194,9 +194,10 @@ object SpecStringMutator {
 
   // manually selected algorithms, whose purpose is reading property
   val propReadingAlgos = Set(
-    "HasProperty",
-    "GetMethod",
     "Get",
+    "GetMethod",
+    "HasOwnProperty",
+    "HasProperty",
     "OrdinaryGetOwnProperty",
   )
 

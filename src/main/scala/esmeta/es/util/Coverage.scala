@@ -192,7 +192,7 @@ case class Coverage(
 
     if (!all && updated)
       _minimalInfo += script.name -> ScriptInfo(
-        // TODO ConformTest.createTest(cfg, finalSt),
+        // TODO generate ConformTest from finalSt
         touchedNodeViews.keys,
         touchedCondViews.keys,
       )
