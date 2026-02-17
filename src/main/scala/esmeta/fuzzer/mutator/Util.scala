@@ -3,6 +3,7 @@ package esmeta.fuzzer.mutator
 import esmeta.es.*
 import esmeta.es.util.*
 import esmeta.es.util.Coverage.*
+import esmeta.fuzzer.Snippet
 import esmeta.spec.Grammar
 import esmeta.util.*
 
@@ -18,26 +19,27 @@ object Util {
   val simpleAstCounter = new AstCounter(_ => true)
 
   trait ListWalker {
-    def walkOpt(opt: Option[Ast]): List[Option[Ast]] = opt match {
-      case None      => List(None)
-      case Some(ast) => walk(ast).map(ast => Some(ast))
+    def walkOpt(
+      opt: Option[Ast],
+    ): List[(Option[Ast], Option[Snippet])] = opt match {
+      case None      => List((None, None))
+      case Some(ast) => walk(ast).map((a, s) => (Some(a), s))
     }
-    def walk(ast: Ast): List[Ast] = ast match
-      case ast: Lexical   => walk(ast)
-      case ast: Syntactic => walk(ast)
-    def walk(ast: Lexical): List[Lexical] = List(ast)
-    def walk(ast: Syntactic): List[Syntactic]
+    def walk(ast: Ast): List[(Ast, Option[Snippet])] = ast match
+      case ast: Lexical   => walk(ast).map((a, s) => (a: Ast, s))
+      case ast: Syntactic => walk(ast).map((a, s) => (a: Ast, s))
+    def walk(ast: Lexical): List[(Lexical, Option[Snippet])] = List((ast, None))
+    def walk(ast: Syntactic): List[(Syntactic, Option[Snippet])]
   }
-
-  private type Childrens = List[Vector[Option[Ast]]]
 
   // should be used carefully because this can explode the size of created program so easily
   trait MultiplicativeListWalker extends ListWalker {
     def preChild(ast: Syntactic, i: Int): Unit = ()
     def postChild(ast: Syntactic, i: Int): Unit = ()
 
-    def walk(ast: Syntactic): List[Syntactic] =
+    def walk(ast: Syntactic): List[(Syntactic, Option[Snippet])] =
       val Syntactic(name, args, rhsIdx, children) = ast
+      type Annotated = (Vector[Option[Ast]], Option[Snippet])
       val newChildrens = children.zipWithIndex
         .map((childOpt, i) => {
           preChild(ast, i)
@@ -45,14 +47,14 @@ object Util {
           postChild(ast, i)
           result
         })
-        .foldLeft[Childrens](List(Vector()))((childrens, childs) => {
+        .foldLeft[List[Annotated]](List((Vector(), None)))((acc, childs) =>
           for {
-            childrens <- childrens
-            child <- childs
-          } yield (childrens :+ child)
-        })
-      newChildrens.map(newChildren =>
-        Syntactic(name, args, rhsIdx, newChildren),
+            (accChildren, accSnippet) <- acc
+            (child, childSnippet) <- childs
+          } yield (accChildren :+ child, accSnippet.orElse(childSnippet)),
+        )
+      newChildrens.map((newChildren, snippet) =>
+        (Syntactic(name, args, rhsIdx, newChildren), snippet),
       )
 
     // Calculate the most efficient parameter for the multiplicative calculator.
@@ -77,20 +79,23 @@ object Util {
   }
 
   trait AdditiveListWalker extends ListWalker {
-    def walk(ast: Syntactic): List[Syntactic] =
+    def walk(ast: Syntactic): List[(Syntactic, Option[Snippet])] =
       val Syntactic(name, args, rhsIdx, children) = ast
-      // pair of processed childrens and unprocessed childrens
-      val initStat: (Childrens, Childrens) = (List(), List(Vector()))
+      type Annotated = (Vector[Option[Ast]], Option[Snippet])
+      val initStat: (List[Annotated], List[Vector[Option[Ast]]]) =
+        (List(), List(Vector()))
       val newStat = children
-        .foldLeft[(Childrens, Childrens)](initStat)((stat, child) => {
+        .foldLeft(initStat)((stat, child) => {
           val (done, yet) = stat
-          val done1 = done.map(_ :+ child)
-          val done2: Childrens = for {
-            child <- walkOpt(child)
+          val done1 = done.map((cs, s) => (cs :+ child, s))
+          val done2: List[Annotated] = for {
+            (walkedChild, childSnippet) <- walkOpt(child)
             children <- yet
-          } yield (children :+ child)
+          } yield (children :+ walkedChild, childSnippet)
           (done1 ++ done2, yet.map(_ :+ child))
         })
-      newStat._1.map(newChildren => Syntactic(name, args, rhsIdx, newChildren))
+      newStat._1.map((newChildren, snippet) =>
+        (Syntactic(name, args, rhsIdx, newChildren), snippet),
+      )
   }
 }

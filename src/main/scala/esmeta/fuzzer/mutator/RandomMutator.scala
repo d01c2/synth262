@@ -2,7 +2,7 @@ package esmeta.fuzzer.mutator
 
 import esmeta.es.*
 import esmeta.es.util.{Walker => AstWalker, *}
-import esmeta.es.util.Coverage.*
+import esmeta.fuzzer.*
 import esmeta.util.BaseUtils.*
 import esmeta.fuzzer.synthesizer.*
 import esmeta.cfg.CFG
@@ -11,7 +11,7 @@ import esmeta.cfg.CFG
 class RandomMutator(using cfg: CFG)(
   val synBuilder: Synthesizer.Builder = RandomSynthesizer,
 ) extends Mutator {
-  import Mutator.*, RandomMutator.*, Code.*
+  import Mutator.*, RandomMutator.*, Coverage.*, Snippet.*
 
   /** synthesizer */
   val synthesizer = synBuilder(cfg.grammar)
@@ -24,9 +24,14 @@ class RandomMutator(using cfg: CFG)(
     n: Int,
     target: Option[(CondView, Coverage)],
   ): Seq[Result] = code match
-    case Normal(str) =>
-      apply(str, n, target).map(str => Result(name, Normal(str)))
-    case builtin @ Builtin(_, _, _, preStmts, postStmts) =>
+    case Code.Normal(str) =>
+      val ast = scriptParser.from(str)
+      apply(ast, n, target).map { (mutatedAst, snippet) =>
+        val mutatedStr = mutatedAst.toString(grammar = Some(cfg.grammar))
+        Result(name, Code.Normal(mutatedStr), snippet)
+      }
+    case builtin: Code.Builtin =>
+      val (preStmts, postStmts) = (builtin.preStmts, builtin.postStmts)
       if ((preStmts.isDefined || postStmts.isDefined) && randBool) {
         // mutate statements
         (preStmts, postStmts) match
@@ -42,20 +47,24 @@ class RandomMutator(using cfg: CFG)(
       }
 
   /** mutate ASTs */
-  def apply(ast: Ast, n: Int, target: Option[(CondView, Coverage)]): Seq[Ast] =
+  def apply(
+    ast: Ast,
+    n: Int,
+    target: Option[(CondView, Coverage)],
+  ): Seq[(Ast, Option[Snippet])] =
     // count of mutation target asts
     val k = targetAstCounter(ast)
     if (k > 0) {
       c = (n - 1) / k + 1
       shuffle(Walker.walk(ast)).take(n)
-    } else List.fill(n)(ast)
+    } else List.fill(n)((ast, None))
 
   /** number of new candidates to make for each target */
   private var c = 0
 
   /** internal walker */
   object Walker extends Util.AdditiveListWalker {
-    override def walk(ast: Syntactic): List[Syntactic] =
+    override def walk(ast: Syntactic): List[(Syntactic, Option[Snippet])] =
       val mutants = super.walk(ast)
       if (isTarget(ast))
         val manuals =
@@ -83,19 +92,32 @@ class RandomMutator(using cfg: CFG)(
             )
             (nullish ++ symbols ++ empties ++ numericEdges)
               .map(esParser("AssignmentExpression", ast.args).from)
-              .map(_.asInstanceOf[Syntactic])
+              .map(ast => (ast.asInstanceOf[Syntactic], Some(AstSnippet(ast))))
           else Nil
-        manuals ++ List.tabulate(c)(_ => synthesizer(ast)) ++ mutants
+        val synthesized = List.tabulate(c) { _ =>
+          val newAst = synthesizer(ast)
+          (newAst, Some(AstSnippet(newAst)))
+        }
+        manuals ++ synthesized ++ mutants
       else mutants
-    override def walk(lex: Lexical): List[Lexical] = lex.name match {
-      case "BooleanLiteral" =>
-        List("true", "false").map(b => Lexical(lex.name, b))
-      case "NumericLiteral" =>
-        List("0", "1", "0.1", "0n", "1n").map(n => Lexical(lex.name, n))
-      case "StringNumericLiteral" =>
-        List("Infinity", "-Infinity", "0", "-0").map(s => Lexical(lex.name, s))
-      case _ => List(lex)
-    }
+    override def walk(lex: Lexical): List[(Lexical, Option[Snippet])] =
+      lex.name match
+        case "BooleanLiteral" =>
+          List("true", "false").map { b =>
+            val newAst = Lexical(lex.name, b)
+            (newAst, Some(AstSnippet(newAst)))
+          }
+        case "NumericLiteral" =>
+          List("0", "1", "0.1", "0n", "1n").map { n =>
+            val newAst = Lexical(lex.name, n)
+            (newAst, Some(AstSnippet(newAst)))
+          }
+        case "StringNumericLiteral" =>
+          List("Infinity", "-Infinity", "0", "-0").map { s =>
+            val newAst = Lexical(lex.name, s)
+            (newAst, Some(AstSnippet(newAst)))
+          }
+        case _ => List((lex, None))
   }
 }
 object RandomMutator {

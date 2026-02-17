@@ -3,7 +3,7 @@ package esmeta.fuzzer.mutator
 import esmeta.cfg.{CFG, Func, Call}
 import esmeta.es.*
 import esmeta.es.util.*
-import esmeta.es.util.Coverage.*
+import esmeta.fuzzer.*
 import esmeta.fuzzer.synthesizer.*
 import esmeta.ir.*
 import esmeta.util.BaseUtils.*
@@ -11,9 +11,8 @@ import esmeta.util.BaseUtils.*
 /** A mutator that generates based on strings in spec literals */
 class SpecStringMutator(using cfg: CFG)(
   val synBuilder: Synthesizer.Builder = RandomSynthesizer,
-) extends Mutator
-  with Walker {
-  import Mutator.*, SpecStringMutator.*, Code.*
+) extends Mutator {
+  import Mutator.*, SpecStringMutator.*, Coverage.*, Snippet.*
 
   val randomMutator = RandomMutator()
 
@@ -27,9 +26,13 @@ class SpecStringMutator(using cfg: CFG)(
     n: Int,
     target: Option[(CondView, Coverage)],
   ): Seq[Result] = code match
-    case Normal(str) =>
-      apply(str, n, target).map(str => Result(name, Normal(str)))
-    case builtin @ Builtin(_, _, _, preStmts, postStmts) =>
+    case Code.Normal(str) =>
+      val ast = scriptParser.from(str)
+      apply(ast, n, target).map { (mutatedAst, snippet) =>
+        val mutatedStr = mutatedAst.toString(grammar = Some(cfg.grammar))
+        Result(name, Code.Normal(mutatedStr), snippet)
+      }
+    case builtin @ Code.Builtin(_, _, _, preStmts, postStmts) =>
       if ((preStmts.isDefined || postStmts.isDefined) && randBool) {
         // mutate statements
         (preStmts, postStmts) match
@@ -45,7 +48,11 @@ class SpecStringMutator(using cfg: CFG)(
       }
 
   /** mutate ASTs */
-  def apply(ast: Ast, n: Int, target: Option[(CondView, Coverage)]): Seq[Ast] =
+  def apply(
+    ast: Ast,
+    n: Int,
+    target: Option[(CondView, Coverage)],
+  ): Seq[(Ast, Option[Snippet])] =
     // count the number of primary expressions
     val k = primaryCounter(ast)
     if (k > 0) {
@@ -61,27 +68,39 @@ class SpecStringMutator(using cfg: CFG)(
   /** string in target branch */
   private var targetCondStr: Option[String] = None
 
-  /** ast walker */
-  override def walk(syn: Syntactic): Syntactic =
-    if (isPrimary(syn))
+  /** walk AST and return (mutated AST, snippet of replacement) */
+  private def walk(ast: Ast): (Ast, Option[Snippet]) = ast match
+    case syn: Syntactic if isPrimary(syn) =>
       val candidates = List(
         generateObjectWithWeight(syn.args),
         generateGetterWithWeight(syn.args),
         generateSetterWithWeight(syn.args),
         syn -> 1,
       )
-      if (targetCondStr.isDefined)
-        val candidate = (generateString(targetCondStr.get, syn.args) -> 1)
-        weightedChoose(candidate :: candidates)
-      else weightedChoose(candidates)
-    else super.walk(syn)
+      val result =
+        if (targetCondStr.isDefined)
+          val candidate = (generateString(targetCondStr.get, syn.args) -> 1)
+          weightedChoose(candidate :: candidates)
+        else weightedChoose(candidates)
+      (result, Some(AstSnippet(result)))
+    case Syntactic(name, args, rhsIdx, children) =>
+      val (newChildren, snippet) = children.foldLeft(
+        (Vector[Option[Ast]](), None: Option[Snippet]),
+      ) {
+        case ((acc, accSnippet), Some(child)) =>
+          val (walked, s) = walk(child)
+          (acc :+ Some(walked), accSnippet.orElse(s))
+        case ((acc, accSnippet), None) =>
+          (acc :+ None, accSnippet)
+      }
+      (Syntactic(name, args, rhsIdx, newChildren), snippet)
+    case lex: Lexical => (lex, None)
 
   // convert the given string to primary expression
-  def generateString(str: String, args: List[Boolean]): Syntactic =
-    cfg
-      .esParser(PRIMARY_EXPRESSION, args)
-      .from(s"\'$str\'")
-      .asInstanceOf[Syntactic]
+  def generateString(str: String, args: List[Boolean]): Syntactic = cfg
+    .esParser(PRIMARY_EXPRESSION, args)
+    .from(s"\'$str\'")
+    .asInstanceOf[Syntactic]
 
   // Properties appearing in specification
   private var _specProps: Map[Func, Set[String]] = Map()

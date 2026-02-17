@@ -3,7 +3,7 @@ package esmeta.fuzzer.mutator
 import esmeta.fuzzer.synthesizer.*
 import esmeta.es.*
 import esmeta.es.util.{Walker => AstWalker, *}
-import esmeta.es.util.Coverage.*
+import esmeta.fuzzer.*
 import esmeta.spec.Grammar
 import esmeta.util.*
 import esmeta.util.BaseUtils.*
@@ -11,7 +11,7 @@ import esmeta.cfg.CFG
 
 /** A mutator selects one of given mutators under weight */
 class WeightedMutator(using cfg: CFG)(pairs: (Mutator, Int)*) extends Mutator {
-  import Mutator.*
+  import Mutator.*, Coverage.*
 
   /** mutate code */
   def apply(
@@ -25,7 +25,7 @@ class WeightedMutator(using cfg: CFG)(pairs: (Mutator, Int)*) extends Mutator {
     ast: Ast,
     n: Int,
     target: Option[(CondView, Coverage)],
-  ): Seq[Ast] = weightedChoose(pairs)(ast, n, target)
+  ): Seq[(Ast, Option[Snippet])] = weightedChoose(pairs)(ast, n, target)
 
   val names = pairs.toList.flatMap(_._1.names).sorted.distinct
 }

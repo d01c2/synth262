@@ -2,14 +2,14 @@ package esmeta.fuzzer.mutator
 
 import esmeta.es.*
 import esmeta.es.util.*
-import esmeta.es.util.Coverage.*
+import esmeta.fuzzer.*
 import esmeta.util.BaseUtils.*
 import esmeta.cfg.CFG
 import esmeta.parser.{ESParser, AstFrom}
 
 /** ECMAScript AST mutator */
 trait Mutator(using val cfg: CFG) {
-  import Mutator.*, Code.*
+  import Mutator.*, Coverage.*, Snippet.*
 
   /** ECMAScript parser */
   lazy val esParser: ESParser = cfg.esParser
@@ -36,41 +36,44 @@ trait Mutator(using val cfg: CFG) {
     str: String,
     n: Int,
     target: Option[(CondView, Coverage)],
-  ): Seq[String] = apply(scriptParser.from(str), n, target).map { ast =>
-    ast.toString(grammar = Some(cfg.grammar))
-  }
+  ): Seq[String] = apply(scriptParser.from(str), n, target)
+    .map((ast, _) => ast.toString(grammar = Some(cfg.grammar)))
 
   /** mutate AST */
   def apply(
     ast: Ast,
     target: Option[(CondView, Coverage)],
-  ): Ast = apply(ast, 1, None).head
+  ): Ast = apply(ast, 1, target).head._1
   def apply(
     ast: Ast,
     n: Int,
     target: Option[(CondView, Coverage)],
-  ): Seq[Ast]
+  ): Seq[(Ast, Option[Snippet])]
 
   /** Possible names of underlying mutators */
   val names: List[String]
   lazy val name: String = names.head
 
   /** helper for mutation in builtin code */
-  extension (builtin: Builtin) {
+  extension (builtin: Code.Builtin) {
     def mutatePreStmts(
       n: Int,
       target: Option[(CondView, Coverage)],
     ): Seq[Result] = for {
       preStmts <- builtin.preStmts.toSeq
-      mutatedStmts <- apply(preStmts, n, target)
-    } yield Result(name, builtin.copy(preStmts = Some(mutatedStmts)))
+      ast = scriptParser.from(preStmts)
+      (mutatedAst, snippet) <- apply(ast, n, target)
+      mutatedStmts = mutatedAst.toString(grammar = Some(cfg.grammar))
+    } yield Result(name, builtin.copy(preStmts = Some(mutatedStmts)), snippet)
     def mutatePostStmts(
       n: Int,
       target: Option[(CondView, Coverage)],
     ): Seq[Result] = for {
       postStmts <- builtin.postStmts.toSeq
-      mutatedStmts <- apply(postStmts, n, target)
-    } yield Result(name, builtin.copy(postStmts = Some(mutatedStmts)))
+      ast = scriptParser.from(postStmts)
+      (mutatedAst, snippet) <- apply(ast, n, target)
+      mutatedStmts = mutatedAst.toString(grammar = Some(cfg.grammar))
+    } yield Result(name, builtin.copy(postStmts = Some(mutatedStmts)), snippet)
 
     /** Mutate ALL builtin args exhaustively */
     def mutateArgStr(
@@ -78,8 +81,7 @@ trait Mutator(using val cfg: CFG) {
       target: Option[(CondView, Coverage)],
     ): Seq[Result] = mutateTargets(builtin.targetArgs, n, target)
 
-    /** Mutate specific builtin targets (shared logic for exhaustive iteration)
-      */
+    /** Mutate specific builtin targets */
     def mutateTargets(
       targets: Seq[Target],
       n: Int,
@@ -91,13 +93,14 @@ trait Mutator(using val cfg: CFG) {
         val perTarget = (n + numTargets - 1) / numTargets
         targets.flatMap { mutationCite =>
           val argStr = mutationCite.argStr
+          val argAst = argListParser.from(argStr)
           for {
-            mutatedAst <- apply(argListParser.from(argStr), perTarget, target)
+            (mutatedAst, _) <- apply(argAst, perTarget, target)
             mutatedStr = mutatedAst.toString(grammar = Some(cfg.grammar))
             mutatedCode = builtin.replace(mutationCite, mutatedStr)
-          } yield Result(name, mutatedCode)
+          } yield Result(name, mutatedCode, Some(StrSnippet(mutatedStr)))
         }
-      else List.fill(n)(builtin).map(Result(name, _))
+      else List.fill(n)(Result(name, builtin, None))
   }
 }
 
@@ -105,7 +108,7 @@ object Mutator {
   import Code.*, Target.*
 
   /** Result of mutation with mutator name and code */
-  case class Result(name: String, code: Code)
+  case class Result(name: String, code: Code, snippet: Option[Snippet])
 
   /** Update the builtin code with the given string at the target position */
   extension (builtin: Builtin) {

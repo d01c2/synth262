@@ -1,9 +1,9 @@
 package esmeta.fuzzer.mutator
 
 import esmeta.es.*
+import esmeta.fuzzer.Snippet
 import esmeta.fuzzer.synthesizer.*
 import esmeta.es.util.*
-import esmeta.es.util.Coverage.*
 import esmeta.util.BaseUtils.*
 import esmeta.cfg.CFG
 
@@ -11,7 +11,7 @@ import esmeta.cfg.CFG
 class TargetMutator(using cfg: CFG)(
   val synBuilder: Synthesizer.Builder = RandomSynthesizer,
 ) extends Mutator {
-  import Mutator.*, Code.*
+  import Mutator.*, Coverage.*, Snippet.*
 
   val randomMutator = RandomMutator()
 
@@ -36,19 +36,29 @@ class TargetMutator(using cfg: CFG)(
     }
   } yield {
     code match
-      case Normal(str) =>
+      case Code.Normal(str) =>
         if (normalTargets.nonEmpty) {
           val mutationCite = choose(normalTargets)
           scriptParser.from(str) match
             case syn: Syntactic =>
               Walker(mutationCite, n)
                 .walk(syn)
-                .map(_.toString(grammar = Some(cfg.grammar)))
-                .map(str => Result(name, Normal(str)))
-            case _ =>
-              apply(str, n, target).map(str => Result(name, Normal(str)))
-        } else apply(str, n, target).map(str => Result(name, Normal(str)))
-      case builtin: Builtin =>
+                .map { (mutatedAst, snippet) =>
+                  val s = mutatedAst.toString(grammar = Some(cfg.grammar))
+                  Result(name, Code.Normal(s), snippet)
+                }
+            case ast =>
+              apply(ast, n, target).map { (mutatedAst, snippet) =>
+                val s = mutatedAst.toString(grammar = Some(cfg.grammar))
+                Result(name, Code.Normal(s), snippet)
+              }
+        } else
+          val ast = scriptParser.from(str)
+          apply(ast, n, target).map { (mutatedAst, snippet) =>
+            val s = mutatedAst.toString(grammar = Some(cfg.grammar))
+            Result(name, Code.Normal(s), snippet)
+          }
+      case builtin: Code.Builtin =>
         val filteredBuiltin = builtinTargets.filter { bt =>
           bt match
             case Target.BuiltinThis(thisArg) => builtin.thisArg == Some(thisArg)
@@ -64,40 +74,43 @@ class TargetMutator(using cfg: CFG)(
             case syn: Syntactic =>
               Walker(mutationCite, n)
                 .walk(syn)
-                .map(_.toString(grammar = Some(cfg.grammar)))
-                .map(str => Result(name, Normal(str)))
+                .map { (mutatedAst, snippet) =>
+                  val s = mutatedAst.toString(grammar = Some(cfg.grammar))
+                  Result(name, Code.Normal(s), snippet)
+                }
             case _ => randomMutator(builtin, n, target)
         } else randomMutator(builtin, n, target)
   }).getOrElse(randomMutator(code, n, target))
 
   /** mutate ASTs */
-  def apply(ast: Ast, n: Int, target: Option[(CondView, Coverage)]): Seq[Ast] =
+  def apply(
+    ast: Ast,
+    n: Int,
+    target: Option[(CondView, Coverage)],
+  ): Seq[(Ast, Option[Snippet])] =
     randomMutator(ast, n, target)
 
   /** internal walker for finding and mutating normal target */
   class Walker(normalTarget: Target.Normal, n: Int)
     extends Util.MultiplicativeListWalker {
-    val Target.Normal(name, idx, subIdx, loc) = normalTarget
-    override def walk(ast: Syntactic): List[Syntactic] =
-      if (
-        ast.name == name &&
-        ast.rhsIdx == idx &&
-        ast.subIdx == subIdx &&
-        ast.loc == Some(loc)
-      ) TotalWalker(ast, n)
+    override def walk(ast: Syntactic): List[(Syntactic, Option[Snippet])] =
+      if (ast.matches(normalTarget)) TotalWalker(ast, n)
       else super.walk(ast)
   }
 
   /** internal walker that mutates all internal nodes with same prob. */
   object TotalWalker extends Util.AdditiveListWalker {
     var c = 0
-    def apply(ast: Syntactic, n: Int): List[Syntactic] =
+    def apply(ast: Syntactic, n: Int): List[(Syntactic, Option[Snippet])] =
       val k = Util.simpleAstCounter(ast)
       c = (n - 1) / k + 1
       shuffle(walk(ast)).take(n).toList
 
-    override def walk(ast: Syntactic): List[Syntactic] =
+    override def walk(ast: Syntactic): List[(Syntactic, Option[Snippet])] =
       val mutants = super.walk(ast)
-      List.tabulate(c)(_ => synthesizer(ast)) ++ mutants
+      List.tabulate(c) { _ =>
+        val s = synthesizer(ast)
+        (s, Some(AstSnippet(s)))
+      } ++ mutants
   }
 }

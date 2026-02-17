@@ -162,10 +162,10 @@ class Fuzzer(
       val results = mutator(code, 100, condView.map((_, cov))).par
       results.map(result => (result, getCandInfo(result.code))).toList
 
-    for ((Mutator.Result(mutatorName, mutant), info) <- mutants)
+    for ((Mutator.Result(mutatorName, mutant, snippet), info) <- mutants)
       debugging(f"----- $mutatorName%-20s-----> $mutant")
 
-      val result = add(code, mutant, info)
+      val result = add(mutant, info, snippet)
       update(selectorName, selectorStat, result)
       update(mutatorName, mutatorStat, result)
 
@@ -188,30 +188,32 @@ class Fuzzer(
     else CandInfo(interp = Some(Try(cov.run(code))))
 
   /** add new program */
-  def add(code: Code): Boolean = add(code, code, getCandInfo(code))
+  def add(code: Code): Boolean = add(code, getCandInfo(code))
 
   /** add mutant with precomputed info */
-  // NOTE: pass both original and mutant to cache code snippet
-  // if the mutant covers abrubt branches with abrupt completion
-  def add(orig: Code, mutant: Code, info: CandInfo): Boolean =
-    handleResult(
-      mutant,
-      Try {
-        if (info.visited) fail("ALREADY VISITED")
-        if (info.invalid) fail("INVALID PROGRAM")
-        val interp = info.interp.get match
-          case Success(v) => v
-          case Failure(e) => throw e
-        val finalState = interp.result
-        val supported = interp.supported
-        val script = toScript(mutant, supported)
-        if (tyCheck) collector.add(mutant.toString, finalState.typeErrors)
-        val (_, updated, covered) = cov.check(script, interp)
-        if (!updated) fail("NO UPDATE")
-        if (covered) snippetStorage.cache(orig, mutant, interp.touchedCondViews)
-        (covered, supported)
-      },
-    )
+  def add(
+    mutant: Code,
+    info: CandInfo,
+    snippet: Option[Snippet] = None,
+  ): Boolean = handleResult(
+    mutant,
+    Try {
+      if (info.visited) fail("ALREADY VISITED")
+      if (info.invalid) fail("INVALID PROGRAM")
+      val interp = info.interp.get match
+        case Success(v) => v
+        case Failure(e) => throw e
+      val finalState = interp.result
+      val supported = interp.supported
+      val script = toScript(mutant, supported)
+      if (tyCheck) collector.add(mutant.toString, finalState.typeErrors)
+      val (_, updated, covered) = cov.check(script, interp)
+      if (!updated) fail("NO UPDATE")
+      for (snip <- snippet if covered)
+        snippetStorage.cache(interp.touchedCondViews, snip)
+      (covered, supported)
+    },
+  )
 
   /** handle add result */
   def handleResult(code: Code, result: Try[(Boolean, Boolean)]): Boolean = {

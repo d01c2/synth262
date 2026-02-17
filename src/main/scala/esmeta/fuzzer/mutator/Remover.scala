@@ -2,7 +2,7 @@ package esmeta.fuzzer.mutator
 
 import esmeta.es.*
 import esmeta.es.util.*
-import esmeta.es.util.Coverage.*
+import esmeta.fuzzer.*
 import esmeta.util.BaseUtils.*
 import esmeta.fuzzer.synthesizer.*
 import esmeta.cfg.CFG
@@ -12,7 +12,7 @@ class Remover(using cfg: CFG)(
   val synBuilder: Synthesizer.Builder = RandomSynthesizer,
 ) extends Mutator
   with Util.MultiplicativeListWalker {
-  import Mutator.*, Remover.*, Code.*
+  import Mutator.*, Remover.*, Coverage.*
 
   val randomMutator = RandomMutator()
 
@@ -26,9 +26,9 @@ class Remover(using cfg: CFG)(
     n: Int,
     target: Option[(CondView, Coverage)],
   ): Seq[Result] = code match
-    case Normal(str) =>
-      apply(str, n, target).map(str => Result(name, Normal(str)))
-    case builtin @ Builtin(_, thisArg, args, preStmts, postStmts) =>
+    case Code.Normal(str) =>
+      apply(str, n, target).map(str => Result(name, Code.Normal(str), None))
+    case builtin @ Code.Builtin(_, thisArg, args, preStmts, postStmts) =>
       if ((preStmts.isDefined || postStmts.isDefined) && randBool) {
         // mutate statements
         (preStmts, postStmts) match
@@ -43,15 +43,20 @@ class Remover(using cfg: CFG)(
         if (args.isEmpty && thisArg.isEmpty) randomMutator(builtin, n, target)
         else {
           (0 to args.length).flatMap(args.combinations).flatMap { args =>
-            Result(name, builtin.copy(args = args)) :: thisArg.toList.map { _ =>
-              Result(name, builtin.copy(thisArg = None, args = args))
+            Result(name, builtin.copy(args = args), None) ::
+            thisArg.toList.map { _ =>
+              Result(name, builtin.copy(thisArg = None, args = args), None)
             }
           }
         }
       }
 
   /** mutate ASTs */
-  def apply(ast: Ast, n: Int, target: Option[(CondView, Coverage)]): Seq[Ast] =
+  def apply(
+    ast: Ast,
+    n: Int,
+    target: Option[(CondView, Coverage)],
+  ): Seq[(Ast, Option[Snippet])] =
     // count of removal candidates
     val k = victimCounter(ast)
     if (k > 0) {
@@ -81,22 +86,23 @@ class Remover(using cfg: CFG)(
     else throw new Error("This is a bug in Remover")
 
   /** ast walker */
-  override def walk(ast: Syntactic): List[Syntactic] =
+  override def walk(ast: Syntactic): List[(Syntactic, Option[Snippet])] =
     val mutants = super.walk(ast)
     val i = findSameChild(ast)
     if (i >= 0 && doDrop)
-      mutants ++ mutants.map(_.children(i).get.asInstanceOf[Syntactic])
+      mutants ++
+      mutants.map((m, s) => (m.children(i).get.asInstanceOf[Syntactic], s))
     else mutants
 }
 
 object Remover {
-  // Refactor: Was it written properly?
   def findSameChild(ast: Ast): Int = ast match
     case Syntactic(name, args, rhsIdx, children) =>
-      children.indexWhere(_ match
-        case Some(Syntactic(`name`, `args`, _, _)) => true
-        case _                                     => false,
-      )
+      children.indexWhere { child =>
+        child match
+          case Some(Syntactic(`name`, `args`, _, _)) => true
+          case _                                     => false
+      }
     case _ => -1
 
   // count the number of asts that have same child
