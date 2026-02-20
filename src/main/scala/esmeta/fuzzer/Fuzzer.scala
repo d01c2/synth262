@@ -297,7 +297,8 @@ class Fuzzer(
         .filter(_.getPath.endsWith(".json"))
         .map(f => "Cached" -> readJson[Code](f.getPath))
     } else {
-      val initFiles = init.map(dir => listFiles(dir).sorted)
+      val initFiles =
+        init.map(dir => walkTree(dir).filter(_.isFile).toList.sorted)
       initFiles match
         case Some(files) =>
           files.map { file =>
