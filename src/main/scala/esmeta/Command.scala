@@ -169,17 +169,6 @@ case object CmdTest262Test
   override val targetName = "<js|dir>+"
   override val needTarget = false
 }
-
-/** `test262-shrink` command */
-case object CmdTest262Shrink
-  extends Command("test262-shrink", CmdBuildCFG >> Test262Shrink) {
-  val help = "shrink all Test262 tests covering target-cond nodes."
-  val examples = List(
-    "esmeta test262-shrink                           # shrink all target-conds",
-  )
-  override def showResult(res: Unit): Unit = ()
-}
-
 // -----------------------------------------------------------------------------
 // ECMAScript Fuzzer
 // -----------------------------------------------------------------------------
