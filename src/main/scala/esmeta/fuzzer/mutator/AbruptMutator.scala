@@ -23,7 +23,8 @@ class AbruptMutator(using cfg: CFG, snippetStorage: SnippetStorage)
     (cv, cov) <- target
     CondView(cond, view) = cv
     branch = cond.branch
-    if branch.isAbruptNode && !cond.cond // abrupt completion case
+    // NOTE: mutate if we "should make" abrupt completion case
+    if branch.isAbruptNode && !cond.cond
     fname <- snippetStorage.findSourceFunc(branch)
     snippets = snippetStorage.getSnippets(fname)
     if snippets.nonEmpty
@@ -43,7 +44,7 @@ class AbruptMutator(using cfg: CFG, snippetStorage: SnippetStorage)
     ast: Ast,
     n: Int,
     target: Option[(CondView, Coverage)],
-  ): Seq[(Ast, Option[Snippet])] =
+  ): Seq[Ast] =
     randomMutator(ast, n, target)
 
   /** apply snippet to target */
@@ -58,30 +59,30 @@ class AbruptMutator(using cfg: CFG, snippetStorage: SnippetStorage)
       }
       for {
         compatibleSnippet <- compatible
-        (mutatedAst, _) <- Walker(t, compatibleSnippet)
+        mutatedAst <- Walker(t, compatibleSnippet)
           .walk(scriptParser.from(str))
           .headOption
       } yield {
         val mutant =
           Code.Normal(mutatedAst.toString(grammar = Some(cfg.grammar)))
-        Result(name, mutant, Some(AstSnippet(compatibleSnippet)))
+        Result(name, mutant)
       }
     case (b: Code.Builtin, Target.BuiltinThis(thisArg), StrSnippet(str)) =>
       if (b.thisArg == Some(thisArg))
-        Some(Result(name, b.replace(target, str), Some(StrSnippet(str))))
+        Some(Result(name, b.replace(target, str)))
       else None
     case (b: Code.Builtin, Target.BuiltinArg(arg, i), StrSnippet(str)) =>
       if (b.args.lift(i) == Some(arg))
-        Some(Result(name, b.replace(target, str), Some(StrSnippet(str))))
+        Some(Result(name, b.replace(target, str)))
       else None
     case _ => None
 
   /** walker that replaces target AST with compatible snippet */
   class Walker(normalTarget: Target.Normal, replacement: Syntactic)
     extends Util.MultiplicativeListWalker {
-    override def walk(ast: Syntactic): List[(Syntactic, Option[Snippet])] =
+    override def walk(ast: Syntactic): List[Syntactic] =
       if (ast.matches(normalTarget))
-        List((replacement, Some(AstSnippet(replacement))))
+        List(replacement)
       else super.walk(ast)
   }
 }

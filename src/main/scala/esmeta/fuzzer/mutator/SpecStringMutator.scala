@@ -12,7 +12,7 @@ import esmeta.util.BaseUtils.*
 class SpecStringMutator(using cfg: CFG)(
   val synBuilder: Synthesizer.Builder = RandomSynthesizer,
 ) extends Mutator {
-  import Mutator.*, SpecStringMutator.*, Coverage.*, Snippet.*
+  import Mutator.*, SpecStringMutator.*, Coverage.*
 
   val randomMutator = RandomMutator()
 
@@ -28,9 +28,9 @@ class SpecStringMutator(using cfg: CFG)(
   ): Seq[Result] = code match
     case Code.Normal(str) =>
       val ast = scriptParser.from(str)
-      apply(ast, n, target).map { (mutatedAst, snippet) =>
+      apply(ast, n, target).map { mutatedAst =>
         val mutatedStr = mutatedAst.toString(grammar = Some(cfg.grammar))
-        Result(name, Code.Normal(mutatedStr), snippet)
+        Result(name, Code.Normal(mutatedStr))
       }
     case builtin @ Code.Builtin(_, _, _, preStmts, postStmts) =>
       if ((preStmts.isDefined || postStmts.isDefined) && randBool) {
@@ -52,7 +52,7 @@ class SpecStringMutator(using cfg: CFG)(
     ast: Ast,
     n: Int,
     target: Option[(CondView, Coverage)],
-  ): Seq[(Ast, Option[Snippet])] =
+  ): Seq[Ast] =
     // count the number of primary expressions
     val k = primaryCounter(ast)
     if (k > 0) {
@@ -68,8 +68,8 @@ class SpecStringMutator(using cfg: CFG)(
   /** string in target branch */
   private var targetCondStr: Option[String] = None
 
-  /** walk AST and return (mutated AST, snippet of replacement) */
-  private def walk(ast: Ast): (Ast, Option[Snippet]) = ast match
+  /** walk AST and return mutated AST */
+  private def walk(ast: Ast): Ast = ast match
     case syn: Syntactic if isPrimary(syn) =>
       val candidates = List(
         generateObjectWithWeight(syn.args),
@@ -77,24 +77,17 @@ class SpecStringMutator(using cfg: CFG)(
         generateSetterWithWeight(syn.args),
         syn -> 1,
       )
-      val result =
-        if (targetCondStr.isDefined)
-          val candidate = (generateString(targetCondStr.get, syn.args) -> 1)
-          weightedChoose(candidate :: candidates)
-        else weightedChoose(candidates)
-      (result, Some(AstSnippet(result)))
+      if (targetCondStr.isDefined)
+        val candidate = (generateString(targetCondStr.get, syn.args) -> 1)
+        weightedChoose(candidate :: candidates)
+      else weightedChoose(candidates)
     case Syntactic(name, args, rhsIdx, children) =>
-      val (newChildren, snippet) = children.foldLeft(
-        (Vector[Option[Ast]](), None: Option[Snippet]),
-      ) {
-        case ((acc, accSnippet), Some(child)) =>
-          val (walked, s) = walk(child)
-          (acc :+ Some(walked), accSnippet.orElse(s))
-        case ((acc, accSnippet), None) =>
-          (acc :+ None, accSnippet)
+      val newChildren = children.map {
+        case Some(child) => Some(walk(child))
+        case None        => None
       }
-      (Syntactic(name, args, rhsIdx, newChildren), snippet)
-    case lex: Lexical => (lex, None)
+      Syntactic(name, args, rhsIdx, newChildren)
+    case lex: Lexical => lex
 
   // convert the given string to primary expression
   def generateString(str: String, args: List[Boolean]): Syntactic = cfg

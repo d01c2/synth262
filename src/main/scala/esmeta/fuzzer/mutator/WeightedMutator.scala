@@ -25,7 +25,7 @@ class WeightedMutator(using cfg: CFG)(pairs: (Mutator, Int)*) extends Mutator {
     ast: Ast,
     n: Int,
     target: Option[(CondView, Coverage)],
-  ): Seq[(Ast, Option[Snippet])] = weightedChoose(pairs)(ast, n, target)
+  ): Seq[Ast] = weightedChoose(pairs)(ast, n, target)
 
   val names = pairs.toList.flatMap(_._1.names).sorted.distinct
 }

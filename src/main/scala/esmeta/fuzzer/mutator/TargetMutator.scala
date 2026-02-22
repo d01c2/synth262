@@ -1,7 +1,6 @@
 package esmeta.fuzzer.mutator
 
 import esmeta.es.*
-import esmeta.fuzzer.Snippet
 import esmeta.fuzzer.synthesizer.*
 import esmeta.es.util.*
 import esmeta.util.BaseUtils.*
@@ -11,7 +10,7 @@ import esmeta.cfg.CFG
 class TargetMutator(using cfg: CFG)(
   val synBuilder: Synthesizer.Builder = RandomSynthesizer,
 ) extends Mutator {
-  import Mutator.*, Coverage.*, Snippet.*
+  import Mutator.*, Coverage.*
 
   val randomMutator = RandomMutator()
 
@@ -43,20 +42,20 @@ class TargetMutator(using cfg: CFG)(
             case syn: Syntactic =>
               Walker(mutationCite, n)
                 .walk(syn)
-                .map { (mutatedAst, snippet) =>
+                .map { mutatedAst =>
                   val s = mutatedAst.toString(grammar = Some(cfg.grammar))
-                  Result(name, Code.Normal(s), snippet)
+                  Result(name, Code.Normal(s))
                 }
             case ast =>
-              apply(ast, n, target).map { (mutatedAst, snippet) =>
+              apply(ast, n, target).map { mutatedAst =>
                 val s = mutatedAst.toString(grammar = Some(cfg.grammar))
-                Result(name, Code.Normal(s), snippet)
+                Result(name, Code.Normal(s))
               }
         } else
           val ast = scriptParser.from(str)
-          apply(ast, n, target).map { (mutatedAst, snippet) =>
+          apply(ast, n, target).map { mutatedAst =>
             val s = mutatedAst.toString(grammar = Some(cfg.grammar))
-            Result(name, Code.Normal(s), snippet)
+            Result(name, Code.Normal(s))
           }
       case builtin: Code.Builtin =>
         val filteredBuiltin = builtinTargets.filter { bt =>
@@ -74,9 +73,9 @@ class TargetMutator(using cfg: CFG)(
             case syn: Syntactic =>
               Walker(mutationCite, n)
                 .walk(syn)
-                .map { (mutatedAst, snippet) =>
+                .map { mutatedAst =>
                   val s = mutatedAst.toString(grammar = Some(cfg.grammar))
-                  Result(name, Code.Normal(s), snippet)
+                  Result(name, Code.Normal(s))
                 }
             case _ => randomMutator(builtin, n, target)
         } else randomMutator(builtin, n, target)
@@ -87,13 +86,13 @@ class TargetMutator(using cfg: CFG)(
     ast: Ast,
     n: Int,
     target: Option[(CondView, Coverage)],
-  ): Seq[(Ast, Option[Snippet])] =
+  ): Seq[Ast] =
     randomMutator(ast, n, target)
 
   /** internal walker for finding and mutating normal target */
   class Walker(normalTarget: Target.Normal, n: Int)
     extends Util.MultiplicativeListWalker {
-    override def walk(ast: Syntactic): List[(Syntactic, Option[Snippet])] =
+    override def walk(ast: Syntactic): List[Syntactic] =
       if (ast.matches(normalTarget)) TotalWalker(ast, n)
       else super.walk(ast)
   }
@@ -101,16 +100,13 @@ class TargetMutator(using cfg: CFG)(
   /** internal walker that mutates all internal nodes with same prob. */
   object TotalWalker extends Util.AdditiveListWalker {
     var c = 0
-    def apply(ast: Syntactic, n: Int): List[(Syntactic, Option[Snippet])] =
+    def apply(ast: Syntactic, n: Int): List[Syntactic] =
       val k = Util.simpleAstCounter(ast)
       c = (n - 1) / k + 1
       shuffle(walk(ast)).take(n).toList
 
-    override def walk(ast: Syntactic): List[(Syntactic, Option[Snippet])] =
+    override def walk(ast: Syntactic): List[Syntactic] =
       val mutants = super.walk(ast)
-      List.tabulate(c) { _ =>
-        val s = synthesizer(ast)
-        (s, Some(AstSnippet(s)))
-      } ++ mutants
+      List.tabulate(c) { _ => synthesizer(ast) } ++ mutants
   }
 }

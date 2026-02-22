@@ -27,7 +27,7 @@ class Remover(using cfg: CFG)(
     target: Option[(CondView, Coverage)],
   ): Seq[Result] = code match
     case Code.Normal(str) =>
-      apply(str, n, target).map(str => Result(name, Code.Normal(str), None))
+      apply(str, n, target).map(str => Result(name, Code.Normal(str)))
     case builtin @ Code.Builtin(_, thisArg, args, preStmts, postStmts) =>
       if ((preStmts.isDefined || postStmts.isDefined) && randBool) {
         // mutate statements
@@ -43,9 +43,9 @@ class Remover(using cfg: CFG)(
         if (args.isEmpty && thisArg.isEmpty) randomMutator(builtin, n, target)
         else {
           (0 to args.length).flatMap(args.combinations).flatMap { args =>
-            Result(name, builtin.copy(args = args), None) ::
+            Result(name, builtin.copy(args = args)) ::
             thisArg.toList.map { _ =>
-              Result(name, builtin.copy(thisArg = None, args = args), None)
+              Result(name, builtin.copy(thisArg = None, args = args))
             }
           }
         }
@@ -56,7 +56,7 @@ class Remover(using cfg: CFG)(
     ast: Ast,
     n: Int,
     target: Option[(CondView, Coverage)],
-  ): Seq[(Ast, Option[Snippet])] =
+  ): Seq[Ast] =
     // count of removal candidates
     val k = victimCounter(ast)
     if (k > 0) {
@@ -86,12 +86,12 @@ class Remover(using cfg: CFG)(
     else throw new Error("This is a bug in Remover")
 
   /** ast walker */
-  override def walk(ast: Syntactic): List[(Syntactic, Option[Snippet])] =
+  override def walk(ast: Syntactic): List[Syntactic] =
     val mutants = super.walk(ast)
     val i = findSameChild(ast)
     if (i >= 0 && doDrop)
       mutants ++
-      mutants.map((m, s) => (m.children(i).get.asInstanceOf[Syntactic], s))
+      mutants.map(m => m.children(i).get.asInstanceOf[Syntactic])
     else mutants
 }
 

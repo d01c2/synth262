@@ -13,7 +13,7 @@ class StatementInserter(using cfg: CFG)(
   val synBuilder: Synthesizer.Builder = RandomSynthesizer,
 ) extends Mutator
   with Util.MultiplicativeListWalker {
-  import Mutator.*, StatementInserter.*, Coverage.*, Snippet.*
+  import Mutator.*, StatementInserter.*, Coverage.*
 
   val randomMutator = RandomMutator()
 
@@ -29,9 +29,9 @@ class StatementInserter(using cfg: CFG)(
   ): Seq[Result] = code match
     case Code.Normal(str) =>
       val ast = scriptParser.from(str)
-      apply(ast, n, target).map { (mutatedAst, snippet) =>
+      apply(ast, n, target).map { mutatedAst =>
         val mutatedStr = mutatedAst.toString(grammar = Some(cfg.grammar))
-        Result(name, Code.Normal(mutatedStr), snippet)
+        Result(name, Code.Normal(mutatedStr))
       }
     case builtin @ Code.Builtin(_, _, _, preStmts, postStmts) =>
       (preStmts, postStmts) match
@@ -44,11 +44,10 @@ class StatementInserter(using cfg: CFG)(
           List.tabulate(n) { _ =>
             val item = newStmtItem(List(false, false, false))
             val stmts = item.toString(grammar = Some(cfg.grammar))
-            val snippet = Some(AstSnippet(item))
             if (randBool)
-              Result(name, builtin.copy(preStmts = Some(stmts)), snippet)
+              Result(name, builtin.copy(preStmts = Some(stmts)))
             else
-              Result(name, builtin.copy(postStmts = Some(stmts)), snippet)
+              Result(name, builtin.copy(postStmts = Some(stmts)))
           }
 
   /** mutate ASTs */
@@ -56,7 +55,7 @@ class StatementInserter(using cfg: CFG)(
     ast: Ast,
     n: Int,
     target: Option[(CondView, Coverage)],
-  ): Seq[(Ast, Option[Snippet])] =
+  ): Seq[Ast] =
     // count the number of stmtLists
     val k = stmtListCounter(ast)
 
@@ -92,7 +91,7 @@ class StatementInserter(using cfg: CFG)(
     Syntactic(STATEMENT_LIST, item.args, 0, Vector(Some(item)))
 
   /** ast walker */
-  override def walk(ast: Syntactic): List[(Syntactic, Option[Snippet])] =
+  override def walk(ast: Syntactic): List[Syntactic] =
     ast match
       // singleton statement list
       case Syntactic(STATEMENT_LIST, args, 0, _) =>
@@ -103,17 +102,13 @@ class StatementInserter(using cfg: CFG)(
             case 0 => mutants
             case _ =>
               val newStmt = newStmtItem(args)
-              val snippet = Some(AstSnippet(newStmt))
-              mutants.map { (mutant, _) =>
-                (
-                  Syntactic(
-                    STATEMENT_LIST,
-                    args,
-                    1,
-                    if randBool then Vector(Some(mutant), Some(newStmt))
-                    else Vector(Some(item2list(newStmt)), mutant.children(0)),
-                  ),
-                  snippet,
+              mutants.map { mutant =>
+                Syntactic(
+                  STATEMENT_LIST,
+                  args,
+                  1,
+                  if randBool then Vector(Some(mutant), Some(newStmt))
+                  else Vector(Some(item2list(newStmt)), mutant.children(0)),
                 )
               }
           }
@@ -128,16 +123,12 @@ class StatementInserter(using cfg: CFG)(
             case 0 => mutants
             case _ =>
               val newStmt = newStmtItem(args)
-              val snippet = Some(AstSnippet(newStmt))
-              mutants.map { (mutant, _) =>
-                (
-                  Syntactic(
-                    STATEMENT_LIST,
-                    args,
-                    1,
-                    Vector(Some(mutant), Some(newStmt)),
-                  ),
-                  snippet,
+              mutants.map { mutant =>
+                Syntactic(
+                  STATEMENT_LIST,
+                  args,
+                  1,
+                  Vector(Some(mutant), Some(newStmt)),
                 )
               }
           }
@@ -158,14 +149,12 @@ class StatementInserter(using cfg: CFG)(
           case _       => false
         }
 
-        // generate new stmts and capture the snippet
+        // generate new stmts
         val genNum = decideGenNum
-        var snippet: Option[Snippet] = None
         val newStmts = List.tabulate(genNum) {
           case 0 => None
           case _ =>
             val item = newStmtItem(newArgs)
-            snippet = Some(AstSnippet(item))
             Some(item2list(item))
         }
 
@@ -177,12 +166,12 @@ class StatementInserter(using cfg: CFG)(
               for {
                 child <-
                   if (i == childIdx) newStmts
-                  else walkOpt(child).map(_._1)
+                  else walkOpt(child)
                 children <- childrens
               } yield (child +: children)
           }
         newChildrens.map(newChildren =>
-          (Syntactic(name, args, rhsIdx, newChildren), snippet),
+          Syntactic(name, args, rhsIdx, newChildren),
         )
 
       case _ => super.walk(ast)

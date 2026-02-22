@@ -162,10 +162,10 @@ class Fuzzer(
       val results = mutator(code, 100, condView.map((_, cov))).par
       results.map(result => (result, getCandInfo(result.code))).toList
 
-    for ((Mutator.Result(mutatorName, mutant, snippet), info) <- mutants)
+    for ((Mutator.Result(mutatorName, mutant), info) <- mutants)
       debugging(f"----- $mutatorName%-20s-----> $mutant")
 
-      val result = add(mutant, info, snippet)
+      val result = add(mutant, info)
       update(selectorName, selectorStat, result)
       update(mutatorName, mutatorStat, result)
 
@@ -191,11 +191,7 @@ class Fuzzer(
   def add(code: Code): Boolean = add(code, getCandInfo(code))
 
   /** add mutant with precomputed info */
-  def add(
-    mutant: Code,
-    info: CandInfo,
-    snippet: Option[Snippet] = None,
-  ): Boolean = handleResult(
+  def add(mutant: Code, info: CandInfo): Boolean = handleResult(
     mutant,
     Try {
       if (info.visited) fail("ALREADY VISITED")
@@ -210,7 +206,7 @@ class Fuzzer(
       if (tyCheck) collector.add(mutant.toString, finalState.typeErrors)
       val (_, updated, covered) = cov.check(script, interp)
       if (!updated) fail("NO UPDATE")
-      for (snip <- snippet if covered) snippetStorage.cache(interp, snip)
+      if (covered) snippetStorage.cache(interp, mutant)
       (covered, supported)
     },
   )
