@@ -105,7 +105,7 @@ case object Test262Test extends Phase[CFG, Summary] {
       "all-tests",
       BoolOption((c, b) => { c.coverage ||= b; c.allTests = b }),
       "collect all Test262 tests instead of a single minimal test for each" +
-      "covered test requirement (default: false).",
+      " covered test requirement (default: false).",
     ),
     (
       "timeout",
