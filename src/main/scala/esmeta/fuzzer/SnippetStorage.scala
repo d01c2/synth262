@@ -22,6 +22,7 @@ class SnippetStorage(using val cfg: CFG) {
   import Coverage.*
 
   private val cached: MMap[String, MSet[Snippet]] = MMap()
+  private val sdoCalleeCache: MMap[Int, String] = MMap()
 
   /** get snippets for a function */
   def getSnippets(fname: String): Iterable[Snippet] =
@@ -36,12 +37,13 @@ class SnippetStorage(using val cfg: CFG) {
     }
   }.asJson
 
+  /** record SDO callees from interpreter execution */
+  def recordSdoCallees(sdoCallees: Map[Int, String]): Unit =
+    sdoCalleeCache ++= sdoCallees
+
   /** cache snippets from successful mutation covering abrupt branches */
-  def cache(
-    touchedCondViews: Map[CondView, Set[Target]],
-    snippet: Snippet,
-  ): Unit = for {
-    (cv, _) <- touchedCondViews
+  def cache(interp: Interp, snippet: Snippet): Unit = for {
+    (cv, _) <- interp.touchedCondViews
     Cond(branch, cond) = cv.cond
     if branch.isAbruptNode && cond
     fname <- findSourceFunc(branch)
@@ -53,10 +55,13 @@ class SnippetStorage(using val cfg: CFG) {
     val dataDeps = cfg.depGraph.dataDeps(func)
     val defs = dataDeps.useToDefs(branch)
     defs.values.flatten
-      .collect { case c: Call => c.callInst }
-      .collectFirst {
-        case ICall(_, EClo(fname, _), _) => fname
-        case ICall(_, ECont(fname), _)   => fname
-        case ISdoCall(_, _, fname, _)    => fname
+      .collect { case c: Call => c }
+      .flatMap { c =>
+        c.callInst match
+          case ICall(_, EClo(fname, _), _) => Some(fname)
+          case ICall(_, ECont(fname), _)   => Some(fname)
+          case _: ISdoCall                 => sdoCalleeCache.get(c.id)
+          case _                           => None
       }
+      .headOption
 }

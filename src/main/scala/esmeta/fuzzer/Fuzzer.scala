@@ -203,14 +203,14 @@ class Fuzzer(
       val interp = info.interp.get match
         case Success(v) => v
         case Failure(e) => throw e
+      snippetStorage.recordSdoCallees(interp.sdoCallees)
       val finalState = interp.result
       val supported = interp.supported
       val script = toScript(mutant, supported)
       if (tyCheck) collector.add(mutant.toString, finalState.typeErrors)
       val (_, updated, covered) = cov.check(script, interp)
       if (!updated) fail("NO UPDATE")
-      for (snip <- snippet if covered)
-        snippetStorage.cache(interp.touchedCondViews, snip)
+      for (snip <- snippet if covered) snippetStorage.cache(interp, snip)
       (covered, supported)
     },
   )
