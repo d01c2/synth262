@@ -25,8 +25,8 @@ class AbruptMutator(using cfg: CFG, snippetStorage: SnippetStorage)
     branch = cond.branch
     // NOTE: mutate if we "should make" abrupt completion case
     if branch.isAbruptNode && !cond.cond
-    fname <- snippetStorage.findSourceFunc(branch)
-    snippets = snippetStorage.getSnippets(fname)
+    fid <- snippetStorage.findSourceFunc(branch)
+    snippets = snippetStorage.getSnippets(fid)
     if snippets.nonEmpty
     targets = cov.targetCondViews.getOrElse(cond, Map()).getOrElse(view, Set())
   } yield {

@@ -21,24 +21,24 @@ enum Snippet {
 class SnippetStorage(using val cfg: CFG) {
   import Coverage.*
 
-  /** fname -> branchId -> shortest snippet per branch */
-  private val cached: MMap[String, MMap[Int, Snippet]] = MMap()
-  private val sdoCalleeCache: MMap[Int, String] = MMap()
-  private val forwardEdges: MMap[String, MSet[String]] = MMap()
+  /** fid -> branchId -> shortest snippet per branch */
+  private val cached: MMap[Int, MMap[Int, Snippet]] = MMap()
+  private val sdoCalleeCache: MMap[Int, Int] = MMap()
+  private val forwardEdges: MMap[Int, MSet[Int]] = MMap()
 
   /** cache event log for debugging — only entries that made it into cached */
   private case class CacheEvent(
-    sourceFunc: String,
-    caller: String,
+    sourceFid: Int,
+    callerFid: Int,
     mutant: String,
     snippet: String,
   )
   private val cacheLog: MMap[Int, CacheEvent] = MMap()
 
   /** get snippets for a function (direct + 1-level callee lookup) */
-  def getSnippets(fname: String): Iterable[Snippet] =
-    val direct = cached.getOrElse(fname, MMap()).values
-    val fromCallees = forwardEdges.getOrElse(fname, MSet()).flatMap { callee =>
+  def getSnippets(fid: Int): Iterable[Snippet] =
+    val direct = cached.getOrElse(fid, MMap()).values
+    val fromCallees = forwardEdges.getOrElse(fid, MSet()).flatMap { callee =>
       cached.getOrElse(callee, MMap()).values
     }
     direct ++ fromCallees
@@ -48,8 +48,8 @@ class SnippetStorage(using val cfg: CFG) {
     cacheLog.toSeq.sortBy(_._1).map {
       case (branchId, e) =>
         branchId.toString -> JsonObject(
-          "sourceFunc" -> e.sourceFunc.asJson,
-          "caller" -> e.caller.asJson,
+          "sourceFunc" -> funcName(e.sourceFid).asJson,
+          "caller" -> funcName(e.callerFid).asJson,
           "mutant" -> e.mutant.asJson,
           "snippet" -> e.snippet.asJson,
         ).asJson
@@ -57,14 +57,13 @@ class SnippetStorage(using val cfg: CFG) {
   }.asJson
 
   /** record SDO callees from interpreter execution */
-  def recordSdoCallees(sdoCallees: Map[Int, String]): Unit =
+  def recordSdoCallees(sdoCallees: Map[Int, Int]): Unit =
     sdoCalleeCache ++= sdoCallees
 
-  /** cache localized AST snippets that triggered newly covered abrupt branches
-    */
+  /** cache localized AST snippets that triggered abrupt branches */
   def cache(interp: Interp, mutant: Code): Unit =
-    val snippetsByFunc: MMap[String, MMap[Int, Snippet]] = MMap()
-    val callerOf: MMap[Int, String] = MMap()
+    val snippetsByFunc: MMap[Int, MMap[Int, Snippet]] = MMap()
+    val callerOf: MMap[Int, Int] = MMap()
 
     for {
       (cv, targets) <- interp.touchedCondViews
@@ -72,12 +71,12 @@ class SnippetStorage(using val cfg: CFG) {
       branch = cond.branch
       // NOTE: cache if we meet abrupt completion case
       if branch.isAbruptNode && cond.cond
-      calleeName <- findSourceFunc(branch)
+      calleeId <- findSourceFunc(branch)
     } {
       // build forward edges from containing function to callee
-      val caller = cfg.funcOf(branch).name
-      forwardEdges.getOrElseUpdate(caller, MSet()) += calleeName
-      callerOf(branch.id) = caller
+      val callerId = cfg.funcOf(branch).id
+      forwardEdges.getOrElseUpdate(callerId, MSet()) += calleeId
+      callerOf(branch.id) = callerId
       val localized: Set[Snippet] = targets.flatMap {
         case n: Target.Normal =>
           interp.st.cachedAst
@@ -87,21 +86,21 @@ class SnippetStorage(using val cfg: CFG) {
         case Target.BuiltinArg(arg, _)   => Some(Snippet.StrSnippet(arg))
       }
       if (localized.nonEmpty)
-        val map = snippetsByFunc.getOrElseUpdate(calleeName, MMap())
+        val map = snippetsByFunc.getOrElseUpdate(calleeId, MMap())
         updateShortest(map, branch.id, localized.minBy(_.toStr.length))
     }
 
     for {
-      (fname, snippets) <- snippetsByFunc
-      target = cached.getOrElseUpdate(fname, MMap())
+      (fid, snippets) <- snippetsByFunc
+      target = cached.getOrElseUpdate(fid, MMap())
       (branchId, snippet) <- snippets
       if target.size < 100
     }
       if target.get(branchId).forall(_.toStr.length > snippet.toStr.length) then
         target(branchId) = snippet
         cacheLog(branchId) = CacheEvent(
-          sourceFunc = fname,
-          caller = callerOf.getOrElse(branchId, ""),
+          sourceFid = fid,
+          callerFid = callerOf.getOrElse(branchId, -1),
           mutant = mutant.toString,
           snippet = snippet.toStr,
         )
@@ -126,7 +125,7 @@ class SnippetStorage(using val cfg: CFG) {
     case _ => None
 
   /** trace branch condition locals to their defining call */
-  def findSourceFunc(branch: Branch): Option[String] =
+  def findSourceFunc(branch: Branch): Option[Int] =
     val func = cfg.funcOf(branch)
     val dataDeps = cfg.depGraph.dataDeps(func)
     val defs = dataDeps.useToDefs(branch)
@@ -134,10 +133,14 @@ class SnippetStorage(using val cfg: CFG) {
       .collect { case c: Call => c }
       .flatMap { c =>
         c.callInst match
-          case ICall(_, EClo(fname, _), _) => Some(fname)
-          case ICall(_, ECont(fname), _)   => Some(fname)
+          case ICall(_, EClo(fname, _), _) => cfg.fnameMap.get(fname).map(_.id)
+          case ICall(_, ECont(fname), _)   => cfg.fnameMap.get(fname).map(_.id)
           case _: ISdoCall                 => sdoCalleeCache.get(c.id)
           case _                           => None
       }
       .headOption
+
+  /** resolve function id to name */
+  private def funcName(fid: Int): String =
+    cfg.funcMap.get(fid).map(_.name).getOrElse(s"unknown($fid)")
 }

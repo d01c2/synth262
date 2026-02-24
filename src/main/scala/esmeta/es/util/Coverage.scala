@@ -463,7 +463,7 @@ object Coverage {
   ) extends Interpreter(initSt, tyCheck = tyCheck, timeLimit = timeLimit) {
     var touchedNodeViews: Map[NodeView, Option[Target]] = Map()
     var touchedCondViews: Map[CondView, Set[Target]] = Map()
-    var sdoCallees: Map[Int, String] = Map()
+    var sdoCallees: Map[Int, Int] = Map()
     var (supported, isTimeout) = (true, false)
 
     def isTest262Test: Boolean = initSt.filename.exists(_.contains("test262"))
@@ -503,7 +503,7 @@ object Coverage {
       val curFunc = st.context.func
       call.callInst match
         case _: ISdoCall if curFunc != prevFunc =>
-          sdoCallees += call.id -> curFunc.name
+          sdoCallees += call.id -> curFunc.id
         case _ => ()
 
     // override eval for node
