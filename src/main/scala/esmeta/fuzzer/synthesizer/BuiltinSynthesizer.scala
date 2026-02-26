@@ -20,7 +20,7 @@ class BuiltinSynthesizer(algorithms: List[Algorithm]) extends Synthesizer {
 
   /** get initial pool */
   lazy val initPool: Vector[Code] = (for {
-    case BuiltinHead(path, _, _) <- algorithms.map(_.head)
+    case BuiltinHead(path, params, _) <- algorithms.map(_.head)
     code <- path match
       case YetPath(_) => Nil
       case Getter(base) =>
@@ -54,13 +54,14 @@ class BuiltinSynthesizer(algorithms: List[Algorithm]) extends Synthesizer {
       case path =>
         val MAX_ARGS = 5
         val pathStr = getString(path)
+        val MIN_ARGS = params.count(_.kind == ParamKind.Normal)
         val thisCands = getBase(path) match
           case Some(base) => List("0", s"new $base")
           case None       => List("0")
         // calls
         val calls = for {
           thisArg <- thisCands
-          argsLen <- Range(0, MAX_ARGS).toList
+          argsLen <- Range(MIN_ARGS, MAX_ARGS).toList
           args = List.fill(argsLen)("0")
         } yield Builtin(
           func = s"$pathStr.call",
@@ -71,31 +72,16 @@ class BuiltinSynthesizer(algorithms: List[Algorithm]) extends Synthesizer {
         )
         // constructs
         val constructs = Normal(s"new $pathStr;") :: (for {
-          argsLen <- Range(0, MAX_ARGS).toList
+          argsLen <- Range(MIN_ARGS, MAX_ARGS).toList
           args = List.fill(argsLen)("0")
         } yield Builtin(
           func = s"new $pathStr",
-          thisArg = None, // intended
+          thisArg = None, // intended (newTarget)
           args = args,
           preStmts = None,
           postStmts = None,
         ))
-        // reflects via proxy targets
-        val reflects =
-          path match
-            case NormalAccess(base, _) if getString(base) == "Reflect" =>
-              for {
-                argsLen <- Range(0, MAX_ARGS).toList
-                args = List.fill(argsLen)("0")
-              } yield Builtin(
-                func = pathStr,
-                thisArg = None, // ignore
-                args = "p" :: args,
-                preStmts = Some("var p = new Proxy({}, {});"),
-                postStmts = None,
-              )
-            case _ => Nil
-        calls ++ constructs ++ reflects
+        calls ++ constructs
   } yield code).toVector
 
   // get prototype paths and properties
