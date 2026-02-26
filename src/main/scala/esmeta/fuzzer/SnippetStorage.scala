@@ -21,27 +21,25 @@ enum Snippet {
 class SnippetStorage(using val cfg: CFG) {
   import Coverage.*
 
-  /** fid -> branchId -> shortest snippet per branch */
-  private val cached: MMap[Int, MMap[Int, Snippet]] = MMap()
+  /** branchId -> shortest snippet per branch */
+  private val cached: MMap[Int, Snippet] = MMap()
+
+  /** calleeId -> set of branchIds (reverse index for getSnippets) */
+  private val calleeIndex: MMap[Int, MSet[Int]] = MMap()
   private val sdoCalleeCache: MMap[Int, Int] = MMap()
   private val forwardEdges: MMap[Int, MSet[Int]] = MMap()
 
   /** cache event log for debugging — only entries that made it into cached */
-  private case class CacheEvent(
-    sourceFid: Int,
-    callerFid: Int,
-    mutant: String,
-    snippet: String,
-  )
+  private case class CacheEvent(sourceFid: Int, mutant: String, snippet: String)
   private val cacheLog: MMap[Int, CacheEvent] = MMap()
 
   /** get snippets for a function (direct + 1-level callee lookup) */
   def getSnippets(fid: Int): Iterable[Snippet] =
-    val direct = cached.getOrElse(fid, MMap()).values
-    val fromCallees = forwardEdges.getOrElse(fid, MSet()).flatMap { callee =>
-      cached.getOrElse(callee, MMap()).values
+    val directIds = calleeIndex.getOrElse(fid, MSet())
+    val calleeIds = forwardEdges.getOrElse(fid, MSet()).flatMap { callee =>
+      calleeIndex.getOrElse(callee, MSet())
     }
-    direct ++ fromCallees
+    (directIds ++ calleeIds).flatMap(cached.get)
 
   /** dump cached snippets with metadata as JSON, keyed by branchId */
   def dumpContent: Json = JsonObject.fromIterable {
@@ -49,7 +47,6 @@ class SnippetStorage(using val cfg: CFG) {
       case (branchId, e) =>
         branchId.toString -> JsonObject(
           "sourceFunc" -> funcName(e.sourceFid).asJson,
-          "caller" -> funcName(e.callerFid).asJson,
           "mutant" -> e.mutant.asJson,
           "snippet" -> e.snippet.asJson,
         ).asJson
@@ -63,7 +60,6 @@ class SnippetStorage(using val cfg: CFG) {
   /** cache localized AST snippets that triggered abrupt branches */
   def cache(interp: Interp, mutant: Code): Unit =
     val snippetsByFunc: MMap[Int, MMap[Int, Snippet]] = MMap()
-    val callerOf: MMap[Int, Int] = MMap()
 
     for {
       (cv, targets) <- interp.touchedCondViews
@@ -76,7 +72,6 @@ class SnippetStorage(using val cfg: CFG) {
       // build forward edges from containing function to callee
       val callerId = cfg.funcOf(branch).id
       forwardEdges.getOrElseUpdate(callerId, MSet()) += calleeId
-      callerOf(branch.id) = callerId
       val localized: Set[Snippet] = targets.flatMap {
         case n: Target.Normal =>
           interp.st.cachedAst
@@ -92,15 +87,15 @@ class SnippetStorage(using val cfg: CFG) {
 
     for {
       (fid, snippets) <- snippetsByFunc
-      target = cached.getOrElseUpdate(fid, MMap())
+      branchIds = calleeIndex.getOrElseUpdate(fid, MSet())
       (branchId, snippet) <- snippets
-      if target.size < 100
+      if branchIds.size < 100
     }
-      if target.get(branchId).forall(_.toStr.length > snippet.toStr.length) then
-        target(branchId) = snippet
+      if cached.get(branchId).forall(_.toStr.length > snippet.toStr.length) then
+        cached(branchId) = snippet
+        branchIds += branchId
         cacheLog(branchId) = CacheEvent(
           sourceFid = fid,
-          callerFid = callerOf.getOrElse(branchId, -1),
           mutant = mutant.toString,
           snippet = snippet.toStr,
         )
