@@ -7,19 +7,68 @@ import esmeta.ir.*
 import io.circe.*, io.circe.syntax.*
 import scala.collection.mutable.{Map => MMap, Set => MSet}
 
-/** Snippet for mutation (ast for normal code, string for builtin code) */
-enum Snippet {
-  case AstSnippet(ast: Ast)
-  case StrSnippet(str: String)
-
-  def toStr(using cfg: CFG): String = this match
-    case StrSnippet(str) => str
-    case AstSnippet(ast) => ast.toString(grammar = Some(cfg.grammar))
+/** Snippet kind classification */
+enum SnippetKind {
+  case Expression
+  case Statement
+  case Declaration
 }
+
+/** Snippet for mutation (kind + string representation) */
+case class Snippet(kind: SnippetKind, str: String)
 
 /** Storage for abrupt-triggering code snippets */
 class SnippetStorage(using val cfg: CFG) {
   import Coverage.*
+
+  /** production names derived from grammar chains */
+  private lazy val (expressionNames, statementNames, declarationNames) = {
+    import esmeta.spec.ProductionKind
+    val grammar = cfg.grammar
+    val syntacticNames = grammar.prods.collect {
+      case p if p.kind == ProductionKind.Syntactic => p.name
+    }.toSet
+    def chainChildren(prodName: String): Set[String] =
+      (for {
+        prod <- grammar.nameMap.get(prodName).toSet
+        rhs <- prod.rhsVec
+        requiredNts = rhs.ntsWithOptional.collect {
+          case (nt, false) if syntacticNames(nt.name) => nt.name
+        }
+        if requiredNts.size == 1
+      } yield requiredNts.head).toSet
+    def reachable(isRoot: String => Boolean): Set[String] =
+      val roots = syntacticNames.filter(isRoot)
+      val queue = scala.collection.mutable.Queue(roots.toSeq*)
+      val visited = MSet(roots.toSeq*)
+      while (queue.nonEmpty)
+        val name = queue.dequeue()
+        for {
+          child <- chainChildren(name)
+          if !visited(child)
+        } {
+          visited += child
+          queue.enqueue(child)
+        }
+      visited.toSet
+    (
+      reachable(_.endsWith("Expression")),
+      reachable(_.endsWith("Statement")),
+      reachable(_.endsWith("Declaration")),
+    )
+  }
+
+  /** classify AST production name into snippet kind */
+  // NOTE: prioritize expression over statement and declaration
+  def classify(prodName: String): Option[SnippetKind] =
+    if expressionNames(prodName) then Some(SnippetKind.Expression)
+    else if statementNames(prodName) then Some(SnippetKind.Statement)
+    else if declarationNames(prodName) then Some(SnippetKind.Declaration)
+    else None
+
+  /** check if snippet kind is compatible with target production */
+  def isCompatible(kind: SnippetKind, targetProdName: String): Boolean =
+    classify(targetProdName).contains(kind)
 
   /** branchId -> shortest snippet per branch */
   private val cached: MMap[Int, Snippet] = MMap()
@@ -57,7 +106,7 @@ class SnippetStorage(using val cfg: CFG) {
   def recordSdoCallees(sdoCallees: Map[Int, Int]): Unit =
     sdoCalleeCache ++= sdoCallees
 
-  /** cache localized AST snippets that triggered abrupt branches */
+  /** cache localized snippets that triggered abrupt branches */
   def cache(interp: Interp, mutant: Code): Unit =
     val snippetsByFunc: MMap[Int, MMap[Int, Snippet]] = MMap()
 
@@ -76,13 +125,19 @@ class SnippetStorage(using val cfg: CFG) {
         case n: Target.Normal =>
           interp.st.cachedAst
             .flatMap(findSubtree(_, n))
-            .map(Snippet.AstSnippet(_))
-        case Target.BuiltinThis(thisArg) => Some(Snippet.StrSnippet(thisArg))
-        case Target.BuiltinArg(arg, _)   => Some(Snippet.StrSnippet(arg))
+            .flatMap { ast =>
+              classify(ast.name).map { kind =>
+                Snippet(kind, ast.toString(grammar = Some(cfg.grammar)))
+              }
+            }
+        case Target.BuiltinThis(thisArg) =>
+          Some(Snippet(SnippetKind.Expression, thisArg))
+        case Target.BuiltinArg(arg, _) =>
+          Some(Snippet(SnippetKind.Expression, arg))
       }
       if (localized.nonEmpty)
         val map = snippetsByFunc.getOrElseUpdate(calleeId, MMap())
-        updateShortest(map, branch.id, localized.minBy(_.toStr.length))
+        updateShortest(map, branch.id, localized.minBy(_.str.length))
     }
 
     for {
@@ -90,15 +145,12 @@ class SnippetStorage(using val cfg: CFG) {
       branchIds = calleeIndex.getOrElseUpdate(fid, MSet())
       (branchId, snippet) <- snippets
       if branchIds.size < 100
+      if cached.get(branchId).forall(_.str.length > snippet.str.length)
+    } {
+      cached(branchId) = snippet
+      branchIds += branchId
+      cacheLog(branchId) = CacheEvent(fid, mutant.toString, snippet.str)
     }
-      if cached.get(branchId).forall(_.toStr.length > snippet.toStr.length) then
-        cached(branchId) = snippet
-        branchIds += branchId
-        cacheLog(branchId) = CacheEvent(
-          sourceFid = fid,
-          mutant = mutant.toString,
-          snippet = snippet.toStr,
-        )
 
   /** update map entry only if the new snippet is shorter */
   private def updateShortest(
@@ -106,7 +158,7 @@ class SnippetStorage(using val cfg: CFG) {
     key: Int,
     snippet: Snippet,
   ): Unit =
-    if map.get(key).forall(_.toStr.length > snippet.toStr.length) then
+    if (map.get(key).forall(_.str.length > snippet.str.length))
       map(key) = snippet
 
   /** find subtree in AST matching the given target location */

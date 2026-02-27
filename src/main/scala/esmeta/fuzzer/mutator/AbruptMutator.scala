@@ -5,11 +5,12 @@ import esmeta.es.*
 import esmeta.es.util.*
 import esmeta.fuzzer.*
 import esmeta.util.BaseUtils.*
+import scala.util.Try
 
 /** A mutator targeting abrupt completion branches */
 class AbruptMutator(using cfg: CFG, snippetStorage: SnippetStorage)
   extends Mutator {
-  import Mutator.*, Coverage.*, Snippet.*
+  import Mutator.*, Coverage.*
 
   val randomMutator = RandomMutator()
   val names = "AbruptMutator" :: randomMutator.names
@@ -52,14 +53,11 @@ class AbruptMutator(using cfg: CFG, snippetStorage: SnippetStorage)
     code: Code,
     target: Target,
     snippet: Snippet,
-  ): Option[Result] = (code, target, snippet) match
-    case (Code.Normal(str), t: Target.Normal, AstSnippet(ast)) =>
-      val compatible = ast.chains.collectFirst {
-        case syn: Syntactic if syn.name == t.prodName => syn
-      }
+  ): Option[Result] = (code, target) match
+    case (Code.Normal(str), t: Target.Normal)
+        if snippetStorage.isCompatible(snippet.kind, t.prodName) =>
       for {
-        compatibleSnippet <- compatible
-        mutatedAst <- Walker(t, compatibleSnippet)
+        mutatedAst <- Walker(t, snippet.str)
           .walk(scriptParser.from(str))
           .headOption
       } yield {
@@ -67,22 +65,27 @@ class AbruptMutator(using cfg: CFG, snippetStorage: SnippetStorage)
           Code.Normal(mutatedAst.toString(grammar = Some(cfg.grammar)))
         Result(name, mutant)
       }
-    case (b: Code.Builtin, Target.BuiltinThis(thisArg), StrSnippet(str)) =>
+    case (b: Code.Builtin, Target.BuiltinThis(thisArg)) =>
       if (b.thisArg == Some(thisArg))
-        Some(Result(name, b.replace(target, str)))
+        Some(Result(name, b.replace(target, snippet.str)))
       else None
-    case (b: Code.Builtin, Target.BuiltinArg(arg, i), StrSnippet(str)) =>
+    case (b: Code.Builtin, Target.BuiltinArg(arg, i)) =>
       if (b.args.lift(i) == Some(arg))
-        Some(Result(name, b.replace(target, str)))
+        Some(Result(name, b.replace(target, snippet.str)))
       else None
     case _ => None
 
-  /** walker that replaces target AST with compatible snippet */
-  class Walker(normalTarget: Target.Normal, replacement: Syntactic)
+  /** walker that re-parses snippet at target production level */
+  class Walker(normalTarget: Target.Normal, snippetStr: String)
     extends Util.MultiplicativeListWalker {
     override def walk(ast: Syntactic): List[Syntactic] =
       if (ast.matches(normalTarget))
-        List(replacement)
+        Try(
+          cfg
+            .esParser(ast.name, ast.args)
+            .from(snippetStr)
+            .asInstanceOf[Syntactic],
+        ).toOption.toList
       else super.walk(ast)
   }
 }
