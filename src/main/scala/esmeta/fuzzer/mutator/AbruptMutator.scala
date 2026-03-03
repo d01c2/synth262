@@ -12,8 +12,8 @@ class AbruptMutator(using cfg: CFG, snippetStorage: SnippetStorage)
   extends Mutator {
   import Mutator.*, Coverage.*
 
-  val randomMutator = RandomMutator()
-  val names = "AbruptMutator" :: randomMutator.names
+  val targetMutator = TargetMutator()
+  val names = "AbruptMutator" :: targetMutator.names
 
   /** mutate code */
   def apply(
@@ -37,8 +37,8 @@ class AbruptMutator(using cfg: CFG, snippetStorage: SnippetStorage)
       result <- mutate(code, t, snippet)
     } yield result
     val mutants = shuffle(results.toSeq).take(n)
-    mutants ++ randomMutator(code, n - mutants.size, target)
-  }).getOrElse(randomMutator(code, n, target))
+    mutants ++ targetMutator(code, n - mutants.size, target)
+  }).getOrElse(targetMutator(code, n, target))
 
   /** mutate ASTs */
   def apply(
@@ -46,7 +46,7 @@ class AbruptMutator(using cfg: CFG, snippetStorage: SnippetStorage)
     n: Int,
     target: Option[(CondView, Coverage)],
   ): Seq[Ast] =
-    randomMutator(ast, n, target)
+    targetMutator(ast, n, target)
 
   /** apply snippet to target */
   private def mutate(
