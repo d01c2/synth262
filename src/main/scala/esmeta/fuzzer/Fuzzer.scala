@@ -199,7 +199,7 @@ class Fuzzer(
       val interp = info.interp.get match
         case Success(v) => v
         case Failure(e) => throw e
-      snippetStorage.recordSdoCallees(interp.sdoCallees)
+      snippetStorage.recordDynamicCallees(interp.dynamicCallees)
       snippetStorage.cache(interp, mutant)
       val finalState = interp.result
       val supported = interp.supported

@@ -463,7 +463,7 @@ object Coverage {
   ) extends Interpreter(initSt, tyCheck = tyCheck, timeLimit = timeLimit) {
     var touchedNodeViews: Map[NodeView, Option[Target]] = Map()
     var touchedCondViews: Map[CondView, Set[Target]] = Map()
-    var sdoCallees: Map[Int, Int] = Map()
+    var dynamicCallees: Map[Int, Int] = Map()
     var (supported, isTimeout) = (true, false)
 
     def isTest262Test: Boolean = initSt.filename.exists(_.contains("test262"))
@@ -496,15 +496,17 @@ object Coverage {
         }
       case _ => super.eval(cursor)
 
-    // override eval for call to record SDO callees
+    // override eval for call to record dynamic callees
+    // (SDO calls and internal method calls like O.[[Get]])
     override def eval(call: Call): Unit =
       val prevFunc = st.context.func
       super.eval(call)
       val curFunc = st.context.func
-      call.callInst match
-        case _: ISdoCall if curFunc != prevFunc =>
-          sdoCallees += call.id -> curFunc.id
-        case _ => ()
+      if (curFunc != prevFunc)
+        call.callInst match
+          case _: ISdoCall => dynamicCallees += call.id -> curFunc.id
+          case ICall(_, _: EClo, _) | ICall(_, _: ECont, _) => ()
+          case _: ICall => dynamicCallees += call.id -> curFunc.id
 
     // override eval for node
     override def eval(node: Node): Unit =

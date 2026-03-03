@@ -75,7 +75,7 @@ class SnippetStorage(using val cfg: CFG) {
 
   /** calleeId -> set of branchIds (reverse index for getSnippets) */
   private val calleeIndex: MMap[Int, MSet[Int]] = MMap()
-  private val sdoCalleeCache: MMap[Int, Int] = MMap()
+  private val dynamicCalleeCache: MMap[Int, Int] = MMap()
   private val forwardEdges: MMap[Int, MSet[Int]] = MMap()
 
   /** cache event log for debugging — only entries that made it into cached */
@@ -103,8 +103,8 @@ class SnippetStorage(using val cfg: CFG) {
   }.asJson
 
   /** record SDO callees from interpreter execution */
-  def recordSdoCallees(sdoCallees: Map[Int, Int]): Unit =
-    sdoCalleeCache ++= sdoCallees
+  def recordDynamicCallees(callees: Map[Int, Int]): Unit =
+    dynamicCalleeCache ++= callees
 
   /** cache localized snippets that triggered abrupt branches */
   def cache(interp: Interp, mutant: Code): Unit =
@@ -182,8 +182,8 @@ class SnippetStorage(using val cfg: CFG) {
         c.callInst match
           case ICall(_, EClo(fname, _), _) => cfg.fnameMap.get(fname).map(_.id)
           case ICall(_, ECont(fname), _)   => cfg.fnameMap.get(fname).map(_.id)
-          case _: ISdoCall                 => sdoCalleeCache.get(c.id)
-          case _                           => None
+          case _: ISdoCall                 => dynamicCalleeCache.get(c.id)
+          case _: ICall                    => dynamicCalleeCache.get(c.id)
       }
       .headOption
 
