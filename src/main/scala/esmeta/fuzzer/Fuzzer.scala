@@ -7,14 +7,11 @@ import esmeta.es.*
 import esmeta.es.util.*
 import esmeta.fuzzer.mutator.*
 import esmeta.fuzzer.synthesizer.*
-import esmeta.spec.*
-import esmeta.state.*
 import esmeta.ty.util.TypeErrorCollector
 import esmeta.util.*
 import esmeta.util.BaseUtils.*
 import esmeta.util.SystemUtils.*
 import esmeta.{ESMeta, FUZZ_LOG_DIR, LINE_SEP}
-import io.circe.*, io.circe.syntax.*
 import java.io.PrintWriter
 import java.util.concurrent.{ConcurrentHashMap => CMMap, TimeoutException}
 import scala.collection.mutable.{Map => MMap}
@@ -34,7 +31,6 @@ object Fuzzer {
     trial: Option[Int] = None, // `None` denotes no bound
     duration: Option[Int] = None, // `None` denotes no bound
     init: Option[String] = None, // initial pool directory path given by user
-    cached: Boolean = false,
     kFs: Int = 0,
     cp: Boolean = false,
   ): Coverage = new Fuzzer(
@@ -48,7 +44,6 @@ object Fuzzer {
     trial,
     duration,
     init,
-    cached,
     kFs,
     cp,
   ).result
@@ -71,26 +66,20 @@ class Fuzzer(
   trial: Option[Int],
   duration: Option[Int],
   init: Option[String],
-  cached: Boolean,
   kFs: Int,
   cp: Boolean,
 ) {
   import Coverage.*, Fuzzer.*
 
-  val jsonProtocol = new JsonProtocol(cfg)
-  import jsonProtocol.{*, given}
-
   /** ECMAScript grammar */
   lazy val grammar = cfg.grammar
-
-  /** script parser */
-  lazy val scriptParser = cfg.scriptParser
 
   /** type error collector */
   lazy val collector: TypeErrorCollector = new TypeErrorCollector
 
   /** generated ECMAScript programs */
   lazy val result: Coverage = {
+    startTime = System.currentTimeMillis
     if (log) {
       // start logging
       mkdir(logDir, remove = true)
@@ -112,11 +101,9 @@ class Fuzzer(
       },
     )
     println(s"- the initial program pool consists of ${pool.size} programs.")
-    if (cached && !exists(cacheDir)) dumpCache
     time(
       "- repeatedly trying to fuzz new programs to increase coverage", {
         if (log) {
-          startTime = System.currentTimeMillis
           startInterval = System.currentTimeMillis
           logging
         }
@@ -239,17 +226,6 @@ class Fuzzer(
     val Counter(p, f) = map.getOrElse(t, Counter())
     val updated = if (pass) Counter(p + 1, f) else Counter(p, f + 1)
     map += t -> updated
-  private def counterJson[T: Ordering](map: MMap[T, Counter]): Json =
-    JsonObject(
-      (for ((condView, Counter(pass, fail)) <- map.toList.sortBy(_._1)) yield {
-        val key = condView.toString
-        val obj = JsonObject(
-          "pass" -> pass.asJson,
-          "fail" -> fail.asJson,
-        ).asJson
-        key -> obj
-      }): _*,
-    ).asJson
 
   /** light-weight analyzer for fuzzing */
   lazy val analyzer = ParamFlowAnalyzer(cfg, silent = true)
@@ -284,27 +260,18 @@ class Fuzzer(
 
   /** initial pool */
   val initPool =
-    if (cached && exists(cacheDir)) {
-      listFiles(cacheDir).sorted
-        .filter(_.getPath.endsWith(".json"))
-        .map(f => "Cached" -> readJson[Code](f.getPath))
-    } else {
-      val initFiles =
-        init.map(dir => walkTree(dir).filter(_.isFile).toList.sorted)
-      initFiles match
-        case Some(files) =>
-          files.map { file =>
-            val sourceText = readFile(file.getPath).replace(USE_STRICT, "")
-            "GivenByUser" -> Code.Normal(sourceText)
-          }
-        case None =>
-          SimpleSynthesizer(grammar).initPool.map { code =>
-            SimpleSynthesizer(grammar).name -> code
-          } ++
-          BuiltinSynthesizer(cfg.spec.algorithms).initPool.map { code =>
-            BuiltinSynthesizer(cfg.spec.algorithms).name -> code
-          }
-    }
+    val inits = init.map(dir => walkTree(dir).filter(_.isFile).toList.sorted)
+    inits match
+      case Some(files) =>
+        files.map { file =>
+          val sourceText = readFile(file.getPath).replace(USE_STRICT, "")
+          "GivenByUser" -> Code.Normal(sourceText)
+        }
+      case None =>
+        val simpleSyn = SimpleSynthesizer(grammar)
+        val builtinSyn = BuiltinSynthesizer(cfg.spec.algorithms)
+        simpleSyn.initPool.map(code => simpleSyn.name -> code) ++
+        builtinSyn.initPool.map(code => builtinSyn.name -> code)
 
   lazy val logDir: String = s"$FUZZ_LOG_DIR/fuzz-$dateStr"
   lazy val symlink: String = s"$FUZZ_LOG_DIR/recent"
@@ -441,19 +408,4 @@ class Fuzzer(
     getPrintWriter(s"$logDir/selector-stat.tsv")
   private lazy val mutStatTsv: PrintWriter =
     getPrintWriter(s"$logDir/mutation-stat.tsv")
-
-  // dump cache for synthesized initial pool
-  private def dumpCache: Unit =
-    mkdir(cacheDir)
-    dumpDir[Script](
-      name = "minimal ECMAScript programs in JSON",
-      iterable = cov.minimalScripts,
-      dirname = cacheDir,
-      getName = _.name + "on", // ".json" = ".js" + "on"
-      getData = _.code.asJson,
-      remove = true,
-    )
-    println("Dumped cache for synthesized initial pool")
-
-  private lazy val cacheDir: String = s"$FUZZ_LOG_DIR/cached"
 }

@@ -38,7 +38,6 @@ case object Fuzz extends Phase[CFG, Coverage] {
       trial = config.trial,
       duration = config.duration,
       init = config.init,
-      cached = config.cached,
       kFs = config.kFs,
       cp = config.cp,
     )
@@ -100,11 +99,6 @@ case object Fuzz extends Phase[CFG, Coverage] {
       "set the specific seed for the random number generator (default: None).",
     ),
     (
-      "cached",
-      BoolOption((c, b) => c.cached = b),
-      "set cached JSON dumped program to skip synthesizer startup.",
-    ),
-    (
       "init",
       StrOption((c, s) => c.init = Some(s)),
       "explicitly use the given init pool",
@@ -130,7 +124,6 @@ case object Fuzz extends Phase[CFG, Coverage] {
     var trial: Option[Int] = None,
     var duration: Option[Int] = None,
     var seed: Option[Int] = None,
-    var cached: Boolean = false,
     var init: Option[String] = None,
     var kFs: Int = 0,
     var cp: Boolean = false,
