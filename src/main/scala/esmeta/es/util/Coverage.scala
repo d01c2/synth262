@@ -75,7 +75,8 @@ case class Coverage(
   private var counter: Map[Script, Int] = Map()
   def size: Int = counter.size
 
-  // target conditional branches
+  // target conditional branches (reached but one side left branches)
+  // NOTE: but exclude branches having no target (no hint for mutation)
   private var _targetCondViews: Map[Cond, Map[View, Set[Target]]] = Map()
   def targetCondViews: Map[Cond, Map[View, Set[Target]]] = _targetCondViews
 
@@ -357,10 +358,10 @@ case class Coverage(
     // update target branches
     val neg = condView.neg
     cond.branch match
-      case _ if !script.name.contains("test262") && targets.isEmpty =>
-      case Branch(_, _, EBool(_), _, _, _, _)                       =>
-      case _ if getScript(neg).isDefined => removeTargetCond(neg)
-      case _                             => addTargetCond(condView, targets)
+      case _ if targets.isEmpty => // exclude conds having no target
+      case Branch(_, _, EBool(_), _, _, _, _) =>
+      case _ if getScript(neg).isDefined      => removeTargetCond(neg)
+      case _ => addTargetCond(condView, targets)
 
     condViewMap += cond -> updated(apply(cond), view, script)
   }
