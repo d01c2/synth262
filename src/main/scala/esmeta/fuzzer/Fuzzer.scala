@@ -31,6 +31,7 @@ object Fuzzer {
     trial: Option[Int] = None, // `None` denotes no bound
     duration: Option[Int] = None, // `None` denotes no bound
     init: Option[String] = None, // initial pool directory path given by user
+    analyze: Boolean = true, // use dataflow analysis for target guidance
     kFs: Int = 0,
     cp: Boolean = false,
   ): Coverage = new Fuzzer(
@@ -44,6 +45,7 @@ object Fuzzer {
     trial,
     duration,
     init,
+    analyze,
     kFs,
     cp,
   ).result
@@ -66,6 +68,7 @@ class Fuzzer(
   trial: Option[Int],
   duration: Option[Int],
   init: Option[String],
+  analyze: Boolean,
   kFs: Int,
   cp: Boolean,
 ) {
@@ -232,8 +235,10 @@ class Fuzzer(
 
   /** coverage */
   val cov: Coverage =
-    analyzer.analyze
-    Coverage(cfg, tyCheck, kFs, cp, timeLimit, analyzer = Some(analyzer))
+    val an =
+      if (analyze) { analyzer.analyze; Some(analyzer) }
+      else None
+    Coverage(cfg, tyCheck, kFs, cp, timeLimit, analyzer = an)
 
   /** target selector */
   val selector: TargetSelector = WeightedSelector(

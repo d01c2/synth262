@@ -580,9 +580,12 @@ object Coverage {
       // record touched conditional branch if it is a target branch
       if (isTargetBranch(branch, st))
         val cond = Cond(branch, b)
-        val targets = getTargets(st.context, st.callStack, branch, branch.cond)
-        val validTargets = targets.filter(isValidTarget)
-        touchedCondViews += CondView(cond, getView(cond)) -> validTargets
+        val targets = analyzer match
+          case Some(_) =>
+            getTargets(st.context, st.callStack, branch, branch.cond)
+              .filter(isValidTarget)
+          case None => getNearest.toSet
+        touchedCondViews += CondView(cond, getView(cond)) -> targets
       super.moveBranch(branch, b)
 
     // get syntax-sensitive views
