@@ -199,8 +199,6 @@ class Fuzzer(
       val interp = info.interp.get match
         case Success(v) => v
         case Failure(e) => throw e
-      snippetStorage.recordDynamicCallees(interp.dynamicCallees)
-      snippetStorage.cache(interp, mutant)
       val finalState = interp.result
       val supported = interp.supported
       val script = toScript(mutant, supported)
@@ -271,12 +269,10 @@ class Fuzzer(
   val selectorStat: MMap[String, Counter] = MMap()
 
   given CFG = cfg
-  given snippetStorage: SnippetStorage = new SnippetStorage
 
   /** mutator */
   val mutator: Mutator = WeightedMutator(
     TargetMutator() -> 6,
-    AbruptMutator() -> 6,
     RandomMutator() -> 3,
     StatementInserter() -> 1,
     Remover() -> 1,
@@ -419,12 +415,6 @@ class Fuzzer(
     dumpStat(mutator.names, mutatorStat, mutStatTsv)
     // dump spec type error
     if (tyCheck) collector.dumpTo(logDir)
-    // dump snippet storage
-    dumpFile(
-      name = "abrupt completion triggering code snippets",
-      data = snippetStorage.dumpContent,
-      filename = s"$logDir/snippet-storage.json",
-    )
     // dump ESMeta errors
     dumpFile(
       name = "found ESMeta errors",
