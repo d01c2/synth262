@@ -13,7 +13,8 @@ trait Mutator(using val cfg: CFG) {
   /** ECMAScript parser */
   lazy val esParser: ESParser = cfg.esParser
   lazy val scriptParser: AstFrom = esParser("Script")
-  lazy val argListParser: AstFrom = esParser("ArgumentList", List(false, false))
+  lazy val assignExprParser: AstFrom =
+    esParser("AssignmentExpression", List(true, false, false))
 
   /** mutate code */
   def apply(
@@ -89,7 +90,11 @@ trait Mutator(using val cfg: CFG) {
         targets.flatMap { mutationCite =>
           val argStr = mutationCite.argStr
           for {
-            mutatedAst <- apply(argListParser.from(argStr), perTarget, target)
+            mutatedAst <- apply(
+              assignExprParser.from(argStr),
+              perTarget,
+              target,
+            )
             mutatedStr = mutatedAst.toString(grammar = Some(cfg.grammar))
             mutatedCode = builtin.replace(mutationCite, mutatedStr)
           } yield Result(name, mutatedCode)

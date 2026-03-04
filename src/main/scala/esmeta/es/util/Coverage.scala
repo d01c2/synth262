@@ -394,8 +394,7 @@ case class Coverage(
   // add a cond to targetConds
   private def addTargetCond(cv: CondView, targets: Set[Target]): Unit =
     val CondView(cond, view) = cv
-    val origViews = _targetCondViews.getOrElse(cond, Map())
-    val newViews = origViews + (view -> targets)
+    val newViews = _targetCondViews.getOrElse(cond, Map()) + (view -> targets)
     _targetCondViews += cond -> newViews
 
   // remove a cond from targetConds
@@ -528,7 +527,6 @@ object Coverage {
         curNp = an.NodePoint(context.func, node, an.emptyView)
         absSt = an.getResult(curNp)
         (absV, _) = an.transfer.transfer(expr)(using curNp)(absSt)
-        id = node.id
         param <- absV.params
         target <- context.func.head match {
           case Some(_: SyntaxDirectedOperationHead) =>
@@ -567,14 +565,6 @@ object Coverage {
       } yield target
     }
 
-    // check if a target's location is valid for the current source code
-    // (filters out targets from dynamically re-parsed code like Function constructor)
-    private def isValidTarget(target: Target): Boolean = target match
-      case Target.Normal(_, _, _, loc) =>
-        val sourceLen = st.sourceCode.map(_.toString.length).getOrElse(0)
-        loc.start.offset >= 0 && loc.end.offset <= sourceLen
-      case _ => true // Target.Builtin don't use locations
-
     // override branch move
     override def moveBranch(branch: Branch, b: Boolean): Unit =
       // record touched conditional branch if it is a target branch
@@ -582,8 +572,16 @@ object Coverage {
         val cond = Cond(branch, b)
         val targets = analyzer match
           case Some(_) =>
-            getTargets(st.context, st.callStack, branch, branch.cond)
-              .filter(isValidTarget)
+            val sourceLen = st.sourceCode.map(_.toString.length).getOrElse(0)
+            // filter out targets from dynamically re-parsed code (e.g. Function
+            // constructor) whose locations exceed the original source boundary
+            val filtered =
+              getTargets(st.context, st.callStack, branch, branch.cond).filter {
+                case Target.Normal(_, _, _, Loc(start, end, _, _)) =>
+                  start.offset >= 0 && end.offset <= sourceLen
+                case _ => true
+              }
+            if (filtered.isEmpty) getNearest.toSet else filtered
           case None => getNearest.toSet
         touchedCondViews += CondView(cond, getView(cond)) -> targets
       super.moveBranch(branch, b)
