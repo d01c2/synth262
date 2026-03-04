@@ -147,12 +147,12 @@ case class Coverage(
     var updated = false
     var blockingScripts: Set[Script] = Set.empty
 
-    var touchedNodeViews: Map[NodeView, Option[Target]] = Map()
+    var touchedNodeViews: Set[NodeView] = Set()
     var touchedCondViews: Map[CondView, Set[Target]] = Map()
 
     // update node coverage
-    for ((nodeView, nearest) <- interp.touchedNodeViews)
-      touchedNodeViews += nodeView -> nearest
+    for (nodeView <- interp.touchedNodeViews)
+      touchedNodeViews += nodeView
       getScripts(nodeView) match
         case None => update(nodeView, script); updated = true; covered = true
         case Some(scripts) =>
@@ -194,7 +194,7 @@ case class Coverage(
     if (!all && updated)
       _minimalInfo += script.name -> ScriptInfo(
         // TODO generate ConformTest from finalSt
-        touchedNodeViews.keys,
+        touchedNodeViews,
         touchedCondViews.keys,
       )
 
@@ -462,7 +462,7 @@ object Coverage {
     isTargetBranch: (Branch, State) => Boolean,
     analyzer: Option[ParamFlowAnalyzer] = None,
   ) extends Interpreter(initSt, tyCheck = tyCheck, timeLimit = timeLimit) {
-    var touchedNodeViews: Map[NodeView, Option[Target]] = Map()
+    var touchedNodeViews: Set[NodeView] = Set()
     var touchedCondViews: Map[CondView, Set[Target]] = Map()
     var (supported, isTimeout) = (true, false)
 
@@ -500,7 +500,7 @@ object Coverage {
     override def eval(node: Node): Unit =
       // record touched nodes if it is a target node
       if (isTargetNode(node, st))
-        touchedNodeViews += NodeView(node, getView(node)) -> getNearest
+        touchedNodeViews += NodeView(node, getView(node))
       super.eval(node)
 
     // get impact targets for a given expression in a given context
