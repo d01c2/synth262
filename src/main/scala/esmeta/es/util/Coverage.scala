@@ -541,7 +541,7 @@ object Coverage {
             import Code.*
             import ParamKind.*
             import Target.*
-            given asgmtExprParser: AstFrom =
+            given assignExprParser: AstFrom =
               st.cfg.esParser("AssignmentExpression", List(true, false, false))
             st.sourceCode match
               case Some(builtin: Builtin) =>
@@ -550,16 +550,23 @@ object Coverage {
                   case This =>
                     targets.collect { case target: BuiltinThis => target }.toSet
                   case Named(name) =>
-                    val idx = (for {
-                      case addr: Addr <- st.locals.get(Name("__args__"))
-                      case record: RecordObj <- st.heap.map.get(addr)
-                      args = record.map.keys.toList
-                    } yield args.indexOf(name)).getOrElse(-1)
-                    targets.collect {
-                      case target: BuiltinArg if target.idx == idx => target
-                    }.toSet
+                    val idxOpt = an.builtinArgOrder
+                      .get(context.func.id)
+                      .flatMap(_.get(name))
+                    idxOpt match
+                      case Some(idx) =>
+                        targets.collect {
+                          case target: BuiltinArg if target.idx == idx => target
+                        }.toSet
+                      case None if name == "ArgumentsList" =>
+                        // NOTE: constructor builtins access args via ArgumentsList[i]
+                        // index info is lost in transfer, so return all args as targets
+                        targets.collect {
+                          case target: BuiltinArg => target
+                        }.toSet
+                      case None => Set()
                   case _ => Set()
-              case s => Set()
+              case _ => Set()
           case _ => next(param.asInstanceOf[ParamKind.Named].name)
         }
       } yield target

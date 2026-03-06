@@ -4,6 +4,7 @@ import esmeta.{PARAM_FLOW_LOG_DIR, LINE_SEP}
 import esmeta.analyzer.*
 import esmeta.cfg.*
 import esmeta.ir.{Func => _, *, given}
+import esmeta.spec.BuiltinHead
 import esmeta.util.*
 import esmeta.util.BaseUtils.*
 import esmeta.util.SystemUtils.*
@@ -183,6 +184,21 @@ class ParamFlowAnalyzer(
         silent = silent,
       )
   }
+
+  /** mapping from builtin func id to (paramName -> argIndex) */
+  lazy val builtinArgOrder: Map[Int, Map[String, Int]] =
+    cfg.funcs.flatMap { func =>
+      func.head match
+        case Some(_: BuiltinHead) =>
+          val order = func.nodes.toList.sortBy(_.id).flatMap {
+            case Block(_, insts, _) =>
+              insts.collect { case IExpand(_: Local, EStr(field)) => field }
+            case _ => Nil
+          }
+          if (order.nonEmpty) Some(func.id -> order.zipWithIndex.toMap)
+          else None
+        case _ => None
+    }.toMap
 
   // ---------------------------------------------------------------------------
   // Implementation for ParamFlowAnalyzer
