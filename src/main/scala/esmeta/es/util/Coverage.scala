@@ -508,8 +508,12 @@ object Coverage {
       callStack: List[CallContext],
       node: Node,
       expr: Expr,
+      argIdx: Option[Int] = None,
     ): Set[Target] = {
-      def next(param: String): Set[Target] = callStack match {
+      def next(
+        param: String,
+        nextArgIdx: Option[Int] = argIdx,
+      ): Set[Target] = callStack match {
         case head :: tail =>
           val idx = context.func.params.map(_.lhs.name).indexOf(param)
           val cc = head.context
@@ -519,9 +523,18 @@ object Coverage {
             case ICall(_, _, args)          => args
             case ISdoCall(_, base, _, args) => base :: args
           val arg = args.lift(idx).getOrElse(EUndef())
-          getTargets(cc, tail, cursor.node, arg)
+          getTargets(cc, tail, cursor.node, arg, nextArgIdx)
         case Nil => Set()
       }
+      // try to refine target to a specific argument AST when argIdx is set
+      def refineTarget(astOpt: Option[Ast]): Set[Target] =
+        given cfg: CFG = st.cfg
+        argIdx match
+          case Some(k) =>
+            extractCallArg(astOpt, k).flatMap(a => Target(Some(a))) match
+              case Some(t) => Set(t)
+              case None    => Target(astOpt).toSet
+          case None => Target(astOpt).toSet
       for {
         an <- analyzer.toSet
         curNp = an.NodePoint(context.func, node, an.emptyView)
@@ -533,44 +546,71 @@ object Coverage {
             import ParamKind.*
             given cfg: CFG = st.cfg
             param match
-              case This => Target(context.astOpt).toSet
+              case This => refineTarget(context.astOpt)
               case ThisIdx(k) =>
-                Target(context.astOpt.flatMap(_.children.lift(k).flatten)).toSet
+                refineTarget(context.astOpt.flatMap(_.children.lift(k).flatten))
               case Named(name) => next(name)
           case Some(_: BuiltinHead) =>
-            import Code.*
             import ParamKind.*
-            import Target.*
-            given assignExprParser: AstFrom =
-              st.cfg.esParser("AssignmentExpression", List(true, false, false))
-            st.sourceCode match
-              case Some(builtin: Builtin) =>
-                val targets = builtin.targetArgs.toSet
-                param match
-                  case This =>
-                    targets.collect { case target: BuiltinThis => target }.toSet
-                  case Named(name) =>
-                    val idxOpt = an.builtinArgOrder
-                      .get(context.func.id)
-                      .flatMap(_.get(name))
-                    idxOpt match
-                      case Some(idx) =>
-                        targets.collect {
-                          case target: BuiltinArg if target.idx == idx => target
-                        }.toSet
-                      case None if name == "ArgumentsList" =>
-                        // NOTE: constructor builtins access args via ArgumentsList[i]
-                        // index info is lost in transfer, so return all args as targets
-                        targets.collect {
-                          case target: BuiltinArg => target
-                        }.toSet
-                      case None => Set()
-                  case _ => Set()
+            param match
+              case This        => next("this")
+              case Named(name) =>
+                // count IPop(ArgumentsList) in this function for offset;
+                // each pop shifts the argument index by 1
+                // (e.g. Function.prototype.call pops thisArg before passing the remaining list)
+                val popOffset =
+                  if (argIdx.isDefined)
+                    context.func.nodes.toList.map {
+                      case Block(_, insts, _) =>
+                        insts.count {
+                          case IPop(_, ERef(Name("ArgumentsList")), _) => true
+                          case _                                       => false
+                        }
+                      case _ => 0
+                    }.sum
+                  else 0
+                // preserve argIdx from inner builtin with offset; compute fresh if not set
+                val resolvedArgIdx = argIdx
+                  .map(_ + popOffset)
+                  .orElse {
+                    an.builtinArgOrder.get(context.func.id).flatMap(_.get(name))
+                  }
+                next("ArgumentsList", resolvedArgIdx)
               case _ => Set()
           case _ => next(param.asInstanceOf[ParamKind.Named].name)
         }
       } yield target
     }
+
+    // extract arguments from any argument-containing AST
+    private def extractArgs(astOpt: Option[Ast]): Option[Vector[Ast]] =
+      for {
+        ast <- astOpt
+        argList <- findArgList(ast)
+        args = flattenArgList(argList)
+        if args.nonEmpty
+      } yield args
+
+    // extract the k-th argument
+    private def extractCallArg(astOpt: Option[Ast], k: Int): Option[Ast] =
+      extractArgs(astOpt).flatMap(_.lift(k))
+
+    // find ArgumentList in AST by navigating the known grammar structure
+    private def findArgList(ast: Ast): Option[Syntactic] =
+      def childByName(a: Ast, name: String): Option[Syntactic] = a match
+        case s: Syntactic =>
+          s.children.flatten.collectFirst {
+            case c: Syntactic if c.name == name => c
+          }
+        case _ => None
+      ast match
+        case s: Syntactic if s.name == "ArgumentList" => Some(s)
+        case _ =>
+          childByName(ast, "ArgumentList").orElse {
+            childByName(ast, "Arguments").flatMap {
+              childByName(_, "ArgumentList")
+            }
+          }
 
     // override branch move
     override def moveBranch(branch: Branch, b: Boolean): Unit =

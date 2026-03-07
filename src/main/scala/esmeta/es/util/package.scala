@@ -39,5 +39,14 @@ def flattenStmt(s: Ast): Vector[Ast] = s match
       case _ => Vector.empty
   case _ => Vector.empty
 
+/** flatten argument lists */
+def flattenArgList(ast: Ast): Vector[Ast] = ast match
+  case Syntactic("ArgumentList", _, 0 | 1, children) =>
+    children.flatten.toVector
+  case Syntactic("ArgumentList", _, 2 | 3, children) =>
+    children(0).map(flattenArgList).getOrElse(Vector()) ++
+    children.lift(1).flatten.toVector
+  case _ => Vector()
+
 /** ECMAScript strict mode directive */
 val USE_STRICT = s"\"use strict\";$LINE_SEP"
