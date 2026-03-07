@@ -20,33 +20,6 @@ class SpecStringMutator(using cfg: CFG)(
 
   val synthesizer = synBuilder(cfg.grammar)
 
-  /** mutate code */
-  def apply(
-    code: Code,
-    n: Int,
-    target: Option[(CondView, Coverage)],
-  ): Seq[Result] = code match
-    case Code.Normal(str) =>
-      val ast = scriptParser.from(str)
-      apply(ast, n, target).map { mutatedAst =>
-        val mutatedStr = mutatedAst.toString(grammar = Some(cfg.grammar))
-        Result(name, Code.Normal(mutatedStr))
-      }
-    case builtin @ Code.Builtin(_, _, _, preStmts, postStmts) =>
-      if ((preStmts.isDefined || postStmts.isDefined) && randBool) {
-        // mutate statements
-        (preStmts, postStmts) match
-          case (Some(_), Some(_)) =>
-            if randBool then builtin.mutatePreStmts(n, target)
-            else builtin.mutatePostStmts(n, target)
-          case (Some(_), None) => builtin.mutatePreStmts(n, target)
-          case (None, Some(_)) => builtin.mutatePostStmts(n, target)
-          case (None, None)    => raise("unreachable")
-      } else {
-        // mutate builtin call arguments
-        builtin.mutateArgStr(n, target)
-      }
-
   /** mutate ASTs */
   def apply(
     ast: Ast,

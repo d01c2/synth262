@@ -14,8 +14,7 @@ class Initialize(cfg: CFG) {
 
   /** get initial state from script */
   def from(script: Script): State = from(
-    script.code.toString,
-    code = Some(script.code),
+    script.code,
     filename = Some(script.name),
   )
 
@@ -24,16 +23,14 @@ class Initialize(cfg: CFG) {
     val (ast, sourceText) = cfg.scriptParser.fromFileWithSourceText(filename)
     from(sourceText, ast = Some(ast), filename = Some(filename))
 
-  /** get initial state with `Code` object with cached code string and AST */
+  /** get initial state with source text and optional cached AST */
   def from(
     sourceText: String,
     ast: Option[Ast] = None,
-    code: Option[Code] = None,
     filename: Option[String] = None,
   ): State = State(
     cfg,
     context = Context(cfg.main),
-    sourceCode = Some(code.getOrElse(Code.Normal(sourceText))),
     cachedSourceText = Some(sourceText),
     cachedAst = Some(ast.getOrElse(cfg.scriptParser.from(sourceText))),
     filename = filename,

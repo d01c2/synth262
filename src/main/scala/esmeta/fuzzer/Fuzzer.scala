@@ -77,6 +77,9 @@ class Fuzzer(
   /** ECMAScript grammar */
   lazy val grammar = cfg.grammar
 
+  /** script parser */
+  lazy val scriptParser = cfg.scriptParser
+
   /** type error collector */
   lazy val collector: TypeErrorCollector = new TypeErrorCollector
 
@@ -96,7 +99,12 @@ class Fuzzer(
     time(
       s"- initializing program pool with ${initPool.size} programs", {
         var i = 1
-        for ((synthesizer, code) <- initPool) {
+        for {
+          (synthesizer, rawCode) <- initPool
+          code <- optional(
+            scriptParser.from(rawCode).toString(grammar = Some(grammar)),
+          )
+        } {
           debugging(f"[${synthesizer}:$i/${initPool.size}%-30s] $code")
           i += 1
           add(code)
@@ -171,17 +179,16 @@ class Fuzzer(
   )
 
   /** get candidate information */
-  def getCandInfo(code: Code): CandInfo =
-    val sourceText = code.toString
-    if (!visited.add(sourceText)) CandInfo(visited = true)
-    else if (!ValidityChecker(sourceText)) CandInfo(invalid = true)
+  def getCandInfo(code: String): CandInfo =
+    if (!visited.add(code)) CandInfo(visited = true)
+    else if (!ValidityChecker(code)) CandInfo(invalid = true)
     else CandInfo(interp = Some(Try(cov.run(code))))
 
   /** add new program */
-  def add(code: Code): Boolean = add(code, getCandInfo(code))
+  def add(code: String): Boolean = add(code, getCandInfo(code))
 
   /** add mutant with precomputed info */
-  def add(mutant: Code, info: CandInfo): Boolean = handleResult(
+  def add(mutant: String, info: CandInfo): Boolean = handleResult(
     mutant,
     Try {
       if (info.visited) fail("ALREADY VISITED")
@@ -192,7 +199,7 @@ class Fuzzer(
       val finalState = interp.result
       val supported = interp.supported
       val script = toScript(mutant, supported)
-      if (tyCheck) collector.add(mutant.toString, finalState.typeErrors)
+      if (tyCheck) collector.add(mutant, finalState.typeErrors)
       val (_, updated, covered) = cov.check(script, interp)
       if (!updated) fail("NO UPDATE")
       (covered, supported)
@@ -200,18 +207,19 @@ class Fuzzer(
   )
 
   /** handle add result */
-  def handleResult(code: Code, result: Try[(Boolean, Boolean)]): Boolean = {
+  def handleResult(code: String, result: Try[(Boolean, Boolean)]): Boolean = {
     debugging(f" ${"COVERAGE RESULT"}%30s: ", newline = false)
     val pass = result match
       case Success(covered, supported) =>
-        debugging(passMsg(if supported then "" else "NOT SUPPORTED"))
+        val msg = if supported then "" else "NOT SUPPORTED"
+        debugging(passMsg(msg))
         covered
       case Failure(e: TimeoutException) =>
         debugging(failMsg("TIMEOUT"))
         false
       case Failure(e: ESMetaError) =>
         debugging(failMsg("ESMETA ERROR"))
-        esmetaErrors += e -> (esmetaErrors.getOrElse(e, Set()) + code.toString)
+        esmetaErrors += e -> (esmetaErrors.getOrElse(e, Set()) + code)
         false
       case Failure(e) =>
         e.getMessage match
@@ -231,14 +239,16 @@ class Fuzzer(
     map += t -> updated
 
   /** light-weight analyzer for fuzzing */
-  lazy val analyzer = ParamFlowAnalyzer(cfg, silent = true)
+  lazy val analyzer: Option[ParamFlowAnalyzer] =
+    if (analyze) {
+      val an = ParamFlowAnalyzer(cfg, silent = true)
+      an.analyze
+      Some(an)
+    } else None
 
   /** coverage */
   val cov: Coverage =
-    val an =
-      if (analyze) { analyzer.analyze; Some(analyzer) }
-      else None
-    Coverage(cfg, tyCheck, kFs, cp, timeLimit, analyzer = an)
+    Coverage(cfg, tyCheck, kFs, cp, timeLimit, analyzer = analyzer)
 
   /** target selector */
   val selector: TargetSelector = WeightedSelector(
@@ -270,7 +280,7 @@ class Fuzzer(
       case Some(files) =>
         files.map { file =>
           val sourceText = readFile(file.getPath).replace(USE_STRICT, "")
-          "GivenByUser" -> Code.Normal(sourceText)
+          "GivenByUser" -> sourceText
         }
       case None =>
         val simpleSyn = SimpleSynthesizer(grammar)
@@ -298,8 +308,8 @@ class Fuzzer(
   private var startInterval: Long = 0L
   private def interval: Long = System.currentTimeMillis - startInterval
 
-  // conversion from `Code` object to `Script` object
-  private def toScript(code: Code, supported: Boolean): Script =
+  // conversion from code string to `Script` object
+  private def toScript(code: String, supported: Boolean): Script =
     Script(code, s"$nextId.js", supported)
 
   // check if the added code is visited (thread-safe)

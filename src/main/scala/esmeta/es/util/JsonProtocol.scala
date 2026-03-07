@@ -55,48 +55,4 @@ class JsonProtocol(cfg: CFG) extends StateJsonProtocol(cfg) {
   given coverageConstructorDecoder: Decoder[CoverageConstructor] = deriveDecoder
   given coverageConstructorEncoder: Encoder[CoverageConstructor] = deriveEncoder
 
-  // code object
-  import Code.*
-  given Decoder[Normal] = deriveDecoder
-  given Encoder[Normal] = deriveEncoder
-  given Decoder[Builtin] = deriveDecoder
-  given Encoder[Builtin] = deriveEncoder
-
-  given codeDecoder: Decoder[Code] = Decoder.instance { c =>
-    c.get[String]("tag").flatMap {
-      case "Normal" =>
-        c.get[Normal]("code").map { normal =>
-          Normal(sourceText = normal.sourceText)
-        }
-      case "Builtin" =>
-        c.get[Builtin]("code").map { builtin =>
-          Builtin(
-            func = builtin.func,
-            thisArg = builtin.thisArg,
-            args = builtin.args,
-            preStmts = builtin.preStmts,
-            postStmts = builtin.postStmts,
-          )
-        }
-    }
-  }
-  given codeEncoder: Encoder[Code] = Encoder.instance { code =>
-    code match
-      case Normal(sourceText) =>
-        Json.obj(
-          "tag" -> "Normal".asJson,
-          "code" -> Json.obj("sourceText" -> sourceText.asJson),
-        )
-      case Builtin(func, thisArg, args, preStmts, postStmts) =>
-        Json.obj(
-          "tag" -> "Builtin".asJson,
-          "code" -> Json.obj(
-            "func" -> func.asJson,
-            "thisArg" -> thisArg.asJson,
-            "args" -> args.asJson,
-            "preStmts" -> preStmts.asJson,
-            "postStmts" -> postStmts.asJson,
-          ),
-        )
-  }
 }

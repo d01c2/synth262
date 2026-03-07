@@ -89,42 +89,33 @@ case class Coverage(
     script: Script,
     ast: Option[Ast] = None,
   ): (State, Boolean, Boolean) =
-    val sourceText = script.code.toString
+    val sourceText = script.code
     val interp = run(
       sourceText,
       ast.getOrElse(scriptParser.from(sourceText)),
-      Some(script.code),
       Some(script.name),
     )
     this.synchronized(check(script, interp))
 
   /** evaluate a given ECMAScript program */
-  def run(code: Code): Interp =
-    val sourceText = code.toString
-    val ast = scriptParser.from(sourceText)
-    run(sourceText, ast, Some(code), None)
-
-  /** evaluate a given ECMAScript program */
   def run(sourceText: String): Interp =
     val ast = scriptParser.from(sourceText)
-    run(sourceText, ast, Some(Code.Normal(sourceText)), None)
+    run(sourceText, ast, None)
 
   /** evaluate a given ECMAScript program */
   def run(ast: Ast): Interp =
     val sourceText = ast.toString(grammar = Some(cfg.grammar))
-    run(sourceText, ast, Some(Code.Normal(sourceText)), None)
+    run(sourceText, ast, None)
 
   /** evaluate a given ECMAScript program */
   def run(
     sourceText: String,
     ast: Ast,
-    code: Option[Code],
     name: Option[String],
   ): Interp =
     val initSt = cfg.init.from(
       sourceText,
       Some(ast),
-      Some(code.getOrElse(Code.Normal(sourceText))),
       name,
     )
     val interp = Interp(
@@ -619,14 +610,13 @@ object Coverage {
         val cond = Cond(branch, b)
         val targets = analyzer match
           case Some(_) =>
-            val sourceLen = st.sourceCode.map(_.toString.length).getOrElse(0)
+            val sourceLen = st.cachedSourceText.map(_.length).getOrElse(0)
             // filter out targets from dynamically re-parsed code (e.g. Function
             // constructor) whose locations exceed the original source boundary
             val filtered =
               getTargets(st.context, st.callStack, branch, branch.cond).filter {
-                case Target.Normal(_, _, _, Loc(start, end, _, _)) =>
+                case Target(_, _, _, Loc(start, end, _, _)) =>
                   start.offset >= 0 && end.offset <= sourceLen
-                case _ => true
               }
             if (filtered.isEmpty) getNearest.toSet else filtered
           case None => getNearest.toSet

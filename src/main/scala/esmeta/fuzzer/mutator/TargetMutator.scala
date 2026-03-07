@@ -19,78 +19,23 @@ class TargetMutator(using cfg: CFG)(
   /** synthesizer */
   val synthesizer = synBuilder(cfg.grammar)
 
-  /** mutate code */
-  def apply(
-    code: Code,
-    n: Int,
-    target: Option[(CondView, Coverage)],
-  ): Seq[Result] = (for {
-    (cv, cov) <- target
-    CondView(cond, view) = cv
-    targets = cov.targetCondViews.getOrElse(cond, Map()).getOrElse(view, Set())
-    normalTargets = targets.collect { case normal: Target.Normal => normal }
-    builtinTargets = targets.collect {
-      case builtinThis: Target.BuiltinThis => builtinThis
-      case builtinArg: Target.BuiltinArg   => builtinArg
-    }
-  } yield {
-    code match
-      case Code.Normal(str) =>
-        if (normalTargets.nonEmpty) {
-          val mutationCite = choose(normalTargets)
-          scriptParser.from(str) match
-            case syn: Syntactic =>
-              Walker(mutationCite, n)
-                .walk(syn)
-                .map { mutatedAst =>
-                  val s = mutatedAst.toString(grammar = Some(cfg.grammar))
-                  Result(name, Code.Normal(s))
-                }
-            case ast =>
-              apply(ast, n, target).map { mutatedAst =>
-                val s = mutatedAst.toString(grammar = Some(cfg.grammar))
-                Result(name, Code.Normal(s))
-              }
-        } else
-          val ast = scriptParser.from(str)
-          apply(ast, n, target).map { mutatedAst =>
-            val s = mutatedAst.toString(grammar = Some(cfg.grammar))
-            Result(name, Code.Normal(s))
-          }
-      case builtin: Code.Builtin =>
-        val filteredBuiltin = builtinTargets.filter { bt =>
-          bt match
-            case Target.BuiltinThis(thisArg) => builtin.thisArg == Some(thisArg)
-            case Target.BuiltinArg(arg, i) => builtin.args.lift(i) == Some(arg)
-            case _                         => false
-        }.toSeq
-        if (filteredBuiltin.nonEmpty)
-          builtin.mutateTargets(filteredBuiltin, n, target)
-        else if (normalTargets.nonEmpty) {
-          val str = builtin.toString
-          val mutationCite = choose(normalTargets)
-          scriptParser.from(str) match
-            case syn: Syntactic =>
-              Walker(mutationCite, n)
-                .walk(syn)
-                .map { mutatedAst =>
-                  val s = mutatedAst.toString(grammar = Some(cfg.grammar))
-                  Result(name, Code.Normal(s))
-                }
-            case _ => randomMutator(builtin, n, target)
-        } else randomMutator(builtin, n, target)
-  }).getOrElse(randomMutator(code, n, target))
-
   /** mutate ASTs */
-  def apply(
-    ast: Ast,
-    n: Int,
-    target: Option[(CondView, Coverage)],
-  ): Seq[Ast] =
-    randomMutator(ast, n, target)
+  def apply(ast: Ast, n: Int, target: Option[(CondView, Coverage)]): Seq[Ast] =
+    (for {
+      (condView, cov) <- target
+      CondView(cond, view) = condView
+      targets = cov.targetCondViews
+        .getOrElse(cond, Map())
+        .getOrElse(view, Set())
+      if targets.nonEmpty
+    } yield {
+      val mutationCite = choose(targets)
+      val syn = ast.asInstanceOf[Syntactic]
+      Walker(mutationCite, n).walk(syn)
+    }).getOrElse(randomMutator(ast, n, target))
 
-  /** internal walker for finding and mutating normal target */
-  class Walker(normalTarget: Target.Normal, n: Int)
+  /** internal walker for finding and mutating target */
+  class Walker(normalTarget: Target, n: Int)
     extends Util.MultiplicativeListWalker {
     override def walk(ast: Syntactic): List[Syntactic] =
       if (ast.matches(normalTarget)) TotalWalker(ast, n)

@@ -14,8 +14,8 @@ class WeightedMutator(using cfg: CFG)(pairs: (Mutator, Int)*) extends Mutator {
   import Mutator.*, Coverage.*
 
   /** mutate code */
-  def apply(
-    code: Code,
+  override def apply(
+    code: String,
     n: Int,
     target: Option[(CondView, Coverage)],
   ): Seq[Result] = weightedChoose(pairs)(code, n, target)

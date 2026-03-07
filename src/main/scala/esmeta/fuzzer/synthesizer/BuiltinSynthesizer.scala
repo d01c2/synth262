@@ -10,45 +10,31 @@ import esmeta.util.BaseUtils.*
 
 /** An ECMAScript AST synthesizer for built-in libraries */
 class BuiltinSynthesizer(algorithms: List[Algorithm]) extends Synthesizer {
-  import BuiltinPath.*, Code.*
+  import BuiltinPath.*
 
   /** synthesizer name */
   def name: String = "BuiltinSynthesizer"
 
   /** get script */
-  def script: Code = choose(initPool)
+  def script: String = choose(initPool)
 
   /** get initial pool */
-  lazy val initPool: Vector[Code] = (for {
+  lazy val initPool: Vector[String] = (for {
     case BuiltinHead(path, params, _) <- algorithms.map(_.head)
     code <- path match
       case YetPath(_) => Nil
       case Getter(base) =>
-        Normal(getString(base)) :: (base match
+        getString(base) :: (base match
           case Prototype(proto, prop) =>
-            List(
-              Builtin(
-                func = "Object.setPrototypeOf",
-                thisArg = None, // ignore
-                args = List("x", proto),
-                preStmts = Some("var x = {};"),
-                postStmts = Some(s"x$prop;"),
-              ),
-            )
+            val args = List("x", proto).mkString(", ")
+            List(s"var x = {}; Object.setPrototypeOf($args); x$prop;")
           case _ => Nil
         )
       case Setter(base) =>
-        Normal(getString(base)) :: (base match
+        getString(base) :: (base match
           case Prototype(proto, prop) =>
-            List(
-              Builtin(
-                func = "Object.setPrototypeOf",
-                thisArg = None, // ignore
-                args = List("x", proto),
-                preStmts = Some("var x = {};"),
-                postStmts = Some(s"x$prop = 0;"),
-              ),
-            )
+            val args = List("x", proto).mkString(", ")
+            List(s"var x = {}; Object.setPrototypeOf($args); x$prop = 0;")
           case _ => Nil
         )
       case path =>
@@ -63,24 +49,14 @@ class BuiltinSynthesizer(algorithms: List[Algorithm]) extends Synthesizer {
           thisArg <- thisCands
           argsLen <- Range(MIN_ARGS, MAX_ARGS).toList
           args = List.fill(argsLen)("0")
-        } yield Builtin(
-          func = s"$pathStr.call",
-          thisArg = Some(thisArg),
-          args = args,
-          preStmts = None,
-          postStmts = None,
-        )
+          argsStr = (thisArg :: args).mkString(", ")
+        } yield s"$pathStr.call($argsStr);"
         // constructs
-        val constructs = Normal(s"new $pathStr;") :: (for {
+        val constructs = s"new $pathStr;" :: (for {
           argsLen <- Range(MIN_ARGS, MAX_ARGS).toList
           args = List.fill(argsLen)("0")
-        } yield Builtin(
-          func = s"new $pathStr",
-          thisArg = None, // intended (newTarget)
-          args = args,
-          preStmts = None,
-          postStmts = None,
-        ))
+          argsStr = args.mkString(", ")
+        } yield s"new $pathStr($argsStr);")
         calls ++ constructs
   } yield code).toVector
 

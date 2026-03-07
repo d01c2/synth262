@@ -16,17 +16,14 @@ case object Mutate extends Phase[CFG, String] {
   val name = "mutate"
   val help = "mutates an ECMAScript program."
   def apply(cfg: CFG, cmdConfig: CommandConfig, config: Config): String =
-    import Coverage.*, Target.*
+    import Coverage.*
 
     val jsonProtocol = new JsonProtocol(cfg)
     import jsonProtocol.{*, given}
 
     val grammar = cfg.grammar
     val filename = getFirstFilename(cmdConfig, this.name)
-    val code =
-      if (filename.endsWith(".js")) Code.Normal(readFile(filename))
-      else if (filename.endsWith(".json")) readJson[Code](filename)
-      else raise("invalid filename")
+    val code = readFile(filename)
 
     val analyzer = ParamFlowAnalyzer(cfg, silent = true)
     analyzer.analyze
@@ -60,10 +57,7 @@ case object Mutate extends Phase[CFG, String] {
     var mutatedCode = mutator(code, coveredCondView.map((_, cov))).code
     iter += 1
 
-    // get string of mutated code
-    def mutated = mutatedCode.toString
-
-    def coversFlipped(code: Code): Boolean = targetCondView match
+    def coversFlipped(code: String): Boolean = targetCondView match
       case Some(cv) =>
         val covered = cov.run(code).touchedCondViews.keySet.contains(cv)
         if (covered) println(s"Covered $cv with $iter iters")
@@ -73,11 +67,11 @@ case object Mutate extends Phase[CFG, String] {
     // repeat until the mutated program is valid and covers target
     coveredCondView match
       case Some(cv) =>
-        while (!(ValidityChecker(mutated) && coversFlipped(mutatedCode))) {
-          while (blocked.contains(mutated))
+        while (!(ValidityChecker(mutatedCode) && coversFlipped(mutatedCode))) {
+          while (blocked.contains(mutatedCode))
             mutatedCode = mutator(code, coveredCondView.map((_, cov))).code
             iter += 1
-          blocked += mutated
+          blocked += mutatedCode
           if (timeout) throw TimeoutException("mutate")
         }
       case None => ()
@@ -86,11 +80,11 @@ case object Mutate extends Phase[CFG, String] {
     for (filename <- config.out)
       dumpFile(
         name = "the mutated ECMAScript program",
-        data = mutated,
+        data = mutatedCode,
         filename = filename,
       )
 
-    mutated
+    mutatedCode
 
   def defaultConfig: Config = Config()
   val options: List[PhaseOption[Config]] = List(

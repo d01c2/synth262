@@ -125,7 +125,7 @@ sealed trait Ast extends ESElem with Locational {
       }
 
   /** check if this node matches a target location */
-  def matches(target: Target.Normal)(using CFG): Boolean = this match
+  def matches(target: Target)(using CFG): Boolean = this match
     case syn: Syntactic =>
       syn.name == target.prodName &&
       syn.rhsIdx == target.idx &&

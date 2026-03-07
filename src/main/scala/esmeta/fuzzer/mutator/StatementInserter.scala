@@ -21,35 +21,6 @@ class StatementInserter(using cfg: CFG)(
 
   val synthesizer = synBuilder(cfg.grammar)
 
-  /** mutate code */
-  def apply(
-    code: Code,
-    n: Int,
-    target: Option[(CondView, Coverage)],
-  ): Seq[Result] = code match
-    case Code.Normal(str) =>
-      val ast = scriptParser.from(str)
-      apply(ast, n, target).map { mutatedAst =>
-        val mutatedStr = mutatedAst.toString(grammar = Some(cfg.grammar))
-        Result(name, Code.Normal(mutatedStr))
-      }
-    case builtin @ Code.Builtin(_, _, _, preStmts, postStmts) =>
-      (preStmts, postStmts) match
-        case (Some(_), Some(_)) =>
-          if randBool then builtin.mutatePreStmts(n, target)
-          else builtin.mutatePostStmts(n, target)
-        case (Some(_), None) => builtin.mutatePreStmts(n, target)
-        case (None, Some(_)) => builtin.mutatePostStmts(n, target)
-        case (None, None) =>
-          List.tabulate(n) { _ =>
-            val item = newStmtItem(List(false, false, false))
-            val stmts = item.toString(grammar = Some(cfg.grammar))
-            if (randBool)
-              Result(name, builtin.copy(preStmts = Some(stmts)))
-            else
-              Result(name, builtin.copy(postStmts = Some(stmts)))
-          }
-
   /** mutate ASTs */
   def apply(
     ast: Ast,

@@ -20,37 +20,6 @@ class Remover(using cfg: CFG)(
 
   val synthesizer = synBuilder(cfg.grammar)
 
-  /** mutate code */
-  def apply(
-    code: Code,
-    n: Int,
-    target: Option[(CondView, Coverage)],
-  ): Seq[Result] = code match
-    case Code.Normal(str) =>
-      apply(str, n, target).map(str => Result(name, Code.Normal(str)))
-    case builtin @ Code.Builtin(_, thisArg, args, preStmts, postStmts) =>
-      if ((preStmts.isDefined || postStmts.isDefined) && randBool) {
-        // mutate statements
-        (preStmts, postStmts) match
-          case (Some(_), Some(_)) =>
-            if randBool then builtin.mutatePreStmts(n, target)
-            else builtin.mutatePostStmts(n, target)
-          case (Some(_), None) => builtin.mutatePreStmts(n, target)
-          case (None, Some(_)) => builtin.mutatePostStmts(n, target)
-          case (None, None)    => raise("unreachable")
-      } else {
-        // mutate builtin call arguments
-        if (args.isEmpty && thisArg.isEmpty) randomMutator(builtin, n, target)
-        else {
-          (0 to args.length).flatMap(args.combinations).flatMap { args =>
-            Result(name, builtin.copy(args = args)) ::
-            thisArg.toList.map { _ =>
-              Result(name, builtin.copy(thisArg = None, args = args))
-            }
-          }
-        }
-      }
-
   /** mutate ASTs */
   def apply(
     ast: Ast,
@@ -100,8 +69,9 @@ object Remover {
     case Syntactic(name, args, rhsIdx, children) =>
       children.indexWhere { child =>
         child match
-          case Some(Syntactic(`name`, `args`, _, _)) => true
-          case _                                     => false
+          case Some(syn: Syntactic) if syn.name == name && syn.args == args =>
+            true
+          case _ => false
       }
     case _ => -1
 
