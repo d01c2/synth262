@@ -48,6 +48,7 @@ class SpecStringMutator(using cfg: CFG)(
         generateObjectWithWeight(syn.args),
         generateGetterWithWeight(syn.args),
         generateSetterWithWeight(syn.args),
+        generateProxyWithWeight(syn.args),
         syn -> 1,
       )
       if (targetCondStr.isDefined)
@@ -118,6 +119,36 @@ class SpecStringMutator(using cfg: CFG)(
     reachableProps = reachableFuncs.map(specProps.getOrElse(_, Set())).flatten
   } yield func -> reachableProps).toMap
 
+  // Proxy traps relevant to each function (based on spec algorithms called)
+  private var _specTraps: Map[Func, Set[String]] = Map()
+  lazy val specTraps: Map[Func, Set[String]] = {
+    import esmeta.ir.*
+    object TrapFinder extends util.UnitWalker {
+      var currentFunc: Option[esmeta.cfg.Func] = None
+      override def walk(inst: Inst) = inst match
+        case ICall(_, EClo(name, _), _) if trapAlgos.contains(name) =>
+          for (func <- currentFunc)
+            val trap = trapAlgos(name)
+            _specTraps += (func -> (_specTraps.getOrElse(func, Set()) + trap))
+        case _ => super.walk(inst)
+    }
+    _specTraps = Map()
+    for (cfgFunc <- cfg.funcs) {
+      TrapFinder.currentFunc = Some(cfgFunc)
+      TrapFinder.walk(cfgFunc.irFunc.body)
+      TrapFinder.currentFunc = None
+    }
+    _specTraps.view.toMap
+  }
+
+  lazy val allTrapsSet: Set[String] = (objectProxyTraps ++ fnProxyTraps).toSet
+
+  lazy val reachableTraps: Map[Func, Set[String]] = (for {
+    (func, _) <- specTraps
+    reachableFuncs = getReachableFuncs(func)
+    traps = reachableFuncs.map(specTraps.getOrElse(_, Set())).flatten
+  } yield func -> traps).toMap
+
   // generate a random object, whose property is read in specification
   def generateObjectWithWeight(args: List[Boolean]): (Syntactic, Int) =
     val props = targetFunc match
@@ -131,7 +162,22 @@ class SpecStringMutator(using cfg: CFG)(
     val v = choose(defaultValues)
     val raw = s"{ $k : $v }"
     cfg.esParser(PRIMARY_EXPRESSION, args).from(raw).asInstanceOf[Syntactic] ->
-    (props.size * defaultValues.size) // total search space of object generation
+    CATEGORY_WEIGHT
+
+  // generate a Proxy with a throwing trap for internal method interception
+  def generateProxyWithWeight(args: List[Boolean]): (Syntactic, Int) =
+    val traps = targetFunc match
+      case Some(func) =>
+        val cands =
+          if (randBool) reachableTraps.getOrElse(func, Set())
+          else specTraps.getOrElse(func, Set())
+        if (cands.nonEmpty) cands else allTrapsSet
+      case None => allTrapsSet
+    val trap = choose(traps)
+    val target = if (fnProxyTraps.contains(trap)) "function ( ) { }" else "{}"
+    val raw = s"(new Proxy($target, { $trap() { throw 0 ; } }))"
+    cfg.esParser(PRIMARY_EXPRESSION, args).from(raw).asInstanceOf[Syntactic] ->
+    CATEGORY_WEIGHT
 
   // generate a random getter/setter, whose property is read in specification
   def generateGetterWithWeight(args: List[Boolean]): (Syntactic, Int) =
@@ -148,7 +194,7 @@ class SpecStringMutator(using cfg: CFG)(
     cfg
       .esParser(PRIMARY_EXPRESSION, args)
       .from(choose(List(getter, throwingGetter)))
-      .asInstanceOf[Syntactic] -> (props.size * 2)
+      .asInstanceOf[Syntactic] -> ACCESSOR_WEIGHT
   def generateSetterWithWeight(args: List[Boolean]): (Syntactic, Int) =
     val props = targetFunc match
       case Some(func) =>
@@ -163,7 +209,7 @@ class SpecStringMutator(using cfg: CFG)(
     cfg
       .esParser(PRIMARY_EXPRESSION, args)
       .from(choose(List(setter, throwingSetter)))
-      .asInstanceOf[Syntactic] -> (props.size * 2)
+      .asInstanceOf[Syntactic] -> ACCESSOR_WEIGHT
 }
 
 object SpecStringMutator {
@@ -185,6 +231,38 @@ object SpecStringMutator {
     "HasProperty",
     "OrdinaryGetOwnProperty",
   )
+
+  // category weights: object, accessor (getter+setter), proxy are equal
+  val CATEGORY_WEIGHT = 2
+  val ACCESSOR_WEIGHT = 1 // getter + setter = 2 = CATEGORY_WEIGHT
+
+  // mapping from spec algorithms to corresponding Proxy traps
+  val trapAlgos: Map[String, String] = Map(
+    "Get" -> "get",
+    "GetMethod" -> "get",
+    "Set" -> "set",
+    "HasProperty" -> "has",
+    "HasOwnProperty" -> "getOwnPropertyDescriptor",
+    "DefinePropertyOrThrow" -> "defineProperty",
+    "CreateDataProperty" -> "defineProperty",
+    "CreateDataPropertyOrThrow" -> "defineProperty",
+    "DeletePropertyOrThrow" -> "deleteProperty",
+    "EnumerableOwnProperties" -> "ownKeys",
+  )
+
+  // Proxy traps for object targets (internal methods only Proxy can intercept)
+  val objectProxyTraps: List[String] = List(
+    "has",
+    "get",
+    "set",
+    "defineProperty",
+    "deleteProperty",
+    "getOwnPropertyDescriptor",
+    "ownKeys",
+  )
+
+  // Proxy traps requiring function target
+  val fnProxyTraps: List[String] = List("apply", "construct")
 
   // default value of property
   val defaultValues: List[String] = List(
