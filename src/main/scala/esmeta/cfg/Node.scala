@@ -90,7 +90,7 @@ case class Branch(
   isAbruptNode: Boolean = false,
   var thenNode: Option[Node] = None,
   var elseNode: Option[Node] = None,
-  isFiltered: Boolean = false, // non-reportable for Test262
+  isFiltered: Boolean = false, // compiler-generated boilerplate not in spec
 ) extends NodeWithInst {
   def isLoop: Boolean = kind match
     case BranchKind.If    => false

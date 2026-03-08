@@ -32,6 +32,11 @@ case class FuncBuilder(
   /** check whether it is builtin */
   lazy val isBuiltin: Boolean = kind == Builtin
 
+  /** check whether it is a production-specific (base) SDO */
+  lazy val isBaseSDO: Boolean = algo.head match
+    case SyntaxDirectedOperationHead(Some(_), _, _, _, _) => true
+    case _                                                => false
+
   /** bindings for nonterminals */
   var ntBindings: List[(String, Expr, Option[Int])] = algo.head match
     case SyntaxDirectedOperationHead(Some(target), _, _, _, _) =>

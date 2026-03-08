@@ -150,7 +150,7 @@ class Compiler(
                 IPush(xExpr, toERef(Name(name)), false),
               ),
             ),
-            isFiltered = true,
+            isFiltered = true, // builtin prefix
           ),
         )
       case Param(name, _, kind) =>
@@ -165,7 +165,7 @@ class Compiler(
               ),
             ),
             ILet(Name(name), EUndef()),
-            isFiltered = true,
+            isFiltered = true, // builtin prefix
           ),
         )
     }
@@ -308,11 +308,14 @@ class Compiler(
           val (x, _) = fb.newTIdWithExpr
           fb.addInst(compileShortCircuit(fb, x, cond, thenStep, elseStep))
         case _ =>
+          val condExpr = compile(fb, cond)
           fb.addInst(
             IIf(
-              compile(fb, cond),
+              condExpr,
               compileWithScope(fb, thenStep),
               elseStep.fold(emptyInst)(compileWithScope(fb, _)),
+              // AST child existence is statically determined in base SDOs
+              isFiltered = fb.isBaseSDO && isExistsOnThis(condExpr),
             ),
           )
     case RepeatStep(cond, body) =>
@@ -340,6 +343,7 @@ class Compiler(
                   ETypeCheck(ERef(x), compile(ty)),
                   compileWithScope(fb, body),
                   emptyInst,
+                  isFiltered = true, // for-each type guard
                 ),
               )
             }
@@ -434,7 +438,12 @@ class Compiler(
       val (y, yExpr) = fb.newTIdWithExpr
       if (!x.isLiteral)
         fb.addInst(
-          IIf(isCompletion(x), IReturn(x), emptyInst, isFiltered = true),
+          IIf(
+            isCompletion(x),
+            IReturn(x),
+            emptyInst,
+            isFiltered = true, // implicit normal completion
+          ),
         )
       fb.addInst(
         ICall(y, EClo("NormalCompletion", Nil), List(x)),
@@ -1158,6 +1167,12 @@ class Compiler(
     rhsVec match
       case (rhs, idx) :: Nil => Some(prod.lhs, idx)
       case _                 => None
+
+  /** check if expr is `exists this[N]` or `!exists this[N]` */
+  def isExistsOnThis(expr: Expr): Boolean = expr match
+    case EExists(Field(Name("this"), _))                  => true
+    case EUnary(UOp.Not, EExists(Field(Name("this"), _))) => true
+    case _                                                => false
 
   /** literal helpers */
   def zero = EMath(BigDecimal(0, UNLIMITED))
