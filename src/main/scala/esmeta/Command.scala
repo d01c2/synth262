@@ -193,12 +193,13 @@ case object CmdInject extends Command("inject", CmdBuildCFG >> Inject) {
 
 /** `mutate` command */
 case object CmdMutate extends Command("mutate", CmdBuildCFG >> Mutate) {
-  def help = "mutates an ECMAScript program."
+  def help = "mutates an ECMAScript program to cover the uncovered branch side."
   val examples = List(
-    "esmeta mutate a.js                           # mutate ECMAScript program.",
-    "esmeta mutate a.js -mutate:out=b.js          # dump the mutated program.",
-    "esmeta mutate a.js -mutate:mutator=random    # use random mutator.",
+    "esmeta mutate a.js -mutate:branch=1234  # cover the uncovered side.",
+    "esmeta mutate a.js -mutate:branch=1234 -mutate:kfs=1  # with 1-FCPS.",
+    "esmeta mutate a.js -mutate:branch=1234 -mutate:duration=60",
   )
+  override val targetName = "<js>+"
 }
 
 /** `llm-evaluate` command */
