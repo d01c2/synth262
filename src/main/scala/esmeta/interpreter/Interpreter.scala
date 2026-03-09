@@ -589,7 +589,11 @@ object Interpreter {
       case (Mod, Math(l), Math(r)) => Math(l %% r)
       case (Pow, Math(l), Math(r)) if r.isValidInt && r >= 0 =>
         Math(l.pow(r.toInt))
-      case (Pow, Math(l), Math(r)) => Math(math.pow(l.toDouble, r.toDouble))
+      case (Pow, Math(l), Math(r)) =>
+        val result = math.pow(l.toDouble, r.toDouble)
+        if (result.isPosInfinity) POS_INF
+        else if (result.isNegInfinity) NEG_INF
+        else Math(result)
       // TODO consider 2's complement 32-bit strings
       case (BAnd, Math(l), Math(r))   => Math(l.toBigInt & r.toBigInt)
       case (BOr, Math(l), Math(r))    => Math(l.toBigInt | r.toBigInt)
