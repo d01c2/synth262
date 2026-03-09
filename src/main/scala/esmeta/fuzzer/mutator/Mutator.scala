@@ -41,6 +41,13 @@ trait Mutator(using val cfg: CFG) {
     target: Option[(CondView, Coverage)],
   ): Seq[Ast]
 
+  /** parse edge-case strings at the production level of the given AST node */
+  def edgeCases(ast: Syntactic): List[Syntactic] =
+    Mutator.edgeCaseExprs.flatMap { s =>
+      try { Some(esParser(ast.name, ast.args).from(s).asInstanceOf[Syntactic]) }
+      catch { case _: Exception => None }
+    }
+
   /** Possible names of underlying mutators */
   val names: List[String]
   lazy val name: String = names.head
@@ -50,4 +57,38 @@ object Mutator {
 
   /** Result of mutation with mutator name and code */
   case class Result(name: String, code: String)
+
+  /** Edge-case expression strings for Syntactic node mutation */
+  private val nullish = List("null", "undefined", "void 0")
+  private val booleans = List("true", "false")
+  private val numbers =
+    List("0", "1", "-0", "-1", "0.1", "-0.1", "NaN", "Infinity", "-Infinity")
+  private val numberBounds = List(
+    "Number.MAX_SAFE_INTEGER",
+    "Number.MIN_SAFE_INTEGER",
+    "9007199254740992", // 2^53, Number.MAX_SAFE_INTEGER + 1
+    "Number.MAX_VALUE",
+    "-Number.MAX_VALUE",
+    "Number.MIN_VALUE",
+    "-Number.MIN_VALUE",
+    "Number.EPSILON",
+    "2147483647", // 2^31 - 1, Int32 max
+    "-2147483648", // -(2^31), Int32 min
+    "4294967295", // 2^32 - 1, Uint32 max
+  )
+  private val bigints = List("0n", "1n", "-0n", "-1n")
+  private val symbols = List("Symbol()", "Symbol.iterator")
+  private val strings = List("\"\"", "\"0\"", "\" \"")
+  private val objects = List("[]", "[,]", "{}", "function(){}")
+
+  val edgeCaseExprs: List[String] =
+    nullish ++ booleans ++ numbers ++ numberBounds ++
+    bigints ++ symbols ++ strings ++ objects
+
+  /** Edge-case token values for Lexical node mutation */
+  val edgeCaseLexicals: Map[String, List[String]] = Map(
+    "BooleanLiteral" -> List("true", "false"),
+    "NumericLiteral" -> List("0", "1", "0.1", "0n", "1n"),
+    "StringNumericLiteral" -> List("Infinity", "-Infinity", "0", "-0"),
+  )
 }

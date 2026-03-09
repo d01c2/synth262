@@ -52,6 +52,9 @@ class TargetMutator(using cfg: CFG)(
 
     override def walk(ast: Syntactic): List[Syntactic] =
       val mutants = super.walk(ast)
-      List.tabulate(c) { _ => synthesizer(ast) } ++ mutants
+      val cases = edgeCases(ast)
+      val manual = if (cases.nonEmpty) List(choose(cases)) else Nil
+      val synthesized = List.tabulate(c) { _ => synthesizer(ast) }
+      manual ++ synthesized ++ mutants
   }
 }

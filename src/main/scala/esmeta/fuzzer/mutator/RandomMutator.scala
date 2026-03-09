@@ -39,45 +39,15 @@ class RandomMutator(using cfg: CFG)(
     override def walk(ast: Syntactic): List[Syntactic] =
       val mutants = super.walk(ast)
       if (isTarget(ast))
-        val manuals =
-          if (ast.name == "AssignmentExpression")
-            val nullish = List("null", "undefined")
-            val symbols = List("Symbol()", "Symbol.iterator")
-            val empties = List("\"\"", "[]", "{}")
-            val numericEdges = List(
-              "-0.1",
-              "-0",
-              "-1",
-              "-0n",
-              "-1n",
-              "NaN",
-              "Infinity",
-              "-Infinity",
-              "Number.MAX_SAFE_INTEGER",
-              "Number.MIN_SAFE_INTEGER",
-              "Number.MAX_SAFE_INTEGER + 1",
-              "Number.MAX_VALUE",
-              "-Number.MAX_VALUE",
-              "Number.MIN_VALUE",
-              "-Number.MIN_VALUE",
-              "Number.EPSILON",
-            )
-            (nullish ++ symbols ++ empties ++ numericEdges)
-              .map(esParser("AssignmentExpression", ast.args).from)
-              .map(_.asInstanceOf[Syntactic])
-          else Nil
+        val cases = edgeCases(ast)
+        val manual = if (cases.nonEmpty) List(choose(cases)) else Nil
         val synthesized = List.tabulate(c) { _ => synthesizer(ast) }
-        manuals ++ synthesized ++ mutants
+        manual ++ synthesized ++ mutants
       else mutants
     override def walk(lex: Lexical): List[Lexical] =
-      lex.name match
-        case "BooleanLiteral" =>
-          List("true", "false").map(Lexical(lex.name, _))
-        case "NumericLiteral" =>
-          List("0", "1", "0.1", "0n", "1n").map(Lexical(lex.name, _))
-        case "StringNumericLiteral" =>
-          List("Infinity", "-Infinity", "0", "-0").map(Lexical(lex.name, _))
-        case _ => List(lex)
+      edgeCaseLexicals.get(lex.name) match
+        case Some(values) => values.map(Lexical(lex.name, _))
+        case None         => List(lex)
   }
 }
 object RandomMutator {
