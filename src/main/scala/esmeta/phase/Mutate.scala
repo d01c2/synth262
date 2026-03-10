@@ -77,9 +77,11 @@ case object Mutate extends Phase[CFG, String] {
     def checkTimeout(): Unit = if (timeout) throw TimeoutException("mutate")
 
     def nextMutant(): String =
-      val m = mutator(code, coveredCondView.map((_, cov))).code
+      val result = mutator(code, coveredCondView.map((_, cov))).code
+      val ppResult = s"----- iter: $iter -----> ${result.trim()}"
       iter += 1
-      m
+      if (config.debug) println(ppResult)
+      result
 
     def coversTarget(code: String): Boolean = targetCondView.exists { cv =>
       try {
@@ -145,6 +147,11 @@ case object Mutate extends Phase[CFG, String] {
       NumOption((c, k) => c.duration = Some(k)),
       "set the maximum duration for mutation in seconds (default: INF).",
     ),
+    (
+      "debug",
+      BoolOption((c, b) => c.debug = b),
+      "print each generated mutant (default: false).",
+    ),
   )
   class Config(
     var out: Option[String] = None,
@@ -152,5 +159,6 @@ case object Mutate extends Phase[CFG, String] {
     var kFs: Int = 0,
     var analyze: Boolean = true,
     var duration: Option[Int] = None,
+    var debug: Boolean = false,
   )
 }
