@@ -4,21 +4,16 @@ import esmeta.cfg.{CFG, Func, Call}
 import esmeta.es.*
 import esmeta.es.util.*
 import esmeta.fuzzer.*
-import esmeta.fuzzer.synthesizer.*
-import esmeta.ir.*
+import esmeta.ir.{Func => IRFunc, *}
 import esmeta.util.BaseUtils.*
 
 /** A mutator that generates based on strings in spec literals */
-class SpecStringMutator(using cfg: CFG)(
-  val synBuilder: Synthesizer.Builder = RandomSynthesizer,
-) extends Mutator {
+class SpecStringMutator(using cfg: CFG) extends Mutator {
   import Mutator.*, SpecStringMutator.*, Coverage.*
 
   val randomMutator = RandomMutator()
 
   val names = "SpecStringMutator" :: randomMutator.names
-
-  val synthesizer = synBuilder(cfg.grammar)
 
   /** mutate ASTs */
   def apply(
@@ -29,10 +24,12 @@ class SpecStringMutator(using cfg: CFG)(
     // count the number of primary expressions
     val k = primaryCounter(ast)
     if (k > 0) {
+      targetFunc = None
+      targetCondStr = None
       for ((cv, _) <- target)
         targetFunc = cfg.funcOf.get(cv.cond.branch)
         targetCondStr = findCondStr(cv.cond.branch.cond)
-      Set.tabulate(n)(_ => walk(ast)).toSeq
+      Seq.tabulate(n)(_ => walk(ast))
     } else randomMutator(ast, n, target)
 
   /** function where target branch is in */
@@ -40,6 +37,28 @@ class SpecStringMutator(using cfg: CFG)(
 
   /** string in target branch */
   private var targetCondStr: Option[String] = None
+
+  /** choose a property name relevant to the target function */
+  private def chooseProp: String =
+    val props = targetFunc match
+      case Some(func) =>
+        val cands =
+          if (randBool) reachableProps.getOrElse(func, Set())
+          else specProps.getOrElse(func, Set())
+        if (cands.nonEmpty) cands else allProps
+      case None => allProps
+    choose(props)
+
+  /** choose a Proxy trap relevant to the target function */
+  private def chooseTrap: String =
+    val traps = targetFunc match
+      case Some(func) =>
+        val cands =
+          if (randBool) reachableTraps.getOrElse(func, Set())
+          else specTraps.getOrElse(func, Set())
+        if (cands.nonEmpty) cands else allTrapsSet
+      case None => allTrapsSet
+    choose(traps)
 
   /** walk AST and return mutated AST */
   private def walk(ast: Ast): Ast = ast match
@@ -70,19 +89,18 @@ class SpecStringMutator(using cfg: CFG)(
     .asInstanceOf[Syntactic]
 
   // Properties appearing in specification
-  private var _specProps: Map[Func, Set[String]] = Map()
   lazy val specProps: Map[Func, Set[String]] = {
-    import esmeta.ir.*
-    object PropFinder extends util.UnitWalker {
-      var currentFunc: Option[esmeta.cfg.Func] = None
+    var acc: Map[Func, Set[String]] = Map()
+    object PropFinder extends esmeta.ir.util.UnitWalker {
+      var currentFunc: Option[Func] = None
       def addIfProp(e: Expr): Unit = for {
         func <- currentFunc
       } e match
         case EStr(str) =>
-          _specProps += (func -> (_specProps.getOrElse(func, Set()) + str))
+          acc += (func -> (acc.getOrElse(func, Set()) + str))
         case ERef(Field(Global("SYMBOL"), EStr(sym))) =>
-          _specProps += (
-            func -> (_specProps.getOrElse(func, Set()) + s"[ Symbol . $sym ]")
+          acc += (
+            func -> (acc.getOrElse(func, Set()) + s"[ Symbol . $sym ]")
           )
         case _ => ()
       override def walk(inst: Inst) = inst match
@@ -90,13 +108,12 @@ class SpecStringMutator(using cfg: CFG)(
           as.foreach(addIfProp)
         case _ => super.walk(inst)
     }
-    _specProps = Map()
     for (cfgFunc <- cfg.funcs) {
       PropFinder.currentFunc = Some(cfgFunc)
       PropFinder.walk(cfgFunc.irFunc.body)
       PropFinder.currentFunc = None
     }
-    _specProps.view.toMap
+    acc.toMap
   }
 
   lazy val allProps: Set[String] = specProps.values.flatten.toSet
@@ -107,38 +124,36 @@ class SpecStringMutator(using cfg: CFG)(
       else {
         val callees = for {
           case Call(_, ICall(_, EClo(name, _), _), _) <- func.nodes
-          if cfg.funcs.map(_.name).contains(name)
+          if cfg.fnameMap.contains(name)
         } yield cfg.getFunc(name)
         callees.foldLeft(visited + func) { (acc, callee) => loop(callee, acc) }
       }
     loop(root, Set())
 
   lazy val reachableProps: Map[Func, Set[String]] = (for {
-    (func, props) <- specProps
-    reachableFuncs = getReachableFuncs(func)
-    reachableProps = reachableFuncs.map(specProps.getOrElse(_, Set())).flatten
-  } yield func -> reachableProps).toMap
+    (func, _) <- specProps
+    reachable = getReachableFuncs(func)
+    props = reachable.flatMap(specProps.getOrElse(_, Set()))
+  } yield func -> props).toMap
 
   // Proxy traps relevant to each function (based on spec algorithms called)
-  private var _specTraps: Map[Func, Set[String]] = Map()
   lazy val specTraps: Map[Func, Set[String]] = {
-    import esmeta.ir.*
-    object TrapFinder extends util.UnitWalker {
-      var currentFunc: Option[esmeta.cfg.Func] = None
+    var acc: Map[Func, Set[String]] = Map()
+    object TrapFinder extends esmeta.ir.util.UnitWalker {
+      var currentFunc: Option[Func] = None
       override def walk(inst: Inst) = inst match
         case ICall(_, EClo(name, _), _) if trapAlgos.contains(name) =>
           for (func <- currentFunc)
             val trap = trapAlgos(name)
-            _specTraps += (func -> (_specTraps.getOrElse(func, Set()) + trap))
+            acc += (func -> (acc.getOrElse(func, Set()) + trap))
         case _ => super.walk(inst)
     }
-    _specTraps = Map()
     for (cfgFunc <- cfg.funcs) {
       TrapFinder.currentFunc = Some(cfgFunc)
       TrapFinder.walk(cfgFunc.irFunc.body)
       TrapFinder.currentFunc = None
     }
-    _specTraps.view.toMap
+    acc.toMap
   }
 
   lazy val allTrapsSet: Set[String] = (objectProxyTraps ++ fnProxyTraps).toSet
@@ -151,44 +166,24 @@ class SpecStringMutator(using cfg: CFG)(
 
   // generate a random object, whose property is read in specification
   def generateObjectWithWeight(args: List[Boolean]): (Syntactic, Int) =
-    val props = targetFunc match
-      case Some(func) =>
-        val cands =
-          if (randBool) reachableProps.getOrElse(func, Set())
-          else specProps.getOrElse(func, Set())
-        if (cands.nonEmpty) cands else allProps
-      case None => allProps
-    val k = choose(props)
+    val k = chooseProp
     val v = choose(defaultValues)
     val raw = s"{ $k : $v }"
     cfg.esParser(PRIMARY_EXPRESSION, args).from(raw).asInstanceOf[Syntactic] ->
     CATEGORY_WEIGHT
 
-  // generate a Proxy with a throwing trap for internal method interception
+  // generate a Proxy for internal method interception
   def generateProxyWithWeight(args: List[Boolean]): (Syntactic, Int) =
-    val traps = targetFunc match
-      case Some(func) =>
-        val cands =
-          if (randBool) reachableTraps.getOrElse(func, Set())
-          else specTraps.getOrElse(func, Set())
-        if (cands.nonEmpty) cands else allTrapsSet
-      case None => allTrapsSet
-    val trap = choose(traps)
+    val trap = chooseTrap
     val target = if (fnProxyTraps.contains(trap)) "function ( ) { }" else "{}"
-    val raw = s"(new Proxy($target, { $trap() { throw 0 ; } }))"
+    val body = choose(proxyTrapBodies)
+    val raw = s"(new Proxy($target, { $trap ( ) { $body } }))"
     cfg.esParser(PRIMARY_EXPRESSION, args).from(raw).asInstanceOf[Syntactic] ->
     CATEGORY_WEIGHT
 
   // generate a random getter/setter, whose property is read in specification
   def generateGetterWithWeight(args: List[Boolean]): (Syntactic, Int) =
-    val props = targetFunc match
-      case Some(func) =>
-        val cands =
-          if (randBool) reachableProps.getOrElse(func, Set())
-          else specProps.getOrElse(func, Set())
-        if (cands.nonEmpty) cands else allProps
-      case None => allProps
-    val k = choose(props)
+    val k = chooseProp
     val getter = s"{ get $k () {} }"
     val throwingGetter = s"{ get $k () { throw 0 ; } }"
     cfg
@@ -196,14 +191,7 @@ class SpecStringMutator(using cfg: CFG)(
       .from(choose(List(getter, throwingGetter)))
       .asInstanceOf[Syntactic] -> ACCESSOR_WEIGHT
   def generateSetterWithWeight(args: List[Boolean]): (Syntactic, Int) =
-    val props = targetFunc match
-      case Some(func) =>
-        val cands =
-          if (randBool) reachableProps.getOrElse(func, Set())
-          else specProps.getOrElse(func, Set())
-        if (cands.nonEmpty) cands else allProps
-      case None => allProps
-    val k = choose(props)
+    val k = chooseProp
     val setter = s"{ set $k (_) {} }"
     val throwingSetter = s"{ set $k (_) { throw 0 ; } }"
     cfg
@@ -239,6 +227,7 @@ object SpecStringMutator {
   // mapping from spec algorithms to corresponding Proxy traps
   val trapAlgos: Map[String, String] = Map(
     "Get" -> "get",
+    "GetV" -> "get",
     "GetMethod" -> "get",
     "Set" -> "set",
     "HasProperty" -> "has",
@@ -248,6 +237,16 @@ object SpecStringMutator {
     "CreateDataPropertyOrThrow" -> "defineProperty",
     "DeletePropertyOrThrow" -> "deleteProperty",
     "EnumerableOwnProperties" -> "ownKeys",
+    "CopyDataProperties" -> "ownKeys",
+    "OrdinaryGetPrototypeOf" -> "getPrototypeOf",
+    "OrdinarySetPrototypeOf" -> "setPrototypeOf",
+    "IsExtensible" -> "isExtensible",
+    "OrdinaryIsExtensible" -> "isExtensible",
+    "OrdinaryPreventExtensions" -> "preventExtensions",
+    "TestIntegrityLevel" -> "isExtensible",
+    "SetIntegrityLevel" -> "preventExtensions",
+    "Call" -> "apply",
+    "Construct" -> "construct",
   )
 
   // Proxy traps for object targets (internal methods only Proxy can intercept)
@@ -259,24 +258,48 @@ object SpecStringMutator {
     "deleteProperty",
     "getOwnPropertyDescriptor",
     "ownKeys",
+    "getPrototypeOf",
+    "setPrototypeOf",
+    "isExtensible",
+    "preventExtensions",
   )
 
   // Proxy traps requiring function target
   val fnProxyTraps: List[String] = List("apply", "construct")
 
+  // possible Proxy trap bodies
+  val proxyTrapBodies: List[String] = List(
+    "throw 0 ;",
+    "",
+    "return true ;",
+    "return false ;",
+    "return null ;",
+    "return 0 ;",
+    "return { } ;",
+    "return [ ] ;",
+  )
+
   // default value of property
-  val defaultValues: List[String] = List(
-    "true",
-    "false",
-    "''",
+  private val primitives =
+    List("null", "undefined", "true", "false", "0", "''", "Symbol ( )")
+  private val callables = List(
     "function ( x ) { }",
     "function * ( x ) { }",
     "async function ( x ) { }",
     "async function * ( x ) { }",
-    "0",
-    "null",
     "( ) => { throw 0 ; }",
   )
+  private val objects = List("{}", "[]")
+  private val iterators = List(
+    "{ next ( ) { return { done : true , value : 0 } ; } }",
+    "{ next ( ) { throw 0 ; } }",
+  )
+  private val thenables = List(
+    "{ then ( r ) { r ( 0 ) ; } }",
+    "{ then ( ) { throw 0 ; } }",
+  )
+  val defaultValues: List[String] =
+    primitives ++ callables ++ objects ++ iterators ++ thenables
 
   // find string literal in condition
   def findCondStr(e: Expr): Option[String] = e match

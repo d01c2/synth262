@@ -8,17 +8,14 @@ import esmeta.fuzzer.synthesizer.*
 import esmeta.cfg.CFG
 
 /** A mutator that removes nodes of ECMAScript AST */
-class Remover(using cfg: CFG)(
-  val synBuilder: Synthesizer.Builder = RandomSynthesizer,
-) extends Mutator
+class Remover(using cfg: CFG)
+  extends Mutator
   with Util.MultiplicativeListWalker {
   import Mutator.*, Remover.*, Coverage.*
 
   val randomMutator = RandomMutator()
 
   val names = "Remover" :: randomMutator.names
-
-  val synthesizer = synBuilder(cfg.grammar)
 
   /** mutate ASTs */
   def apply(
