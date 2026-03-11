@@ -16,8 +16,7 @@ class TargetMutator(using cfg: CFG)(
 
   val names = "TargetMutator" :: randomMutator.names
 
-  /** synthesizer */
-  val synthesizer = synBuilder(cfg.grammar)
+  val specStringSynthesizer = SpecStringSynthesizer(synBuilder(cfg.grammar))
 
   /** mutate ASTs */
   def apply(ast: Ast, n: Int, target: Option[(CondView, Coverage)]): Seq[Ast] =
@@ -29,6 +28,8 @@ class TargetMutator(using cfg: CFG)(
         .getOrElse(view, Set())
       if targets.nonEmpty
     } yield {
+      specStringSynthesizer.targetBranch = Some(condView.cond.branch)
+
       val mutationCite = choose(targets)
       val syn = ast.asInstanceOf[Syntactic]
       Walker(mutationCite, n).walk(syn)
@@ -54,7 +55,7 @@ class TargetMutator(using cfg: CFG)(
       val mutants = super.walk(ast)
       val cases = edgeCases(ast)
       val manual = if (cases.nonEmpty) List(choose(cases)) else Nil
-      val synthesized = List.tabulate(c) { _ => synthesizer(ast) }
+      val synthesized = List.tabulate(c) { _ => specStringSynthesizer(ast) }
       manual ++ synthesized ++ mutants
   }
 }
