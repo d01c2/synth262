@@ -149,6 +149,7 @@ object HookingInterpreter {
     "CreateNonEnumerableDataPropertyOrThrow",
     "DefineMethodProperty",
     "DefinePropertyOrThrow",
+    "OrdinaryDefineOwnProperty",
     "Set",
   )
 }

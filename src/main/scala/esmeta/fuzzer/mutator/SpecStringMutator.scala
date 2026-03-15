@@ -27,9 +27,7 @@ class SpecStringMutator(using cfg: CFG)(
     // count the number of primary expressions
     val k = primaryCounter(ast)
     if (k > 0) {
-      synthesizer.targetBranch = None
-      for ((condView, _) <- target)
-        synthesizer.targetBranch = Some(condView.cond.branch)
+      synthesizer.targetCond = target.map(_._1.cond)
       Seq.tabulate(n)(_ => walk(ast))
     } else randomMutator(ast, n, target)
 
