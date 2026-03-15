@@ -1,0 +1,2 @@
+{"id": "iec-cause", "branch": 19892, "seed": "micro-bench/seeds/iec-cause.js", "func": "InstallErrorCause", "desc": "HasProperty(options, 'cause') == true"}
+{"id": "tpd-value", "branch": 838, "seed": "micro-bench/seeds/tpd-value.js", "func": "ToPropertyDescriptor", "desc": "HasProperty(Obj, 'value') == true"}
