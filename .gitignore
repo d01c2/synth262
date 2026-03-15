@@ -42,3 +42,6 @@ tests/result/test262
 ## local .bashrc/.zshrc files
 .bashrc
 .zshrc
+
+## manual
+micro-bench/results
