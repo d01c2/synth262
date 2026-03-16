@@ -39,8 +39,9 @@ class RandomMutator(using cfg: CFG)(
     override def walk(ast: Syntactic): List[Syntactic] =
       val mutants = super.walk(ast)
       if (isTarget(ast))
+        val manual = shuffle(manuals(ast)).take(c).toList
         val synthesized = List.tabulate(c) { _ => synthesizer(ast) }
-        manuals(ast) ++ synthesized ++ mutants
+        manual ++ synthesized ++ mutants
       else mutants
     override def walk(lex: Lexical): List[Lexical] =
       manualLexicalMap.get(lex.name) match

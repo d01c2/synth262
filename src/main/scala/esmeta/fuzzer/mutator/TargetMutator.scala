@@ -60,8 +60,9 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
       if (!ablation)
         for (prov <- synthesizer.provenance)
           priority = priority ++ provenanceGuided(ast, prov)
+      val manual = shuffle(manuals(ast)).take(c).toList
       val synthesized = List.tabulate(c)(_ => synthesizer(ast))
-      manuals(ast) ++ synthesized ++ mutants
+      manual ++ synthesized ++ mutants
   }
 
   /** provenance guided mutation */
