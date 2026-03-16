@@ -3,7 +3,7 @@
 
 Usage:
   python3 run-benchmarks.py baseline [--trials N] [--duration D]
-  python3 run-benchmarks.py improved [--trials N] [--duration D]
+  python3 run-benchmarks.py comparison [--trials N] [--duration D]
   python3 run-benchmarks.py compare
 """
 
@@ -30,9 +30,10 @@ def load_benchmarks():
     return benchmarks
 
 
-def run_single(branch, seed, duration):
+def run_single(branch, seed, duration, ablation=False):
     """Run a single mutation trial, return iteration count or None for timeout."""
-    cmd = f'sbt -error "run mutate {seed} -mutate:branch={branch} -mutate:duration={duration}"'
+    ablation_flag = " -mutate:ablation" if ablation else ""
+    cmd = f'sbt -error "run mutate {seed} -mutate:branch={branch} -mutate:duration={duration}{ablation_flag}"'
     try:
         result = subprocess.run(
             cmd, shell=True, capture_output=True, text=True,
@@ -57,13 +58,14 @@ def run_benchmarks(label, trials, duration):
     RESULTS_DIR.mkdir(exist_ok=True)
     benchmarks = load_benchmarks()
     results = {}
+    ablation = label == "baseline"
 
     for bench in benchmarks:
         bid = bench["id"]
         print(f"\n=== {bid}: {bench['desc']} ===")
         iterations = []
         for t in range(1, trials + 1):
-            it = run_single(bench["branch"], bench["seed"], duration)
+            it = run_single(bench["branch"], bench["seed"], duration, ablation)
             status = str(it) if it is not None else "TIMEOUT"
             print(f"  Trial {t}/{trials}: {status}")
             iterations.append(it)
@@ -80,7 +82,7 @@ def run_benchmarks(label, trials, duration):
 
 
 def compare():
-    """Compare baseline vs improved and generate charts."""
+    """Compare baseline vs comparison and generate charts."""
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -91,21 +93,21 @@ def compare():
         sys.exit(1)
 
     baseline_file = RESULTS_DIR / "baseline.json"
-    improved_file = RESULTS_DIR / "improved.json"
+    comparison_file = RESULTS_DIR / "comparison.json"
 
     if not baseline_file.exists():
         print(f"Missing {baseline_file}. Run: python3 run-benchmarks.py baseline")
         sys.exit(1)
-    if not improved_file.exists():
-        print(f"Missing {improved_file}. Run: python3 run-benchmarks.py improved")
+    if not comparison_file.exists():
+        print(f"Missing {comparison_file}. Run: python3 run-benchmarks.py comparison")
         sys.exit(1)
 
     with open(baseline_file) as f:
         baseline = json.load(f)
-    with open(improved_file) as f:
-        improved = json.load(f)
+    with open(comparison_file) as f:
+        comparison = json.load(f)
 
-    bench_ids = sorted(set(baseline.keys()) & set(improved.keys()))
+    bench_ids = sorted(set(baseline.keys()) & set(comparison.keys()))
 
     # --- Bar chart: median iterations ---
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -116,15 +118,15 @@ def compare():
     impr_medians = []
     for bid in bench_ids:
         b_iters = [i for i in baseline[bid]["iterations"] if i is not None]
-        i_iters = [i for i in improved[bid]["iterations"] if i is not None]
+        i_iters = [i for i in comparison[bid]["iterations"] if i is not None]
         base_medians.append(np.median(b_iters) if b_iters else 0)
         impr_medians.append(np.median(i_iters) if i_iters else 0)
 
     ax.bar(x - width/2, base_medians, width, label="Baseline", color="#4C72B0")
-    ax.bar(x + width/2, impr_medians, width, label="Constraint-Guided", color="#DD8452")
+    ax.bar(x + width/2, impr_medians, width, label="Comparison", color="#DD8452")
     ax.set_xlabel("Benchmark")
     ax.set_ylabel("Median Iterations to Cover")
-    ax.set_title("Constraint-Guided Mutation: Iterations to Cover Target Branch")
+    ax.set_title("Comparison: Iterations to Cover Target Branch")
     ax.set_xticks(x)
     ax.set_xticklabels(bench_ids, rotation=45, ha="right")
     ax.legend()
@@ -140,7 +142,7 @@ def compare():
     labels = []
     for idx, bid in enumerate(bench_ids):
         b_iters = [i for i in baseline[bid]["iterations"] if i is not None]
-        i_iters = [i for i in improved[bid]["iterations"] if i is not None]
+        i_iters = [i for i in comparison[bid]["iterations"] if i is not None]
         data_base.append(b_iters if b_iters else [0])
         data_impr.append(i_iters if i_iters else [0])
         labels.append(bid)
@@ -151,32 +153,32 @@ def compare():
                       patch_artist=True, boxprops=dict(facecolor="#DD8452", alpha=0.7))
     ax2.set_xlabel("Benchmark")
     ax2.set_ylabel("Iterations to Cover")
-    ax2.set_title("Distribution of Iterations (Baseline vs Constraint-Guided)")
+    ax2.set_title("Distribution of Iterations (Baseline vs Comparison)")
     ax2.set_xticks(x)
     ax2.set_xticklabels(labels, rotation=45, ha="right")
-    ax2.legend([bp1["boxes"][0], bp2["boxes"][0]], ["Baseline", "Constraint-Guided"])
+    ax2.legend([bp1["boxes"][0], bp2["boxes"][0]], ["Baseline", "Comparison"])
     fig2.tight_layout()
     fig2.savefig(RESULTS_DIR / "box_plot.png", dpi=150)
     print(f"Box plot saved to {RESULTS_DIR / 'box_plot.png'}")
 
     # --- Summary table ---
     print("\n=== Summary ===")
-    print(f"{'Benchmark':<20} {'Base Med':>10} {'Impr Med':>10} {'Speedup':>10} {'Base TO':>8} {'Impr TO':>8}")
+    print(f"{'Benchmark':<20} {'Base Med':>10} {'Comp Med':>10} {'Speedup':>10} {'Base TO':>8} {'Comp TO':>8}")
     print("-" * 70)
     for idx, bid in enumerate(bench_ids):
         b_iters = [i for i in baseline[bid]["iterations"] if i is not None]
-        i_iters = [i for i in improved[bid]["iterations"] if i is not None]
+        i_iters = [i for i in comparison[bid]["iterations"] if i is not None]
         b_med = np.median(b_iters) if b_iters else float("inf")
         i_med = np.median(i_iters) if i_iters else float("inf")
         speedup = b_med / i_med if i_med > 0 else float("inf")
         b_to = len(baseline[bid]["iterations"]) - len(b_iters)
-        i_to = len(improved[bid]["iterations"]) - len(i_iters)
+        i_to = len(comparison[bid]["iterations"]) - len(i_iters)
         print(f"{bid:<20} {b_med:>10.1f} {i_med:>10.1f} {speedup:>9.2f}x {b_to:>8} {i_to:>8}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Micro-benchmark runner")
-    parser.add_argument("command", choices=["baseline", "improved", "compare"])
+    parser.add_argument("command", choices=["baseline", "comparison", "compare"])
     parser.add_argument("--trials", type=int, default=10)
     parser.add_argument("--duration", type=int, default=60)
     args = parser.parse_args()

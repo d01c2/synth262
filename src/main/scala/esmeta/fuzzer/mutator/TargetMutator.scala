@@ -7,7 +7,7 @@ import esmeta.fuzzer.synthesizer.*
 import esmeta.util.BaseUtils.*
 
 /** A target ECMAScript AST mutator */
-class TargetMutator(using cfg: CFG)(
+class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
   val synBuilder: Synthesizer.Builder = RandomSynthesizer,
 ) extends Mutator {
   import Mutator.*, Coverage.*, SpecStringSynthesizer.*
@@ -57,8 +57,9 @@ class TargetMutator(using cfg: CFG)(
 
     override def walk(ast: Syntactic): List[Syntactic] =
       val mutants = super.walk(ast)
-      for (prov <- synthesizer.provenance)
-        priority = priority ++ provenanceGuided(ast, prov)
+      if (!ablation)
+        for (prov <- synthesizer.provenance)
+          priority = priority ++ provenanceGuided(ast, prov)
       val synthesized = List.tabulate(c)(_ => synthesizer(ast))
       manuals(ast) ++ synthesized ++ mutants
   }

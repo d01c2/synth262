@@ -31,7 +31,7 @@ object Fuzzer {
     trial: Option[Int] = None, // `None` denotes no bound
     duration: Option[Int] = None, // `None` denotes no bound
     init: Option[String] = None, // initial pool directory path given by user
-    analyze: Boolean = true, // use dataflow analysis for target guidance
+    ablation: Boolean = false,
     kFs: Int = 0,
     cp: Boolean = false,
   ): Coverage = new Fuzzer(
@@ -45,7 +45,7 @@ object Fuzzer {
     trial,
     duration,
     init,
-    analyze,
+    ablation,
     kFs,
     cp,
   ).result
@@ -68,7 +68,7 @@ class Fuzzer(
   trial: Option[Int],
   duration: Option[Int],
   init: Option[String],
-  analyze: Boolean,
+  ablation: Boolean,
   kFs: Int,
   cp: Boolean,
 ) {
@@ -240,7 +240,7 @@ class Fuzzer(
 
   /** light-weight analyzer for fuzzing */
   lazy val analyzer: Option[ParamFlowAnalyzer] =
-    if (analyze) {
+    if (!ablation) {
       val an = ParamFlowAnalyzer(cfg, silent = true)
       an.analyze
       Some(an)
@@ -263,7 +263,7 @@ class Fuzzer(
 
   /** mutator */
   val mutator: Mutator = WeightedMutator(
-    TargetMutator() -> 6,
+    TargetMutator(ablation)() -> 6,
     RandomMutator() -> 3,
     StatementInserter() -> 1,
     Remover() -> 1,

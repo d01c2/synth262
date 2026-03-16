@@ -23,7 +23,7 @@ case object Mutate extends Phase[CFG, String] {
     val code = readFile(filename)
 
     val analyzer: Option[ParamFlowAnalyzer] =
-      if (config.analyze) {
+      if (!config.ablation) {
         val an = ParamFlowAnalyzer(cfg, silent = true)
         an.analyze
         Some(an)
@@ -67,7 +67,7 @@ case object Mutate extends Phase[CFG, String] {
     }
 
     given CFG = cfg
-    val mutator: Mutator = TargetMutator()
+    val mutator: Mutator = TargetMutator(config.ablation)()
     var blocked = Set[String]()
     var iter = 0
 
@@ -138,9 +138,9 @@ case object Mutate extends Phase[CFG, String] {
       "feature sensitivity level for targeting (default: 0).",
     ),
     (
-      "analyze",
-      BoolOption((c, b) => c.analyze = b),
-      "use dataflow analysis for target guidance (default: true).",
+      "ablation",
+      BoolOption((c, b) => c.ablation = b),
+      "ablation mode: disable spec-aware features (default: false).",
     ),
     (
       "duration",
@@ -157,7 +157,7 @@ case object Mutate extends Phase[CFG, String] {
     var out: Option[String] = None,
     var targetBranchId: Option[Int] = None,
     var kFs: Int = 0,
-    var analyze: Boolean = true,
+    var ablation: Boolean = false,
     var duration: Option[Int] = None,
     var debug: Boolean = false,
   )
