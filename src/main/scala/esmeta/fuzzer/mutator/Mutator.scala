@@ -52,7 +52,7 @@ object Mutator {
 
   /** Manually crafted expression strings for Syntactic node mutation */
   val manualExprs: List[String] =
-    val nullish = List("null", "undefined", "void 0")
+    val nullish = List("null", "undefined")
     val booleans = List("true", "false")
     val numbers =
       List("0", "1", "-0", "-1", "0.1", "-0.1", "NaN", "Infinity", "-Infinity")
@@ -62,19 +62,28 @@ object Mutator {
       "9007199254740992", // 2^53, Number.MAX_SAFE_INTEGER + 1
       "Number.MAX_VALUE",
       "-Number.MAX_VALUE",
-      "Number.MIN_VALUE",
-      "-Number.MIN_VALUE",
-      "Number.EPSILON",
       "2147483647", // 2^31 - 1, Int32 max
       "-2147483648", // -2^31, Int32 min
       "4294967295", // 2^32 - 1, Uint32 max
     )
-    val bigints = List("0n", "1n", "-0n", "-1n")
+    val bigints = List("0n", "1n", "-1n")
+    val bigintBounds = List(
+      "9223372036854775807n", // 2^63 - 1, BigInt64 max
+      "-9223372036854775808n", // -2^63, BigInt64 min
+      "18446744073709551615n", // 2^64 - 1, BigUint64 max
+    )
     val symbols = List("Symbol()", "Symbol.iterator")
-    val strings = List("\"\"", "\"0\"", "\" \"")
+    val strings = List("\"\"", "\"0\"")
     val objects = List("[]", "[,]", "{}", "function(){}")
+    val frozenObjects = List(
+      "Object.freeze ( { x : 1 } )",
+      "Object.seal ( { x : 1 } )",
+      "Object.preventExtensions ( { } )",
+      "Object.create ( null )",
+    )
     nullish ++ booleans ++ numbers ++ numberBounds ++
-    bigints ++ symbols ++ strings ++ objects
+    bigints ++ bigintBounds ++ symbols ++ strings ++
+    objects ++ frozenObjects
 
   /** Manually crafted token values for Lexical node mutation */
   val manualLexicalMap: Map[String, List[String]] = Map(
