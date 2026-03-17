@@ -23,18 +23,40 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
 
   def provenance: Option[Provenance] = targetCond.flatMap(findProvenance)
 
+  /** Find the CallInst that defines a variable via def-use chain */
+  private def findDefCall(
+    func: Func,
+    node: Node,
+    target: Local,
+    visited: Set[(Node, Local)] = Set(),
+  ): Option[CallInst] =
+    if (visited((node, target))) None
+    else {
+      val newVisited = visited + ((node, target))
+      val dataDep = cfg.depGraph.dataDeps(func)
+      val defNodes =
+        dataDep.useToDefs.getOrElse(node, Map()).getOrElse(target, Set())
+      defNodes
+        .collectFirst { case c: Call if c.callInst.lhs == target => c.callInst }
+        .orElse {
+          defNodes.flatMap { n =>
+            dataDep.uses(n).flatMap(findDefCall(func, n, _, newVisited))
+          }.headOption
+        }
+    }
+
   private def findProvenance(cond: Cond): Option[Provenance] =
-    val Cond(branch, targetSide) = cond
+    val Cond(branch, taken) = cond
     if (findCondStr(branch.cond).isDefined) None // direct string equality
     else
       for {
         func <- cfg.funcOf.get(branch)
-        (condVar, side) <- condRefVar(branch.cond, targetSide)
+        (condVar, takenSide) <- condRefVar(branch.cond, taken)
         call <- findDefCall(func, branch, condVar)
         result <- call match
           case ICall(_, EClo(algoName, _), _ :: EStr(prop) :: _)
               if propReadingAlgos.contains(algoName) =>
-            Some(Provenance(algoName, Some(prop), side))
+            Some(Provenance(algoName, Some(prop), !takenSide))
           case _ => None
       } yield result
 
@@ -491,29 +513,4 @@ object SpecStringSynthesizer {
       case ERef(v: Local)                            => Some((v, cond))
       case _                                         => None
 
-  /** Find the CallInst that defines a variable by walking predecessors */
-  def findDefCall(
-    func: Func,
-    from: Node,
-    target: Local,
-    visited: Set[Node] = Set(),
-  ): Option[CallInst] =
-    if (visited.contains(from)) None
-    else
-      val seen = visited + from
-      func.preds(from).foldLeft(Option.empty[CallInst]) {
-        case (found @ Some(_), _) => found
-        case (None, call: Call) if call.callInst.lhs == target =>
-          Some(call.callInst)
-        case (None, call: Call) => findDefCall(func, call, target, seen)
-        case (None, block: Block) =>
-          block.insts.reverseIterator.collectFirst {
-            case ILet(lhs, expr) if lhs == target => expr
-          } match
-            case Some(ERef(alias: Local)) =>
-              findDefCall(func, block, alias, seen)
-            case Some(_) => None
-            case None    => findDefCall(func, block, target, seen)
-        case (None, branch: Branch) => findDefCall(func, branch, target, seen)
-      }
 }

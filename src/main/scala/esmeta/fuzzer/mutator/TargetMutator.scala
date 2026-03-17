@@ -70,61 +70,69 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
     ast: Syntactic,
     prov: Provenance,
   ): List[Syntactic] =
-    def proxy(trap: String): Option[Syntactic] =
-      synthesizer.wrapProxy(ast.args, trap, ast)
-    def inject(
-      propHint: Option[String],
-      values: List[String] = defaultValues,
-    ): Option[Syntactic] =
-      propHint.flatMap(synthesizer.injectProp(_, ast.args, ast, values))
+    def inject(propHint: Option[String], vs: List[String]): Option[Syntactic] =
+      propHint.flatMap(synthesizer.injectProp(_, ast.args, ast, vs))
     def eject(propHint: Option[String]): Option[Syntactic] =
       propHint.flatMap(synthesizer.ejectProp(_, ast.args, ast))
 
     (prov.algoName, prov.side) match
       // Property existence: HasProperty / OrdinaryHasProperty
       case ("HasProperty" | "OrdinaryHasProperty", true) =>
-        inject(prov.propHint).toList ++ proxy("has").toList
+        inject(prov.propHint, defaultValues).toList
       case ("HasProperty" | "OrdinaryHasProperty", false) =>
-        eject(prov.propHint).toList ++ proxy("has").toList
+        eject(prov.propHint).toList
 
       // Own property existence: HasOwnProperty
       case ("HasOwnProperty", true) =>
-        inject(prov.propHint).toList ++
-        proxy("getOwnPropertyDescriptor").toList
-      case ("HasOwnProperty", false) =>
-        eject(prov.propHint).toList ++
-        proxy("getOwnPropertyDescriptor").toList
+        inject(prov.propHint, defaultValues).toList
+      case ("HasOwnProperty", false) => eject(prov.propHint).toList
 
       // Property get: Get / GetV / OrdinaryGet
       case ("Get" | "GetV" | "OrdinaryGet", true) =>
-        val getter = synthesizer
-          .injectGetter(ast.args, prov.propHint, Some(ast), truthyBodies)
-          .toList
-        inject(prov.propHint, truthyValues).toList ++
-        getter ++ proxy("get").toList
+        val getter = synthesizer.injectGetter(
+          ast.args,
+          prov.propHint,
+          Some(ast),
+          truthyBodies,
+        )
+        inject(prov.propHint, truthyValues).toList ++ getter.toList
       case ("Get" | "GetV" | "OrdinaryGet", false) =>
-        eject(prov.propHint).toList ++ proxy("get").toList
+        val getter = synthesizer.injectGetter(
+          ast.args,
+          prov.propHint,
+          Some(ast),
+          falsyBodies,
+        )
+        inject(prov.propHint, falsyValues).toList ++
+        eject(prov.propHint).toList ++
+        getter.toList
 
       // Method get: GetMethod / Invoke (callable value)
       case ("GetMethod" | "Invoke", true) =>
-        val method = synthesizer
-          .injectMethod(ast.args, prov.propHint, Some(ast), truthyBodies)
-          .toList
-        method ++ proxy("get").toList
+        val method = synthesizer.injectMethod(
+          ast.args,
+          prov.propHint,
+          Some(ast),
+          truthyBodies,
+        )
+        method.toList
       case ("GetMethod" | "Invoke", false) =>
-        val method = synthesizer
-          .injectMethod(ast.args, prov.propHint, Some(ast), falsyBodies)
-          .toList
-        eject(prov.propHint).toList ++ method ++ proxy("get").toList
+        val method = synthesizer.injectMethod(
+          ast.args,
+          prov.propHint,
+          Some(ast),
+          falsyBodies,
+        )
+        eject(prov.propHint).toList ++ method.toList
 
       // Property descriptor: OrdinaryGetOwnProperty
       case ("OrdinaryGetOwnProperty", true) =>
-        inject(prov.propHint).toList ++
-        proxy("getOwnPropertyDescriptor").toList
-      case ("OrdinaryGetOwnProperty", false) =>
-        eject(prov.propHint).toList ++
-        proxy("getOwnPropertyDescriptor").toList
+        inject(prov.propHint, defaultValues).toList
+      case ("OrdinaryGetOwnProperty", false) => eject(prov.propHint).toList
+
+      // TODO: PropWritingAlgos
+      // TODO: Type Coercion
 
       // others
-      case _ => Nil
+      case _ => List()
 }
