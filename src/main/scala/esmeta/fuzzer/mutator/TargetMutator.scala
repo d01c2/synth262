@@ -76,59 +76,61 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
       propHint.flatMap(synthesizer.ejectProp(_, ast.args, ast))
 
     (prov.algoName, prov.side) match
-      // Property existence: HasProperty / OrdinaryHasProperty
-      case ("HasProperty" | "OrdinaryHasProperty", true) =>
-        inject(prov.propHint, defaultValues).toList
-      case ("HasProperty" | "OrdinaryHasProperty", false) =>
+      // Property existence: HasProperty
+      case ("HasProperty", true)  => inject(prov.propHint, defaultValues).toList
+      case ("HasProperty", false) => eject(prov.propHint).toList
+
+      // Property get: Get (abrupt)
+      case ("Get", true) if prov.check.contains("Abrupt") =>
+        synthesizer
+          .injectGetter(ast.args, prov.propHint, Some(ast), abruptBodies)
+          .toList
+      case ("Get", false) if prov.check.contains("Abrupt") =>
+        inject(prov.propHint, defaultValues).toList ++
+        synthesizer
+          .injectGetter(ast.args, prov.propHint, Some(ast), truthyBodies)
+          .toList
+
+      // Property get: Get (with IsCallable)
+      case ("Get", true) if prov.check.contains("IsCallable") =>
+        synthesizer
+          .injectMethod(ast.args, prov.propHint, Some(ast), truthyBodies)
+          .toList
+      case ("Get", false) if prov.check.contains("IsCallable") =>
+        inject(prov.propHint, falsyValues).toList ++
         eject(prov.propHint).toList
 
-      // Own property existence: HasOwnProperty
-      case ("HasOwnProperty", true) =>
-        inject(prov.propHint, defaultValues).toList
-      case ("HasOwnProperty", false) => eject(prov.propHint).toList
-
-      // Property get: Get / GetV / OrdinaryGet
-      case ("Get" | "GetV" | "OrdinaryGet", true) =>
-        val getter = synthesizer.injectGetter(
-          ast.args,
-          prov.propHint,
-          Some(ast),
-          truthyBodies,
-        )
-        inject(prov.propHint, truthyValues).toList ++ getter.toList
-      case ("Get" | "GetV" | "OrdinaryGet", false) =>
-        val getter = synthesizer.injectGetter(
-          ast.args,
-          prov.propHint,
-          Some(ast),
-          falsyBodies,
-        )
+      // Property get: Get (default)
+      case ("Get", true) =>
+        inject(prov.propHint, truthyValues).toList ++
+        synthesizer
+          .injectGetter(ast.args, prov.propHint, Some(ast), truthyBodies)
+          .toList
+      case ("Get", false) =>
         inject(prov.propHint, falsyValues).toList ++
         eject(prov.propHint).toList ++
-        getter.toList
+        synthesizer
+          .injectGetter(ast.args, prov.propHint, Some(ast), falsyBodies)
+          .toList
 
-      // Method get: GetMethod / Invoke (callable value)
-      case ("GetMethod" | "Invoke", true) =>
-        val method = synthesizer.injectMethod(
-          ast.args,
-          prov.propHint,
-          Some(ast),
-          truthyBodies,
-        )
-        method.toList
-      case ("GetMethod" | "Invoke", false) =>
-        val method = synthesizer.injectMethod(
-          ast.args,
-          prov.propHint,
-          Some(ast),
-          falsyBodies,
-        )
-        eject(prov.propHint).toList ++ method.toList
+      // Method get, invoke: GetMethod, Invoke (abrupt)
+      case ("GetMethod" | "Invoke", true) if prov.check.contains("Abrupt") =>
+        synthesizer
+          .injectMethod(ast.args, prov.propHint, Some(ast), abruptBodies)
+          .toList
+      case ("GetMethod" | "Invoke", false) if prov.check.contains("Abrupt") =>
+        synthesizer
+          .injectMethod(ast.args, prov.propHint, Some(ast), truthyBodies)
+          .toList
 
-      // Property descriptor: OrdinaryGetOwnProperty
-      case ("OrdinaryGetOwnProperty", true) =>
-        inject(prov.propHint, defaultValues).toList
-      case ("OrdinaryGetOwnProperty", false) => eject(prov.propHint).toList
+      // Method get: GetMethod (callable value)
+      case ("GetMethod", true) =>
+        synthesizer
+          .injectMethod(ast.args, prov.propHint, Some(ast), truthyBodies)
+          .toList
+      case ("GetMethod", false) =>
+        inject(prov.propHint, falsyValues).toList ++
+        eject(prov.propHint).toList
 
       // TODO: PropWritingAlgos
       // TODO: Type Coercion

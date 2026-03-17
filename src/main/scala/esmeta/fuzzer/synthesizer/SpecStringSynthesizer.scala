@@ -23,42 +23,68 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
 
   def provenance: Option[Provenance] = targetCond.flatMap(findProvenance)
 
-  /** Find the CallInst that defines a variable via def-use chain */
+  /** Extract algo name and property from a prop-reading CallInst */
+  private def propReadingInfo(call: CallInst): Option[(String, String)] =
+    call match
+      case ICall(_, EClo(name, _), _ :: EStr(prop) :: _)
+          if propReadingAlgos.contains(name) =>
+        Some((name, prop))
+      case _ => None
+
+  /** Trace def-use chain to find a prop-reading call and intermediate check */
   private def findDefCall(
     func: Func,
     node: Node,
     target: Local,
     visited: Set[(Node, Local)] = Set(),
-  ): Option[CallInst] =
+  ): Option[(CallInst, Option[String])] =
     if (visited((node, target))) None
     else {
       val newVisited = visited + ((node, target))
       val dataDep = cfg.depGraph.dataDeps(func)
       val defNodes =
         dataDep.useToDefs.getOrElse(node, Map()).getOrElse(target, Set())
+      // direct match: the defining call is a prop-reading algo
       defNodes
-        .collectFirst { case c: Call if c.callInst.lhs == target => c.callInst }
+        .collectFirst {
+          case c: Call
+              if c.callInst.lhs == target &&
+              propReadingInfo(c.callInst).isDefined =>
+            (c.callInst, None)
+        }
         .orElse {
+          // indirect: record intermediate call name and follow def-use chain
           defNodes.flatMap { n =>
-            dataDep.uses(n).flatMap(findDefCall(func, n, _, newVisited))
+            val intermediate = n match
+              case c: Call if c.callInst.lhs == target =>
+                c.callInst match
+                  case ICall(_, EClo(name, _), _) => Some(name)
+                  case _                          => None
+              case _ => None
+            dataDep.uses(n).flatMap { v =>
+              findDefCall(func, n, v, newVisited).map {
+                case (call, existing) => (call, existing.orElse(intermediate))
+              }
+            }
           }.headOption
         }
     }
 
+  /** Find provenance info for a target branch condition */
   private def findProvenance(cond: Cond): Option[Provenance] =
     val Cond(branch, taken) = cond
-    if (findCondStr(branch.cond).isDefined) None // direct string equality
-    else
+    if (findCondStr(branch.cond).isDefined) None
+    else {
       for {
         func <- cfg.funcOf.get(branch)
         (condVar, takenSide) <- condRefVar(branch.cond, taken)
-        call <- findDefCall(func, branch, condVar)
-        result <- call match
-          case ICall(_, EClo(algoName, _), _ :: EStr(prop) :: _)
-              if propReadingAlgos.contains(algoName) =>
-            Some(Provenance(algoName, Some(prop), !takenSide))
-          case _ => None
-      } yield result
+        (call, intermediateCheck) <- findDefCall(func, branch, condVar)
+        (algoName, prop) <- propReadingInfo(call)
+      } yield
+        val check =
+          if (branch.isAbruptNode) Some("Abrupt") else intermediateCheck
+        Provenance(algoName, Some(prop), !takenSide, check)
+    }
 
   /** for syntactic production */
   def apply(
@@ -369,17 +395,7 @@ object SpecStringSynthesizer {
 
   val PRIMARY_EXPRESSION = "PrimaryExpression"
 
-  val propReadingAlgos = Set(
-    "Get",
-    "GetV",
-    "GetMethod",
-    "Invoke",
-    "OrdinaryGet",
-    "HasProperty",
-    "OrdinaryHasProperty",
-    "HasOwnProperty",
-    "OrdinaryGetOwnProperty",
-  )
+  val propReadingAlgos = Set("Get", "GetMethod", "HasProperty", "Invoke")
 
   val trapAlgos: Map[String, String] = Map(
     "Get" -> "get",
@@ -503,14 +519,26 @@ object SpecStringSynthesizer {
     algoName: String,
     propHint: Option[String],
     side: Boolean,
+    check: Option[String] = None,
   )
 
   /** extract variable reference and side from a branch */
   def condRefVar(expr: Expr, cond: Boolean): Option[(Local, Boolean)] =
+    import esmeta.ty.AbruptT
     expr match
       case EBinary(BOp.Eq, ERef(v: Local), EBool(b)) => Some((v, cond == b))
       case EBinary(BOp.Eq, EBool(b), ERef(v: Local)) => Some((v, cond == b))
-      case ERef(v: Local)                            => Some((v, cond))
-      case _                                         => None
-
+      case EBinary(BOp.Eq, ERef(v: Local), EUndef()) => Some((v, !cond))
+      case EBinary(BOp.Eq, EUndef(), ERef(v: Local)) => Some((v, !cond))
+      case EBinary(BOp.Eq, ERef(v: Local), ENull())  => Some((v, !cond))
+      case EBinary(BOp.Eq, ENull(), ERef(v: Local))  => Some((v, !cond))
+      case EUnary(UOp.Not, inner)                    => condRefVar(inner, !cond)
+      case EBinary(BOp.And, l, r) =>
+        condRefVar(l, cond).orElse(condRefVar(r, cond))
+      case EBinary(BOp.Or, l, r) =>
+        condRefVar(l, cond).orElse(condRefVar(r, cond))
+      case ETypeCheck(ERef(v: Local), ty) if ty.toValue == AbruptT =>
+        Some((v, cond))
+      case ERef(v: Local) => Some((v, cond))
+      case _              => None
 }
