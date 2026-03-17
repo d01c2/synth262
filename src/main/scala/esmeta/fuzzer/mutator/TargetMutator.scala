@@ -70,60 +70,60 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
     ast: Syntactic,
     prov: Provenance,
   ): List[Syntactic] =
-    def inject(propHint: Option[String], vs: List[String]): Option[Syntactic] =
-      propHint.flatMap(synthesizer.injectProp(_, ast.args, ast, vs))
-    def eject(propHint: Option[String]): Option[Syntactic] =
-      propHint.flatMap(synthesizer.ejectProp(_, ast.args, ast))
+    def injectProp(values: List[String]): Option[Syntactic] =
+      prov.propHint.flatMap(synthesizer.injectProp(_, ast.args, ast, values))
+    def ejectProp(): Option[Syntactic] =
+      prov.propHint.flatMap(synthesizer.ejectProp(_, ast.args, ast))
+    def injectGetter(bodies: List[String]): Option[Syntactic] =
+      synthesizer.injectGetter(ast.args, prov.propHint, Some(ast), bodies)
+    def injectMethod(bodies: List[String]): Option[Syntactic] =
+      synthesizer.injectMethod(ast.args, prov.propHint, Some(ast), bodies)
+    def proxy(values: List[String]): Option[Syntactic] =
+      prov.propHint.flatMap(synthesizer.wrapProxy(ast.args, _, ast, values))
 
     (prov.algoName, prov.side) match
       // Property existence: HasProperty
-      case ("HasProperty", true)  => inject(prov.propHint, defaultValues).toList
-      case ("HasProperty", false) => eject(prov.propHint).toList
+      case ("HasProperty", true) =>
+        injectProp(defaultValues).toList ++
+        proxy(proxyTrapHandlers).toList
+      case ("HasProperty", false) =>
+        ejectProp().toList ++
+        proxy(nonCallableValues).toList
 
       // Abrupt: Get (getter), GetMethod/Invoke (method)
       case ("Get", true) if prov.check.contains("Abrupt") =>
-        synthesizer
-          .injectGetter(ast.args, prov.propHint, Some(ast), abruptBodies)
-          .toList
+        injectGetter(abruptBodies).toList
       case ("Get", false) if prov.check.contains("Abrupt") =>
-        inject(prov.propHint, defaultValues).toList ++
-        synthesizer
-          .injectGetter(ast.args, prov.propHint, Some(ast), truthyBodies)
-          .toList
+        injectProp(defaultValues).toList ++
+        injectGetter(truthyBodies).toList
       case ("GetMethod" | "Invoke", true) if prov.check.contains("Abrupt") =>
-        synthesizer
-          .injectMethod(ast.args, prov.propHint, Some(ast), abruptBodies)
-          .toList
+        injectMethod(abruptBodies).toList ++
+        proxy(nonCallableValues).toList
       case ("GetMethod" | "Invoke", false) if prov.check.contains("Abrupt") =>
-        synthesizer
-          .injectMethod(ast.args, prov.propHint, Some(ast), truthyBodies)
-          .toList
+        injectMethod(truthyBodies).toList ++
+        proxy(proxyTrapHandlers).toList
 
       // Callable value: Get+IsCallable or GetMethod (default)
       case ("Get" | "GetMethod", true)
           if prov.algoName == "GetMethod" ||
           prov.check.contains("IsCallable") =>
-        synthesizer
-          .injectMethod(ast.args, prov.propHint, Some(ast), truthyBodies)
-          .toList
+        injectMethod(truthyBodies).toList ++
+        proxy(proxyTrapHandlers).toList
       case ("Get" | "GetMethod", false)
           if prov.algoName == "GetMethod" ||
           prov.check.contains("IsCallable") =>
-        inject(prov.propHint, falsyValues).toList ++
-        eject(prov.propHint).toList
+        injectProp(falsyValues).toList ++
+        ejectProp().toList
 
       // Property get: Get (default)
       case ("Get", true) =>
-        inject(prov.propHint, truthyValues).toList ++
-        synthesizer
-          .injectGetter(ast.args, prov.propHint, Some(ast), truthyBodies)
-          .toList
+        injectProp(truthyValues).toList ++
+        injectGetter(truthyBodies).toList ++
+        proxy(proxyTrapHandlers).toList
       case ("Get", false) =>
-        inject(prov.propHint, falsyValues).toList ++
-        eject(prov.propHint).toList ++
-        synthesizer
-          .injectGetter(ast.args, prov.propHint, Some(ast), falsyBodies)
-          .toList
+        injectProp(falsyValues).toList ++
+        ejectProp().toList ++
+        injectGetter(falsyBodies).toList
 
       // TODO: PropWritingAlgos
       // TODO: Type Coercion
