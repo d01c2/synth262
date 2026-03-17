@@ -23,69 +23,6 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
 
   def provenance: Option[Provenance] = targetCond.flatMap(findProvenance)
 
-  /** Extract algo name and property from a prop-reading CallInst */
-  private def propReadingInfo(call: CallInst): Option[(String, String)] =
-    call match
-      case ICall(_, EClo(name, _), _ :: EStr(prop) :: _)
-          if propReadingAlgos.contains(name) =>
-        Some((name, prop))
-      case _ => None
-
-  /** Trace def-use chain to find a prop-reading call and intermediate check */
-  private def findDefCall(
-    func: Func,
-    node: Node,
-    target: Local,
-    visited: Set[(Node, Local)] = Set(),
-  ): Option[(CallInst, Option[String])] =
-    if (visited((node, target))) None
-    else {
-      val newVisited = visited + ((node, target))
-      val dataDep = cfg.depGraph.dataDeps(func)
-      val defNodes =
-        dataDep.useToDefs.getOrElse(node, Map()).getOrElse(target, Set())
-      // direct match: the defining call is a prop-reading algo
-      defNodes
-        .collectFirst {
-          case c: Call
-              if c.callInst.lhs == target &&
-              propReadingInfo(c.callInst).isDefined =>
-            (c.callInst, None)
-        }
-        .orElse {
-          // indirect: record intermediate call name and follow def-use chain
-          defNodes.flatMap { n =>
-            val intermediate = n match
-              case c: Call if c.callInst.lhs == target =>
-                c.callInst match
-                  case ICall(_, EClo(name, _), _) => Some(name)
-                  case _                          => None
-              case _ => None
-            dataDep.uses(n).flatMap { v =>
-              findDefCall(func, n, v, newVisited).map {
-                case (call, existing) => (call, existing.orElse(intermediate))
-              }
-            }
-          }.headOption
-        }
-    }
-
-  /** Find provenance info for a target branch condition */
-  private def findProvenance(cond: Cond): Option[Provenance] =
-    val Cond(branch, taken) = cond
-    if (findCondStr(branch.cond).isDefined) None
-    else {
-      for {
-        func <- cfg.funcOf.get(branch)
-        (condVar, takenSide) <- condRefVar(branch.cond, taken)
-        (call, intermediateCheck) <- findDefCall(func, branch, condVar)
-        (algoName, prop) <- propReadingInfo(call)
-      } yield
-        val check =
-          if (branch.isAbruptNode) Some("Abrupt") else intermediateCheck
-        Provenance(algoName, Some(prop), !takenSide, check)
-    }
-
   /** for syntactic production */
   def apply(
     name: String,
@@ -98,7 +35,10 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
   /** for lexical production */
   def apply(name: String): Lexical = base(name)
 
-  /** Blind spec string generation */
+  // ---------------------------------------------------------------------------
+  // Blind synthesis
+  // ---------------------------------------------------------------------------
+
   def generateOne(prodName: String, args: List[Boolean]): Syntactic =
     val candidates = List(
       generateObject(args) -> 2,
@@ -116,31 +56,23 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
       .from(chosen.toString(grammar = Some(cfg.grammar)))
       .asInstanceOf[Syntactic]
 
-  def generateString(str: String, args: List[Boolean]): Syntactic = cfg
+  private def generateString(str: String, args: List[Boolean]): Syntactic = cfg
     .esParser(PRIMARY_EXPRESSION, args)
     .from(s"\\'$str\\'")
     .asInstanceOf[Syntactic]
 
-  def generateObject(args: List[Boolean]): Syntactic =
+  private def generateObject(args: List[Boolean]): Syntactic =
     val k = chooseProp
     val v = choose(defaultValues)
     val raw = s"{ $k : $v }"
     cfg.esParser(PRIMARY_EXPRESSION, args).from(raw).asInstanceOf[Syntactic]
 
-  def generateProxy(
-    args: List[Boolean],
-    trapHint: Option[String] = None,
-    targetAst: Option[Syntactic] = None,
-  ): Syntactic =
-    val trap = trapHint.getOrElse(chooseTrap)
-    val needsCallable = fnProxyTraps.contains(trap)
-    val target = targetAst match
-      case Some(ast) if !needsCallable && objectLikeProds.contains(ast.name) =>
-        ast.toString(grammar = Some(cfg.grammar))
-      case _ => if needsCallable then "function ( ) { }" else "{}"
-    val body = choose(proxyTrapBodies)
-    val raw = s"(new Proxy($target, { $trap ( ) { $body } }))"
-    cfg.esParser(PRIMARY_EXPRESSION, args).from(raw).asInstanceOf[Syntactic]
+  private def generateProxy(args: List[Boolean]): Syntactic =
+    val trap = chooseTrap
+    val targetStr =
+      if fnProxyTraps.contains(trap) then "function ( ) { }" else "{}"
+    val handler = choose(proxyTrapHandlers)
+    makeProxy(args, targetStr, trap, handler)
 
   private def generateAccessor(
     kind: String,
@@ -158,28 +90,37 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
       .from(choose(templates))
       .asInstanceOf[Syntactic]
 
-  def generateGetter(
+  private def generateGetter(args: List[Boolean]): Syntactic =
+    generateAccessor("get", "()", args)
+
+  private def generateSetter(args: List[Boolean]): Syntactic =
+    generateAccessor("set", "(_)", args)
+
+  // ---------------------------------------------------------------------------
+  // Guided mutation
+  // ---------------------------------------------------------------------------
+
+  /** Build a Proxy expression from raw strings */
+  private def makeProxy(
     args: List[Boolean],
-    propHint: Option[String] = None,
-  ): Syntactic = generateAccessor("get", "()", args, propHint)
+    targetStr: String,
+    trap: String,
+    handler: String,
+  ): Syntactic =
+    val raw = s"(new Proxy($targetStr, { $trap : $handler }))"
+    cfg.esParser(PRIMARY_EXPRESSION, args).from(raw).asInstanceOf[Syntactic]
 
-  def generateSetter(
-    args: List[Boolean],
-    propHint: Option[String] = None,
-  ): Syntactic = generateAccessor("set", "(_)", args, propHint)
-
-  /** guided mutation */
-
-  // wrap an existing AST in a Proxy. Returns None if AST is not object-like
+  // wrap an existing AST in a Proxy with a trap property
   def wrapProxy(
     args: List[Boolean],
     trap: String,
     target: Syntactic,
+    values: List[String],
   ): Option[Syntactic] =
-    if (!objectLikeProds.contains(target.name)) None
-    else
-      try { Some(generateProxy(args, Some(trap), Some(target))) }
-      catch { case _: Exception => None }
+    val targetStr = target.toString(grammar = Some(cfg.grammar))
+    val v = choose(values)
+    try { Some(makeProxy(args, targetStr, trap, v)) }
+    catch { case _: Exception => None }
 
   // remove a specific property from an existing object literal
   def ejectProp(
@@ -255,7 +196,9 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
     val body = choose(bodies)
     injectPropDef(s"$kind $k $params { $body }", args, into)
 
-  /** ObjectLiteral AST manipulation */
+  // ---------------------------------------------------------------------------
+  // ObjectLiteral AST manipulation
+  // ---------------------------------------------------------------------------
 
   private def getProps(obj: Syntactic): List[Ast] = obj match
     case Syntactic("ObjectLiteral", _, 1 | 2, children) =>
@@ -297,6 +240,73 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
           cs(0).map(_.toString(grammar = Some(cfg.grammar)).trim)
       }.flatten
     case _ => None
+
+  // ---------------------------------------------------------------------------
+  // Provenance analysis
+  // ---------------------------------------------------------------------------
+
+  /** Extract algo name and property from a prop-reading CallInst */
+  private def propReadingInfo(call: CallInst): Option[(String, String)] =
+    call match
+      case ICall(_, EClo(name, _), _ :: EStr(prop) :: _)
+          if propReadingAlgos.contains(name) =>
+        Some((name, prop))
+      case _ => None
+
+  /** Trace def-use chain to find a prop-reading call and intermediate check */
+  private def findDefCall(
+    func: Func,
+    node: Node,
+    target: Local,
+    visited: Set[(Node, Local)] = Set(),
+  ): Option[(CallInst, Option[String])] =
+    if (visited((node, target))) None
+    else {
+      val newVisited = visited + ((node, target))
+      val dataDep = cfg.depGraph.dataDeps(func)
+      val defNodes =
+        dataDep.useToDefs.getOrElse(node, Map()).getOrElse(target, Set())
+      // direct match: the defining call is a prop-reading algo
+      defNodes
+        .collectFirst {
+          case c: Call
+              if c.callInst.lhs == target &&
+              propReadingInfo(c.callInst).isDefined =>
+            (c.callInst, None)
+        }
+        .orElse {
+          // indirect: record intermediate call name and follow def-use chain
+          defNodes.flatMap { n =>
+            val intermediate = n match
+              case c: Call if c.callInst.lhs == target =>
+                c.callInst match
+                  case ICall(_, EClo(name, _), _) => Some(name)
+                  case _                          => None
+              case _ => None
+            dataDep.uses(n).flatMap { v =>
+              findDefCall(func, n, v, newVisited).map {
+                case (call, existing) => (call, existing.orElse(intermediate))
+              }
+            }
+          }.headOption
+        }
+    }
+
+  /** Find provenance info for a target branch condition */
+  private def findProvenance(cond: Cond): Option[Provenance] =
+    val Cond(branch, taken) = cond
+    if (findCondStr(branch.cond).isDefined) None
+    else {
+      for {
+        func <- cfg.funcOf.get(branch)
+        (condVar, takenSide) <- condRefVar(branch.cond, taken)
+        (call, intermediateCheck) <- findDefCall(func, branch, condVar)
+        (algoName, prop) <- propReadingInfo(call)
+      } yield
+        val check =
+          if (branch.isAbruptNode) Some("Abrupt") else intermediateCheck
+        Provenance(algoName, Some(prop), !takenSide, check)
+    }
 
   // ---------------------------------------------------------------------------
   // Spec analysis
@@ -366,7 +376,7 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
 
   lazy val allTrapsSet: Set[String] = (objectProxyTraps ++ fnProxyTraps).toSet
 
-  def getReachableFuncs(root: Func): Set[Func] =
+  private def getReachableFuncs(root: Func): Set[Func] =
     def loop(func: Func, visited: Set[Func]): Set[Func] =
       if (visited.contains(func)) visited
       else {
@@ -395,6 +405,10 @@ object SpecStringSynthesizer {
 
   val PRIMARY_EXPRESSION = "PrimaryExpression"
 
+  // ---------------------------------------------------------------------------
+  // Spec constants
+  // ---------------------------------------------------------------------------
+
   val propReadingAlgos = Set("Get", "GetMethod", "HasProperty", "Invoke")
 
   val trapAlgos: Map[String, String] = Map(
@@ -421,20 +435,9 @@ object SpecStringSynthesizer {
     "Construct" -> "construct",
   )
 
-  /** productions that always evaluate to an object */
-  val objectLikeProds: Set[String] = Set(
-    "ObjectLiteral",
-    "ArrayLiteral",
-    "FunctionExpression",
-    "GeneratorExpression",
-    "AsyncFunctionExpression",
-    "AsyncGeneratorExpression",
-    "ArrowFunction",
-    "AsyncArrowFunction",
-    "ClassDeclaration",
-    "ClassExpression",
-    "RegularExpressionLiteral",
-  )
+  // ---------------------------------------------------------------------------
+  // Proxy
+  // ---------------------------------------------------------------------------
 
   val objectProxyTraps: List[String] = List(
     "has",
@@ -452,18 +455,20 @@ object SpecStringSynthesizer {
 
   val fnProxyTraps: List[String] = List("apply", "construct")
 
-  val proxyTrapBodies: List[String] = List(
-    "throw 0 ;",
-    "",
-    "return true ;",
-    "return false ;",
-    "return null ;",
-    "return 0 ;",
-    "return { } ;",
-    "return [ ] ;",
+  val proxyTrapHandlers: List[String] = List(
+    "function ( ) { throw 0 ; }",
+    "function ( ) { }",
+    "function ( ) { return true ; }",
+    "function ( ) { return false ; }",
+    "function ( ) { return null ; }",
+    "function ( ) { return 0 ; }",
+    "function ( ) { return { } ; }",
+    "function ( ) { return [ ] ; }",
   )
 
-  // value categories
+  // ---------------------------------------------------------------------------
+  // Property values
+  // ---------------------------------------------------------------------------
 
   val falsyValues: List[String] = List("null", "undefined", "false", "0", "''")
 
@@ -477,6 +482,10 @@ object SpecStringSynthesizer {
     "[]",
   )
 
+  // ---------------------------------------------------------------------------
+  // Callable / non-callable
+  // ---------------------------------------------------------------------------
+
   val callableValues: List[String] = List(
     "function ( x ) { }",
     "function * ( x ) { }",
@@ -484,6 +493,12 @@ object SpecStringSynthesizer {
     "async function * ( x ) { }",
     "( ) => { throw 0 ; }",
   )
+
+  val nonCallableValues: List[String] = List("42", "true", "'str'")
+
+  // ---------------------------------------------------------------------------
+  // Composite value list
+  // ---------------------------------------------------------------------------
 
   private val objects = List("{}", "[]")
   private val iterators = List(
@@ -498,7 +513,9 @@ object SpecStringSynthesizer {
     falsyValues ++ truthyValues ++ callableValues ++ objects ++
     iterators ++ thenables
 
-  // categories for accessors/methods
+  // ---------------------------------------------------------------------------
+  // Accessor / method bodies
+  // ---------------------------------------------------------------------------
 
   val truthyBodies: List[String] =
     List("return 1 ;", "return true ;", "return { } ;")
@@ -508,7 +525,9 @@ object SpecStringSynthesizer {
 
   val abruptBodies: List[String] = List("throw 0 ;")
 
-  // helper for finding provenance
+  // ---------------------------------------------------------------------------
+  // Provenance helpers
+  // ---------------------------------------------------------------------------
 
   def findCondStr(e: Expr): Option[String] = e match
     case EBinary(BOp.Eq, EStr(str), _) => Some(str)
