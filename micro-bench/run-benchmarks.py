@@ -36,8 +36,12 @@ def run_single(branch, seed, duration, ablation=False):
     cmd = f'sbt -error "run mutate {seed} -mutate:branch={branch} -mutate:duration={duration}{ablation_flag}"'
     try:
         result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True,
-            cwd=str(PROJECT_DIR), timeout=duration + 60
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            cwd=str(PROJECT_DIR),
+            timeout=duration + 60,
         )
         output = result.stdout + result.stderr
         for line in output.split("\n"):
@@ -62,7 +66,7 @@ def run_benchmarks(label, trials, duration):
 
     for bench in benchmarks:
         bid = bench["id"]
-        print(f"\n=== {bid}: {bench['desc']} ===")
+        print(f"\n=== {bid} ===")
         iterations = []
         for t in range(1, trials + 1):
             it = run_single(bench["branch"], bench["seed"], duration, ablation)
@@ -85,6 +89,7 @@ def compare():
     """Compare baseline vs comparison and generate charts."""
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         import numpy as np
@@ -122,8 +127,8 @@ def compare():
         base_medians.append(np.median(b_iters) if b_iters else 0)
         impr_medians.append(np.median(i_iters) if i_iters else 0)
 
-    ax.bar(x - width/2, base_medians, width, label="Baseline", color="#4C72B0")
-    ax.bar(x + width/2, impr_medians, width, label="Comparison", color="#DD8452")
+    ax.bar(x - width / 2, base_medians, width, label="Baseline", color="#4C72B0")
+    ax.bar(x + width / 2, impr_medians, width, label="Comparison", color="#DD8452")
     ax.set_xlabel("Benchmark")
     ax.set_ylabel("Median Iterations to Cover")
     ax.set_title("Comparison: Iterations to Cover Target Branch")
@@ -147,10 +152,20 @@ def compare():
         data_impr.append(i_iters if i_iters else [0])
         labels.append(bid)
 
-    bp1 = ax2.boxplot(data_base, positions=x - 0.2, widths=0.3,
-                      patch_artist=True, boxprops=dict(facecolor="#4C72B0", alpha=0.7))
-    bp2 = ax2.boxplot(data_impr, positions=x + 0.2, widths=0.3,
-                      patch_artist=True, boxprops=dict(facecolor="#DD8452", alpha=0.7))
+    bp1 = ax2.boxplot(
+        data_base,
+        positions=x - 0.2,
+        widths=0.3,
+        patch_artist=True,
+        boxprops=dict(facecolor="#4C72B0", alpha=0.7),
+    )
+    bp2 = ax2.boxplot(
+        data_impr,
+        positions=x + 0.2,
+        widths=0.3,
+        patch_artist=True,
+        boxprops=dict(facecolor="#DD8452", alpha=0.7),
+    )
     ax2.set_xlabel("Benchmark")
     ax2.set_ylabel("Iterations to Cover")
     ax2.set_title("Distribution of Iterations (Baseline vs Comparison)")
@@ -163,9 +178,11 @@ def compare():
 
     # --- Summary table ---
     print("\n=== Summary ===")
-    print(f"{'Benchmark':<20} {'Base Med':>10} {'Comp Med':>10} {'Speedup':>10} {'Base TO':>8} {'Comp TO':>8}")
+    print(
+        f"{'Benchmark':<20} {'Base Med':>10} {'Comp Med':>10} {'Speedup':>10} {'Base TO':>8} {'Comp TO':>8}"
+    )
     print("-" * 70)
-    for idx, bid in enumerate(bench_ids):
+    for _, bid in enumerate(bench_ids):
         b_iters = [i for i in baseline[bid]["iterations"] if i is not None]
         i_iters = [i for i in comparison[bid]["iterations"] if i is not None]
         b_med = np.median(b_iters) if b_iters else float("inf")
@@ -173,7 +190,9 @@ def compare():
         speedup = b_med / i_med if i_med > 0 else float("inf")
         b_to = len(baseline[bid]["iterations"]) - len(b_iters)
         i_to = len(comparison[bid]["iterations"]) - len(i_iters)
-        print(f"{bid:<20} {b_med:>10.1f} {i_med:>10.1f} {speedup:>9.2f}x {b_to:>8} {i_to:>8}")
+        print(
+            f"{bid:<20} {b_med:>10.1f} {i_med:>10.1f} {speedup:>9.2f}x {b_to:>8} {i_to:>8}"
+        )
 
 
 if __name__ == "__main__":

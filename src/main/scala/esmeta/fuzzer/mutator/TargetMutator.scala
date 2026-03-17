@@ -80,7 +80,7 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
       case ("HasProperty", true)  => inject(prov.propHint, defaultValues).toList
       case ("HasProperty", false) => eject(prov.propHint).toList
 
-      // Property get: Get (abrupt)
+      // Abrupt: Get (getter), GetMethod/Invoke (method)
       case ("Get", true) if prov.check.contains("Abrupt") =>
         synthesizer
           .injectGetter(ast.args, prov.propHint, Some(ast), abruptBodies)
@@ -90,13 +90,25 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
         synthesizer
           .injectGetter(ast.args, prov.propHint, Some(ast), truthyBodies)
           .toList
-
-      // Property get: Get (with IsCallable)
-      case ("Get", true) if prov.check.contains("IsCallable") =>
+      case ("GetMethod" | "Invoke", true) if prov.check.contains("Abrupt") =>
+        synthesizer
+          .injectMethod(ast.args, prov.propHint, Some(ast), abruptBodies)
+          .toList
+      case ("GetMethod" | "Invoke", false) if prov.check.contains("Abrupt") =>
         synthesizer
           .injectMethod(ast.args, prov.propHint, Some(ast), truthyBodies)
           .toList
-      case ("Get", false) if prov.check.contains("IsCallable") =>
+
+      // Callable value: Get+IsCallable or GetMethod (default)
+      case ("Get" | "GetMethod", true)
+          if prov.algoName == "GetMethod" ||
+          prov.check.contains("IsCallable") =>
+        synthesizer
+          .injectMethod(ast.args, prov.propHint, Some(ast), truthyBodies)
+          .toList
+      case ("Get" | "GetMethod", false)
+          if prov.algoName == "GetMethod" ||
+          prov.check.contains("IsCallable") =>
         inject(prov.propHint, falsyValues).toList ++
         eject(prov.propHint).toList
 
@@ -112,25 +124,6 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
         synthesizer
           .injectGetter(ast.args, prov.propHint, Some(ast), falsyBodies)
           .toList
-
-      // Method get, invoke: GetMethod, Invoke (abrupt)
-      case ("GetMethod" | "Invoke", true) if prov.check.contains("Abrupt") =>
-        synthesizer
-          .injectMethod(ast.args, prov.propHint, Some(ast), abruptBodies)
-          .toList
-      case ("GetMethod" | "Invoke", false) if prov.check.contains("Abrupt") =>
-        synthesizer
-          .injectMethod(ast.args, prov.propHint, Some(ast), truthyBodies)
-          .toList
-
-      // Method get: GetMethod (callable value)
-      case ("GetMethod", true) =>
-        synthesizer
-          .injectMethod(ast.args, prov.propHint, Some(ast), truthyBodies)
-          .toList
-      case ("GetMethod", false) =>
-        inject(prov.propHint, falsyValues).toList ++
-        eject(prov.propHint).toList
 
       // TODO: PropWritingAlgos
       // TODO: Type Coercion
