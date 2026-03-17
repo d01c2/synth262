@@ -1,9 +1,7 @@
 {"id": "iec-cause", "branch": 19892, "seed": "micro-bench/seeds/iec-cause.js", "func": "InstallErrorCause"}
 {"id": "tpd-value", "branch": 838, "seed": "micro-bench/seeds/tpd-value.js", "func": "ToPropertyDescriptor"}
 {"id": "gsr-has", "branch": 31936, "seed": "micro-bench/seeds/gsr-has.js", "func": "GetSetRecord"}
-{"id": "gabmblo-maxByteLength", "branch": 33008, "seed": "micro-bench/seeds/gabmblo-maxByteLength.js", "func": "GetArrayBufferMaxByteLengthOption"}
+{"id": "tpd-get-value", "branch": 841, "seed": "micro-bench/seeds/tpd-get-value.js", "func": "ToPropertyDescriptor"}
 {"id": "ept-name", "branch": 19599, "seed": "micro-bench/seeds/ept-name.js", "func": "INTRINSICS.Error.prototype.toString"}
-{"id": "tpd-enumerable", "branch": 813, "seed": "micro-bench/seeds/tpd-enumerable.js", "func": "ToPropertyDescriptor"}
 {"id": "pc-construct", "branch": 8124, "seed": "micro-bench/seeds/pc-construct.js", "func": "INTRINSICS.Proxy.Construct"}
 {"id": "pgpo-getPrototypeOf", "branch": 7460, "seed": "micro-bench/seeds/pgpo-getPrototypeOf.js", "func": "INTRINSICS.Proxy.GetPrototypeOf"}
-{"id": "nptls-toString", "branch": 18954, "seed": "micro-bench/seeds/nptls-toString.js", "func": "INTRINSICS.Number.prototype.toLocaleString"}
