@@ -52,7 +52,7 @@ def run_benchmarks(label, trials, duration):
 
     for bench in benchmarks:
         bid = bench["id"]
-        print(f"\n=== {bid} ===")
+        print(f"\n[{bid}]")
         iterations = []
         for t in range(1, trials + 1):
             it = run_single(bench["branch"], bench["seed"], duration, ablation)
@@ -114,10 +114,9 @@ def compare():
     x = np.arange(len(bench_ids))
     labels = []
     for i, bid in enumerate(bench_ids):
-        b_ok, b_to = filter_iters(baseline[bid]["iterations"])
-        c_ok, c_to = filter_iters(comparison[bid]["iterations"])
-        to_label = f" (TO: {b_to}/{c_to})" if b_to or c_to else ""
-        labels.append(f"{bid}{to_label}")
+        b_ok, _ = filter_iters(baseline[bid]["iterations"])
+        c_ok, _ = filter_iters(comparison[bid]["iterations"])
+        labels.append(bid)
         for data, pos, color in [
             (b_ok, i - 0.2, colors["base"]),
             (c_ok, i + 0.2, colors["comp"]),
@@ -130,8 +129,6 @@ def compare():
                     patch_artist=True,
                     boxprops=dict(facecolor=color, alpha=0.7),
                 )
-            else:
-                ax.annotate("TO", (pos, 0), ha="center", fontsize=8, color=color)
 
     ax.set_xlabel("Benchmark")
     ax.set_ylabel("Iterations to Cover")
@@ -147,8 +144,8 @@ def compare():
     print(f"Box plot saved to {RESULTS_DIR / 'box_plot.png'}")
 
     # --- Summary table ---
-    print("\n=== Summary ===")
-    header = f"{'Benchmark':<20} {'Base Avg':>10} {'Comp Avg':>10} {'Speedup':>10} {'Base Med':>10} {'Comp Med':>10} {'Base TO':>8} {'Comp TO':>8}"
+    print("\n[Summary]")
+    header = f"{'Benchmark':<20} {'Base Avg':>10} {'Comp Avg':>10} {'Speedup':>10} {'Base TO':>8} {'Comp TO':>8}"
     print(header)
     print("-" * len(header))
     for bid in bench_ids:
@@ -156,11 +153,9 @@ def compare():
         c_ok, c_to = filter_iters(comparison[bid]["iterations"])
         b_avg = np.mean(b_ok) if b_ok else float("inf")
         c_avg = np.mean(c_ok) if c_ok else float("inf")
-        b_med = np.median(b_ok) if b_ok else float("inf")
-        c_med = np.median(c_ok) if c_ok else float("inf")
         speedup = b_avg / c_avg if c_avg > 0 else float("inf")
         print(
-            f"{bid:<20} {b_avg:>10.1f} {c_avg:>10.1f} {speedup:>9.2f}x {b_med:>10.1f} {c_med:>10.1f} {b_to:>8} {c_to:>8}"
+            f"{bid:<20} {b_avg:>10.1f} {c_avg:>10.1f} {speedup:>9.2f}x {b_to:>8} {c_to:>8}"
         )
 
 
