@@ -79,6 +79,17 @@ case class Coverage(
   private var _targetCondViews: Map[Cond, Map[View, Set[Target]]] = Map()
   def targetCondViews: Map[Cond, Map[View, Set[Target]]] = _targetCondViews
 
+  // branch attempt tracking
+  var currentIter: Int = 0
+  private val _branchRecords =
+    scala.collection.mutable.Map[Cond, BranchRecord]()
+  def branchRecords: scala.collection.mutable.Map[Cond, BranchRecord] =
+    _branchRecords
+
+  // record that a branch was selected as mutation target
+  def recordSelection(cond: Cond): Unit =
+    _branchRecords.get(cond).foreach(_.selectionCount += 1)
+
   private lazy val scriptParser = cfg.scriptParser
 
   /** evaluate a given ECMAScript program, update coverage, and return
@@ -284,6 +295,26 @@ case class Coverage(
         noSpace = false,
       )
       log("dumped target conds")
+    if (_branchRecords.nonEmpty)
+      val records = _branchRecords.values.toList.sortBy(-_.selectionCount)
+      val header = "branchId\tside\tfuncName\tentryIter\texitIter" +
+        "\tselectionCount\tcovered"
+      val lines = records
+        .map { r =>
+          val funcName =
+            cfg.funcOf.get(r.cond.branch).map(_.name).getOrElse("?")
+          val exit = r.exitIter.map(_.toString).getOrElse("-")
+          val covered = r.exitIter.isDefined
+          s"${r.cond.id}\t${r.cond.cond}\t$funcName\t${r.entryIter}" +
+          s"\t$exit\t${r.selectionCount}\t$covered"
+        }
+        .mkString("\n")
+      dumpFile(
+        name = "branch attempt records",
+        data = header + "\n" + lines,
+        filename = s"$baseDir/branch-attempts.tsv",
+      )
+      log("dumped branch attempt records")
     if (withUnreachableFuncs)
       dumpFile(
         name = "unreachable functions",
@@ -385,6 +416,8 @@ case class Coverage(
   // add a cond to targetConds
   private def addTargetCond(cv: CondView, targets: Set[Target]): Unit =
     val CondView(cond, view) = cv
+    if (!_targetCondViews.contains(cond))
+      _branchRecords.getOrElseUpdate(cond, BranchRecord(cond, currentIter))
     val newViews = _targetCondViews.getOrElse(cond, Map()) + (view -> targets)
     _targetCondViews += cond -> newViews
 
@@ -393,8 +426,10 @@ case class Coverage(
     val CondView(cond, view) = cv
     for (views <- _targetCondViews.get(cond)) {
       val newViews = views - view
-      if (newViews.isEmpty) _targetCondViews -= cond
-      else _targetCondViews += cond -> newViews
+      if (newViews.isEmpty) {
+        _targetCondViews -= cond
+        _branchRecords.get(cond).foreach(_.exitIter = Some(currentIter))
+      } else _targetCondViews += cond -> newViews
     }
 
   // get JSON for node coverage
@@ -702,5 +737,13 @@ object Coverage {
     kFs: Int,
     cp: Boolean,
     timeLimit: Option[Int],
+  )
+
+  // branch attempt tracking record
+  case class BranchRecord(
+    cond: Cond,
+    entryIter: Int,
+    var exitIter: Option[Int] = None,
+    var selectionCount: Int = 0,
   )
 }

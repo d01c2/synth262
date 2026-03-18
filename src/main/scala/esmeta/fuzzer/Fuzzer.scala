@@ -141,6 +141,7 @@ class Fuzzer(
   /** one trial to fuzz new programs to increase coverage */
   def fuzz: Unit = {
     iter += 1
+    cov.currentIter = iter
 
     val startTime = System.currentTimeMillis
     debugging(("-" * 40) + f"  iter: $iter%10d  " + ("-" * 40))
