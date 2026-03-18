@@ -110,30 +110,27 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
     val raw = s"(new Proxy($targetStr, { $trap : $handler }))"
     cfg.esParser(PRIMARY_EXPRESSION, args).from(raw).asInstanceOf[Syntactic]
 
-  // wrap an existing AST in a Proxy with a trap property
-  def wrapProxy(
-    args: List[Boolean],
-    trap: String,
-    target: Syntactic,
-    values: List[String],
-  ): Option[Syntactic] =
-    val targetStr = target.toString(grammar = Some(cfg.grammar))
-    val v = choose(values)
-    try { Some(makeProxy(args, targetStr, trap, v)) }
-    catch { case _: Exception => None }
-
   // remove a specific property from an existing object literal
   def ejectProp(
     prop: String,
     args: List[Boolean],
     from: Syntactic,
   ): Option[Syntactic] =
-    val props = getProps(from)
-    if (props.isEmpty) None
-    else
-      val filtered = props.filterNot(propDef => propKey(propDef).contains(prop))
-      if (filtered.length == props.length) None
-      else Some(withProps(filtered, from.args))
+    val obj =
+      if (from.name == "ObjectLiteral") Some(from)
+      else findObjectLiteral(from)
+    obj.flatMap { o =>
+      val props = getProps(o)
+      if (props.isEmpty) None
+      else
+        val filtered =
+          props.filterNot(propDef => propKey(propDef).contains(prop))
+        if (filtered.length == props.length) None
+        else
+          val newObj = withProps(filtered, o.args)
+          if (from.name == "ObjectLiteral") Some(newObj)
+          else replaceObjectLiteral(from, newObj)
+    }
 
   // inject a data property into an existing object literal
   def injectProp(
@@ -149,19 +146,19 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
     args: List[Boolean],
     propHint: Option[String] = None,
     into: Option[Syntactic] = None,
-    bodies: List[String],
+    values: List[String],
   ): Option[Syntactic] =
-    injectAccessor("get", "()", args, propHint, into, bodies)
+    val k = propHint.getOrElse(chooseProp)
+    val v = choose(values)
+    injectPropDef(s"get $k ( ) { return $v ; }", args, into)
 
-  def injectMethod(
+  def injectThrowingGetter(
     args: List[Boolean],
     propHint: Option[String] = None,
     into: Option[Syntactic] = None,
-    bodies: List[String],
   ): Option[Syntactic] =
     val k = propHint.getOrElse(chooseProp)
-    val body = choose(bodies)
-    injectPropDef(s"$k ( ) { $body }", args, into)
+    injectPropDef(s"get $k ( ) { throw 0 ; }", args, into)
 
   /** inject a raw property definition string into an ObjectLiteral */
   private def injectPropDef(
@@ -179,22 +176,17 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
       result <- into match
         case Some(target: Syntactic) if target.name == "ObjectLiteral" =>
           Some(withProps(getProps(target) :+ propDef, target.args))
+        case Some(target: Syntactic) =>
+          for {
+            inner <- findObjectLiteral(target)
+            replaced <- replaceObjectLiteral(
+              target,
+              withProps(getProps(inner) :+ propDef, inner.args),
+            )
+          } yield replaced
         case None => Some(withProps(List(propDef), args))
-        case _    => None
     } yield result
   } catch { case _: Exception => None }
-
-  private def injectAccessor(
-    kind: String,
-    params: String,
-    args: List[Boolean],
-    propHint: Option[String],
-    into: Option[Syntactic],
-    bodies: List[String],
-  ): Option[Syntactic] =
-    val k = propHint.getOrElse(chooseProp)
-    val body = choose(bodies)
-    injectPropDef(s"$kind $k $params { $body }", args, into)
 
   // ---------------------------------------------------------------------------
   // ObjectLiteral AST manipulation
@@ -230,6 +222,27 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
     case Syntactic(_, _, _, children) =>
       children.flatten.flatMap(findObjectLiteral).headOption
     case _ => None
+
+  /** Replace the first ObjectLiteral inside an AST with a new one */
+  private def replaceObjectLiteral(
+    ast: Syntactic,
+    replacement: Syntactic,
+  ): Option[Syntactic] = ast match
+    case Syntactic("ObjectLiteral", _, _, _) => Some(replacement)
+    case Syntactic(name, args, rhsIdx, children) =>
+      var found = false
+      val newChildren = children.map(_.map { child =>
+        if (found) child
+        else
+          child match
+            case s: Syntactic =>
+              replaceObjectLiteral(s, replacement) match
+                case Some(modified) => found = true; modified
+                case None           => child
+            case _ => child
+      })
+      if (found) Some(Syntactic(name, args, rhsIdx, newChildren))
+      else None
 
   private def propKey(pd: Ast): Option[String] = pd match
     case Syntactic("PropertyDefinition", _, 0, children) =>
@@ -409,7 +422,7 @@ object SpecStringSynthesizer {
   // Spec constants
   // ---------------------------------------------------------------------------
 
-  val propReadingAlgos = Set("Get", "GetMethod", "HasProperty", "Invoke")
+  val propReadingAlgos = Set("Get", "GetMethod", "HasProperty")
 
   val trapAlgos: Map[String, String] = Map(
     "Get" -> "get",
@@ -456,51 +469,36 @@ object SpecStringSynthesizer {
   val fnProxyTraps: List[String] = List("apply", "construct")
 
   val proxyTrapHandlers: List[String] = List(
-    "function ( ) { throw 0 ; }",
-    "function ( ) { }",
     "function ( ) { return true ; }",
+    "function ( ) { return 1 ; }",
+    "function ( ) { return { } ; }",
+    "function ( ) { return [ ] ; }",
     "function ( ) { return false ; }",
     "function ( ) { return null ; }",
     "function ( ) { return 0 ; }",
-    "function ( ) { return { } ; }",
-    "function ( ) { return [ ] ; }",
+    "function ( ) { }",
+    "function ( ) { throw 0 ; }",
   )
 
   // ---------------------------------------------------------------------------
-  // Property values
+  // Value atoms (disjoint)
   // ---------------------------------------------------------------------------
 
-  val falsyValues: List[String] = List("null", "undefined", "false", "0", "''")
-
-  val truthyValues: List[String] = List(
-    "true",
-    "1",
-    "Symbol ( )",
-    "function ( x ) { }",
-    "( ) => { }",
-    "{}",
-    "[]",
-  )
-
-  // ---------------------------------------------------------------------------
-  // Callable / non-callable
-  // ---------------------------------------------------------------------------
-
-  val callableValues: List[String] = List(
+  private val falsyPrimitives = List("null", "undefined", "false", "0", "''")
+  private val truthyPrimitives = List("true", "1", "Symbol ( )", "'str'")
+  private val plainObjects = List("{}", "[]")
+  private val callableForms = List(
     "function ( x ) { }",
     "function * ( x ) { }",
     "async function ( x ) { }",
     "async function * ( x ) { }",
-    "( ) => { throw 0 ; }",
+    "( ) => { }",
   )
-
-  val nonCallableValues: List[String] = List("42", "true", "'str'")
-
-  // ---------------------------------------------------------------------------
-  // Composite value list
-  // ---------------------------------------------------------------------------
-
-  private val objects = List("{}", "[]")
+  private val callableReturningTruthy = List(
+    "function ( ) { return 1 ; }",
+    "function ( ) { return true ; }",
+    "function ( ) { return { } ; }",
+  )
   private val iterators = List(
     "{ next ( ) { return { done : true , value : 0 } ; } }",
     "{ next ( ) { throw 0 ; } }",
@@ -509,21 +507,15 @@ object SpecStringSynthesizer {
     "{ then ( r ) { r ( 0 ) ; } }",
     "{ then ( ) { throw 0 ; } }",
   )
-  val defaultValues: List[String] =
-    falsyValues ++ truthyValues ++ callableValues ++ objects ++
-    iterators ++ thenables
 
-  // ---------------------------------------------------------------------------
-  // Accessor / method bodies
-  // ---------------------------------------------------------------------------
-
-  val truthyBodies: List[String] =
-    List("return 1 ;", "return true ;", "return { } ;")
-
-  val falsyBodies: List[String] =
-    List("", "return null ;", "return 0 ;", "return false ;")
-
-  val abruptBodies: List[String] = List("throw 0 ;")
+  // Composed value lists
+  val falsyValues = falsyPrimitives
+  val truthyValues = truthyPrimitives ++ plainObjects ++ callableForms
+  val callableValues = callableForms ++ callableReturningTruthy
+  val nonCallableValues = falsyPrimitives ++ truthyPrimitives ++ plainObjects
+  val defaultValues =
+    falsyPrimitives ++ truthyPrimitives ++ plainObjects ++
+    callableForms ++ iterators ++ thenables
 
   // ---------------------------------------------------------------------------
   // Provenance helpers
