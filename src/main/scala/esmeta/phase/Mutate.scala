@@ -74,7 +74,10 @@ case object Mutate extends Phase[CFG, String] {
     val startTime = System.currentTimeMillis
     def elapsed = System.currentTimeMillis - startTime
     def timeout = config.duration.fold(false)(_ * 1000 < elapsed)
-    def checkTimeout(): Unit = if (timeout) throw TimeoutException("mutate")
+    def trialExceeded = config.trial.fold(false)(iter >= _)
+    def checkLimit(): Unit =
+      if (timeout) throw TimeoutException("mutate: timeout")
+      if (trialExceeded) throw TimeoutException("mutate: trial exceeded")
 
     def nextMutant(): String =
       val result = mutator(code, coveredCondView.map((_, cov))).code
@@ -97,17 +100,17 @@ case object Mutate extends Phase[CFG, String] {
     if (coveredCondView.isDefined)
       try {
         while (!(ValidityChecker(mutatedCode) && coversTarget(mutatedCode))) {
-          checkTimeout()
+          checkLimit()
           mutatedCode = nextMutant()
           while (blocked.contains(mutatedCode))
-            checkTimeout()
+            checkLimit()
             mutatedCode = nextMutant()
           blocked += mutatedCode
         }
       } catch {
-        case _: TimeoutException =>
-          println(s"[mutate] Timeout after $iter iterations")
-          mutatedCode = setColor(RED)("FAILED TO MUTATE WITHIN TIMELIMIT")
+        case e: TimeoutException =>
+          println(s"[mutate] ${e.getMessage} after $iter iterations")
+          mutatedCode = setColor(RED)("FAILED TO MUTATE WITHIN LIMIT")
       }
 
     // dump the mutated ECMAScript program
@@ -145,7 +148,12 @@ case object Mutate extends Phase[CFG, String] {
     (
       "duration",
       NumOption((c, k) => c.duration = Some(k)),
-      "set the maximum duration for mutation in seconds (default: INF).",
+      "set the maximum duration for mutation in seconds (default: 300).",
+    ),
+    (
+      "trial",
+      NumOption((c, k) => c.trial = Some(k)),
+      "set the maximum number of mutation trials (default: INF).",
     ),
     (
       "debug",
@@ -159,6 +167,7 @@ case object Mutate extends Phase[CFG, String] {
     var kFs: Int = 0,
     var ablation: Boolean = false,
     var duration: Option[Int] = None,
+    var trial: Option[Int] = None,
     var debug: Boolean = false,
   )
 }
