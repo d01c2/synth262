@@ -5,3 +5,5 @@
 {"id": "ept-name", "branch": 19599, "seed": "micro-bench/seeds/ept-name.js", "func": "INTRINSICS.Error.prototype.toString"}
 {"id": "pc-construct", "branch": 8124, "seed": "micro-bench/seeds/pc-construct.js", "func": "INTRINSICS.Proxy.Construct"}
 {"id": "pgpo-getPrototypeOf", "branch": 7460, "seed": "micro-bench/seeds/pgpo-getPrototypeOf.js", "func": "INTRINSICS.Proxy.GetPrototypeOf"}
+{"id": "ts-toString", "branch": 1430, "seed": "micro-bench/seeds/ts-toString.js", "func": "ToString"}
+{"id": "gb-iterStepVal", "branch": 2417, "seed": "micro-bench/seeds/gb-IteratorStepValue.js", "func": "GroupBy"}
