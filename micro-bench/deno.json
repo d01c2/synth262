@@ -1,6 +1,7 @@
 {
   "tasks": {
-    "evaluate": "deno run --allow-run --allow-read --allow-write --allow-env --allow-ffi evaluate.ts"
+    "evaluate": "deno run --allow-run --allow-read --allow-write --allow-env --allow-ffi evaluate.ts",
+    "monitor": "deno run --allow-run --allow-read --allow-write --allow-env monitor.ts"
   },
   "imports": {
     "@std/cli/parse-args": "jsr:@std/cli@1/parse-args",

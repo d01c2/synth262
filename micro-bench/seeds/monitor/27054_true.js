@@ -1,0 +1,2 @@
+"use strict";
+Array . prototype . forEach . call ( "0" , x => x ) ; 
