@@ -69,18 +69,18 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
   private def provenanceGuided(
     ast: Syntactic,
     prov: Provenance,
-  ): Option[Syntactic] =
-    def injectProp(value: String): Option[Syntactic] =
-      prov.propHint.flatMap { prop =>
+  ): List[Syntactic] =
+    def injectProp(value: String): List[Syntactic] =
+      prov.propHint.toList.flatMap { prop =>
         synthesizer.injectProp(Some(prop), ast.args, Some(ast), value)
       }
-    def ejectProp(): Option[Syntactic] =
-      prov.propHint.flatMap { prop =>
+    def ejectProp(): List[Syntactic] =
+      prov.propHint.toList.flatMap { prop =>
         synthesizer.ejectProp(prop, ast.args, ast)
       }
-    def injectGetter(value: String): Option[Syntactic] =
+    def injectGetter(value: String): List[Syntactic] =
       synthesizer.injectGetter(prov.propHint, ast.args, Some(ast), Some(value))
-    def injectThrowingGetter(): Option[Syntactic] =
+    def injectThrowingGetter(): List[Syntactic] =
       synthesizer.injectGetter(prov.propHint, ast.args, Some(ast), None)
 
     (prov.algoName, prov.side) match
@@ -117,5 +117,5 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
       // TODO: Type Coercion
 
       // others
-      case _ => None
+      case _ => Nil
 }

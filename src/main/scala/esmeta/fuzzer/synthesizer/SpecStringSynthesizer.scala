@@ -70,7 +70,7 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
   private def generateProxy(args: List[Boolean]): Syntactic =
     val trap = chooseTrap
     val targetStr =
-      if fnProxyTraps.contains(trap) then "function ( ) { }" else "{}"
+      if (fnProxyTraps.contains(trap)) "function ( ) { }" else "{}"
     val handler = choose(proxyTrapHandlers)
     makeProxy(args, targetStr, trap, handler)
 
@@ -115,22 +115,25 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
     prop: String,
     args: List[Boolean],
     from: Syntactic,
-  ): Option[Syntactic] =
-    val obj =
-      if (from.name == "ObjectLiteral") Some(from)
-      else findObjectLiteral(from)
-    obj.flatMap { o =>
-      val props = getProps(o)
-      if (props.isEmpty) None
-      else
+  ): List[Syntactic] =
+    if (from.name == "ObjectLiteral")
+      val props = getProps(from)
+      val filtered = props.filterNot(propDef => propKey(propDef).contains(prop))
+      if (filtered.length == props.length) Nil
+      else List(withProps(filtered, from.args))
+    else
+      findTopLevelObjectLiterals(from).flatMap { inner =>
+        val props = getProps(inner)
         val filtered =
           props.filterNot(propDef => propKey(propDef).contains(prop))
-        if (filtered.length == props.length) None
+        if (filtered.length == props.length) Nil
         else
-          val newObj = withProps(filtered, o.args)
-          if (from.name == "ObjectLiteral") Some(newObj)
-          else replaceObjectLiteral(from, newObj)
-    }
+          replaceObjectLiteral(
+            from,
+            inner,
+            withProps(filtered, inner.args),
+          ).toList
+      }
 
   // inject a data property into an object literal
   // propHint: property name to use; if None, a random spec property is chosen
@@ -139,7 +142,7 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
     args: List[Boolean],
     into: Option[Syntactic],
     value: String,
-  ): Option[Syntactic] =
+  ): List[Syntactic] =
     val k = propHint.getOrElse(chooseProp)
     injectPropDef(s"$k : $value", args, into)
 
@@ -150,38 +153,38 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
     args: List[Boolean],
     into: Option[Syntactic],
     value: Option[String] = None,
-  ): Option[Syntactic] =
+  ): List[Syntactic] =
     val k = propHint.getOrElse(chooseProp)
     val body = value.fold("throw 0 ;")(v => s"return $v ;")
     injectPropDef(s"get $k ( ) { $body }", args, into)
 
-  /** inject a raw property definition string into an ObjectLiteral */
+  /** inject a raw property definition string into ObjectLiterals */
   private def injectPropDef(
-    propDef: String,
+    propDefStr: String,
     args: List[Boolean],
     into: Option[Syntactic],
-  ): Option[Syntactic] = try {
+  ): List[Syntactic] = try {
     val parsed = cfg
       .esParser(PRIMARY_EXPRESSION, args)
-      .from(s"{ $propDef }")
+      .from(s"{ $propDefStr }")
       .asInstanceOf[Syntactic]
-    for {
+    (for {
       obj <- findObjectLiteral(parsed)
       propDef <- getProps(obj).headOption
-      result <- into match
-        case Some(target: Syntactic) if target.name == "ObjectLiteral" =>
-          Some(withProps(getProps(target) :+ propDef, target.args))
-        case Some(target: Syntactic) =>
-          for {
-            inner <- findObjectLiteral(target)
-            replaced <- replaceObjectLiteral(
-              target,
-              withProps(getProps(inner) :+ propDef, inner.args),
-            )
-          } yield replaced
-        case None => Some(withProps(List(propDef), args))
-    } yield result
-  } catch { case _: Exception => None }
+    } yield into match
+      case Some(target: Syntactic) if target.name == "ObjectLiteral" =>
+        List(withProps(getProps(target) :+ propDef, target.args))
+      case Some(target: Syntactic) =>
+        findTopLevelObjectLiterals(target).flatMap { inner =>
+          replaceObjectLiteral(
+            target,
+            inner,
+            withProps(getProps(inner) :+ propDef, inner.args),
+          ).toList
+        }
+      case None => List(withProps(List(propDef), args))
+    ).getOrElse(Nil)
+  } catch { case _: Exception => Nil }
 
   // ---------------------------------------------------------------------------
   // ObjectLiteral AST manipulation
@@ -218,25 +221,32 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
       children.flatten.flatMap(findObjectLiteral).headOption
     case _ => None
 
-  /** Replace the first ObjectLiteral inside an AST with a new one */
+  private def findTopLevelObjectLiterals(ast: Ast): List[Syntactic] = ast match
+    case s @ Syntactic("ObjectLiteral", _, _, _) => List(s)
+    case Syntactic(_, _, _, children) =>
+      children.flatten.flatMap(findTopLevelObjectLiterals).toList
+    case _ => Nil
+
+  /** Replace a specific ObjectLiteral inside an AST with a new one (by ref) */
   private def replaceObjectLiteral(
     ast: Syntactic,
+    target: Syntactic,
     replacement: Syntactic,
-  ): Option[Syntactic] = ast match
-    case Syntactic("ObjectLiteral", _, _, _) => Some(replacement)
-    case Syntactic(name, args, rhsIdx, children) =>
+  ): Option[Syntactic] =
+    if (ast eq target) Some(replacement)
+    else
       var found = false
-      val newChildren = children.map(_.map { child =>
+      val newChildren = ast.children.map(_.map { child =>
         if (found) child
         else
           child match
             case s: Syntactic =>
-              replaceObjectLiteral(s, replacement) match
+              replaceObjectLiteral(s, target, replacement) match
                 case Some(modified) => found = true; modified
                 case None           => child
             case _ => child
       })
-      if (found) Some(Syntactic(name, args, rhsIdx, newChildren))
+      if (found) Some(Syntactic(ast.name, ast.args, ast.rhsIdx, newChildren))
       else None
 
   private def propKey(pd: Ast): Option[String] = pd match
@@ -339,11 +349,8 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
 
   lazy val specProps: Map[Func, Set[String]] = {
     val acc = MMap[Func, Set[String]]().withDefaultValue(Set())
-    object PropFinder extends esmeta.ir.util.UnitWalker {
-      var currentFunc: Option[Func] = None
-      def addIfProp(e: Expr): Unit = for {
-        func <- currentFunc
-      } e match
+    class PropFinder(func: Func) extends esmeta.ir.util.UnitWalker {
+      def addIfProp(e: Expr): Unit = e match
         case EStr(str) => acc.update(func, acc(func) + str)
         case ERef(Field(Global("SYMBOL"), EStr(sym))) =>
           acc.update(func, acc(func) + s"[ Symbol . $sym ]")
@@ -353,11 +360,8 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
           as.foreach(addIfProp)
         case _ => super.walk(inst)
     }
-    for (cfgFunc <- cfg.funcs) {
-      PropFinder.currentFunc = Some(cfgFunc)
-      PropFinder.walk(cfgFunc.irFunc.body)
-      PropFinder.currentFunc = None
-    }
+    for (cfgFunc <- cfg.funcs)
+      PropFinder(cfgFunc).walk(cfgFunc.irFunc.body)
     acc.toMap
   }
 
@@ -365,20 +369,15 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
 
   lazy val specTraps: Map[Func, Set[String]] = {
     val acc = MMap[Func, Set[String]]().withDefaultValue(Set())
-    object TrapFinder extends esmeta.ir.util.UnitWalker {
-      var currentFunc: Option[Func] = None
+    class TrapFinder(func: Func) extends esmeta.ir.util.UnitWalker {
       override def walk(inst: Inst) = inst match
         case ICall(_, EClo(name, _), _) if trapAlgos.contains(name) =>
-          for (func <- currentFunc)
-            val trap = trapAlgos(name)
-            acc.update(func, acc(func) + trap)
+          val trap = trapAlgos(name)
+          acc.update(func, acc(func) + trap)
         case _ => super.walk(inst)
     }
-    for (cfgFunc <- cfg.funcs) {
-      TrapFinder.currentFunc = Some(cfgFunc)
-      TrapFinder.walk(cfgFunc.irFunc.body)
-      TrapFinder.currentFunc = None
-    }
+    for (cfgFunc <- cfg.funcs)
+      TrapFinder(cfgFunc).walk(cfgFunc.irFunc.body)
     acc.toMap
   }
 
