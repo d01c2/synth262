@@ -132,33 +132,28 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
           else replaceObjectLiteral(from, newObj)
     }
 
-  // inject a data property into an existing object literal
+  // inject a data property into an object literal
+  // propHint: property name to use; if None, a random spec property is chosen
   def injectProp(
-    prop: String,
+    propHint: Option[String],
     args: List[Boolean],
-    into: Syntactic,
-    values: List[String],
+    into: Option[Syntactic],
+    value: String,
   ): Option[Syntactic] =
-    val v = choose(values)
-    injectPropDef(s"$prop : $v", args, Some(into))
+    val k = propHint.getOrElse(chooseProp)
+    injectPropDef(s"$k : $value", args, into)
 
+  // inject a getter accessor; value=None produces a throwing getter
+  // propHint: property name to use; if None, a random spec property is chosen
   def injectGetter(
+    propHint: Option[String],
     args: List[Boolean],
-    propHint: Option[String] = None,
-    into: Option[Syntactic] = None,
-    values: List[String],
+    into: Option[Syntactic],
+    value: Option[String] = None,
   ): Option[Syntactic] =
     val k = propHint.getOrElse(chooseProp)
-    val v = choose(values)
-    injectPropDef(s"get $k ( ) { return $v ; }", args, into)
-
-  def injectThrowingGetter(
-    args: List[Boolean],
-    propHint: Option[String] = None,
-    into: Option[Syntactic] = None,
-  ): Option[Syntactic] =
-    val k = propHint.getOrElse(chooseProp)
-    injectPropDef(s"get $k ( ) { throw 0 ; }", args, into)
+    val body = value.fold("throw 0 ;")(v => s"return $v ;")
+    injectPropDef(s"get $k ( ) { $body }", args, into)
 
   /** inject a raw property definition string into an ObjectLiteral */
   private def injectPropDef(
@@ -493,11 +488,7 @@ object SpecStringSynthesizer {
     "async function ( x ) { }",
     "async function * ( x ) { }",
     "( ) => { }",
-  )
-  private val callableReturningTruthy = List(
-    "function ( ) { return 1 ; }",
-    "function ( ) { return true ; }",
-    "function ( ) { return { } ; }",
+    "function ( ) { throw 0 ; }",
   )
   private val iterators = List(
     "{ next ( ) { return { done : true , value : 0 } ; } }",
@@ -511,8 +502,6 @@ object SpecStringSynthesizer {
   // Composed value lists
   val falsyValues = falsyPrimitives
   val truthyValues = truthyPrimitives ++ plainObjects ++ callableForms
-  val callableValues = callableForms ++ callableReturningTruthy
-  val nonCallableValues = falsyPrimitives ++ truthyPrimitives ++ plainObjects
   val defaultValues =
     falsyPrimitives ++ truthyPrimitives ++ plainObjects ++
     callableForms ++ iterators ++ thenables

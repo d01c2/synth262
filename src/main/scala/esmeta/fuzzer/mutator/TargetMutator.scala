@@ -69,58 +69,53 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
   private def provenanceGuided(
     ast: Syntactic,
     prov: Provenance,
-  ): List[Syntactic] =
-    def injectProp(values: List[String]): Option[Syntactic] =
-      prov.propHint.flatMap(synthesizer.injectProp(_, ast.args, ast, values))
+  ): Option[Syntactic] =
+    def injectProp(value: String): Option[Syntactic] =
+      prov.propHint.flatMap { prop =>
+        synthesizer.injectProp(Some(prop), ast.args, Some(ast), value)
+      }
     def ejectProp(): Option[Syntactic] =
-      prov.propHint.flatMap(synthesizer.ejectProp(_, ast.args, ast))
-    def injectGetter(values: List[String]): Option[Syntactic] =
-      synthesizer.injectGetter(ast.args, prov.propHint, Some(ast), values)
+      prov.propHint.flatMap { prop =>
+        synthesizer.ejectProp(prop, ast.args, ast)
+      }
+    def injectGetter(value: String): Option[Syntactic] =
+      synthesizer.injectGetter(prov.propHint, ast.args, Some(ast), Some(value))
     def injectThrowingGetter(): Option[Syntactic] =
-      synthesizer.injectThrowingGetter(ast.args, prov.propHint, Some(ast))
+      synthesizer.injectGetter(prov.propHint, ast.args, Some(ast), None)
 
     (prov.algoName, prov.side) match
       // Property existence: HasProperty
-      case ("HasProperty", true)  => injectProp(defaultValues).toList
-      case ("HasProperty", false) => ejectProp().toList
+      case ("HasProperty", true)  => injectProp("0")
+      case ("HasProperty", false) => ejectProp()
 
       // Abrupt: Get (getter throw)
       case ("Get", true) if prov.check.contains("Abrupt") =>
-        injectThrowingGetter().toList
+        injectThrowingGetter()
       case ("Get", false) if prov.check.contains("Abrupt") =>
-        injectProp(defaultValues).toList ++
-        injectGetter(defaultValues).toList
+        injectProp("0")
       // Abrupt: GetMethod (non-callable or getter throw)
       case ("GetMethod", true) if prov.check.contains("Abrupt") =>
-        injectProp(nonCallableValues).toList ++
-        injectThrowingGetter().toList
+        injectProp("0")
       case ("GetMethod", false) if prov.check.contains("Abrupt") =>
-        injectProp(callableValues).toList ++
-        ejectProp().toList
+        injectProp("( ) => { }")
 
       // Callable value: Get+IsCallable
       case ("Get", true) if prov.check.contains("IsCallable") =>
-        injectProp(callableValues).toList
+        injectProp("( ) => { }")
       case ("Get", false) if prov.check.contains("IsCallable") =>
-        injectProp(nonCallableValues).toList ++
-        ejectProp().toList
+        injectProp("0")
 
       // Callable value: GetMethod (default)
-      case ("GetMethod", true)  => injectProp(callableValues).toList
-      case ("GetMethod", false) => ejectProp().toList
+      case ("GetMethod", true)  => injectProp("( ) => { }")
+      case ("GetMethod", false) => ejectProp()
 
       // Property get: Get (default)
-      case ("Get", true) =>
-        injectProp(truthyValues).toList ++
-        injectGetter(truthyValues).toList
-      case ("Get", false) =>
-        injectProp(falsyValues).toList ++
-        ejectProp().toList ++
-        injectGetter(falsyValues).toList
+      case ("Get", true)  => injectProp("1")
+      case ("Get", false) => ejectProp()
 
       // TODO: PropWritingAlgos
       // TODO: Type Coercion
 
       // others
-      case _ => List()
+      case _ => None
 }
