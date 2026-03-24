@@ -436,7 +436,7 @@ async function compare(): Promise<void> {
 const args = parseArgs(Deno.args, {
   boolean: ["help"],
   string: ["repeat", "trial", "duration"],
-  default: { repeat: "10", trial: "1000" },
+  default: { repeat: "3", trial: "20" },
   alias: { h: "help" },
 });
 
@@ -445,8 +445,8 @@ if (args.help) {
     `Usage: deno run --allow-run --allow-read --allow-write --allow-env --allow-ffi evaluate.ts [options]
 
 Options:
-  --repeat N    number of repetitions per benchmark (default: 10)
-  --trial N     mutation budget per run (default: 1000)
+  --repeat N    number of repetitions per benchmark (default: 3)
+  --trial N     mutation budget per run (default: 20)
   --duration N  optional time limit in seconds
   -h, --help    show this help message`,
   );
