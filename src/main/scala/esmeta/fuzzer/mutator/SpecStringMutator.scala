@@ -4,7 +4,7 @@ import esmeta.cfg.CFG
 import esmeta.es.*
 import esmeta.es.util.*
 import esmeta.fuzzer.*
-import esmeta.fuzzer.synthesizer.*
+import esmeta.fuzzer.synthesizer.{Util => _, *}
 import esmeta.util.BaseUtils.*
 
 /** A mutator that generates based on strings in spec literals */

@@ -4,7 +4,7 @@ import esmeta.es.*
 import esmeta.es.util.*
 import esmeta.fuzzer.*
 import esmeta.util.BaseUtils.*
-import esmeta.fuzzer.synthesizer.*
+import esmeta.fuzzer.synthesizer.{Synthesizer, RandomSynthesizer}
 import esmeta.cfg.CFG
 
 /** A mutator that removes nodes of ECMAScript AST */

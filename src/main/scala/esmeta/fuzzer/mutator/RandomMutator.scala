@@ -4,7 +4,7 @@ import esmeta.es.*
 import esmeta.es.util.{Walker => AstWalker, *}
 import esmeta.fuzzer.*
 import esmeta.util.BaseUtils.*
-import esmeta.fuzzer.synthesizer.*
+import esmeta.fuzzer.synthesizer.{Synthesizer, RandomSynthesizer}
 import esmeta.cfg.CFG
 
 /** A random ECMAScript AST mutator */

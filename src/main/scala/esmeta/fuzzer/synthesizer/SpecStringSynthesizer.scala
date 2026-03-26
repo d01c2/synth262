@@ -7,7 +7,6 @@ import esmeta.ir.{Func => IRFunc, *}
 import esmeta.util.BaseUtils.*
 import scala.collection.mutable.{Map => MMap}
 
-/** A spec string synthesizer that wraps a base synthesizer */
 class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
   extends Synthesizer {
   import Coverage.*, SpecStringSynthesizer.*
@@ -16,14 +15,6 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
 
   var targetCond: Option[Cond] = None
 
-  private def targetFunc: Option[Func] =
-    targetCond.flatMap(c => cfg.funcOf.get(c.branch))
-  private def targetCondStr: Option[String] =
-    targetCond.flatMap(c => findCondStr(c.branch.cond))
-
-  def provenance: Option[Provenance] = targetCond.flatMap(findProvenance)
-
-  /** for syntactic production */
   def apply(
     name: String,
     args: List[Boolean],
@@ -32,7 +23,6 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
     try { generateOne(name, args) }
     catch { case _: Exception => base(name, args, rhsIdx) }
 
-  /** for lexical production */
   def apply(name: String): Lexical = base(name)
 
   // ---------------------------------------------------------------------------
@@ -46,18 +36,17 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
       generateSetter(args) -> 1,
       generateProxy(args) -> 2,
     )
-    val all = targetCondStr match
+    val all = targetCond.flatMap(c => findCondStr(c.branch.cond)) match
       case Some(str) => (generateString(str, args) -> 1) :: candidates
       case None      => candidates
     val chosen = weightedChoose(all)
-    // re-parse at the requested production level
     cfg
       .esParser(prodName, args)
       .from(chosen.toString(grammar = Some(cfg.grammar)))
       .asInstanceOf[Syntactic]
 
   private def generateString(str: String, args: List[Boolean]): Syntactic = cfg
-    .esParser(PRIMARY_EXPRESSION, args)
+    .esParser("PrimaryExpression", args)
     .from(s"\\'$str\\'")
     .asInstanceOf[Syntactic]
 
@@ -65,28 +54,28 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
     val k = chooseProp
     val v = choose(defaultValues)
     val raw = s"{ $k : $v }"
-    cfg.esParser(PRIMARY_EXPRESSION, args).from(raw).asInstanceOf[Syntactic]
+    cfg.esParser("PrimaryExpression", args).from(raw).asInstanceOf[Syntactic]
 
   private def generateProxy(args: List[Boolean]): Syntactic =
     val trap = chooseTrap
     val targetStr =
       if (fnProxyTraps.contains(trap)) "function ( ) { }" else "{}"
     val handler = choose(proxyTrapHandlers)
-    makeProxy(args, targetStr, trap, handler)
+    val raw = s"(new Proxy($targetStr, { $trap : $handler }))"
+    cfg.esParser("PrimaryExpression", args).from(raw).asInstanceOf[Syntactic]
 
   private def generateAccessor(
     kind: String,
     params: String,
     args: List[Boolean],
-    propHint: Option[String] = None,
   ): Syntactic =
-    val k = propHint.getOrElse(chooseProp)
+    val prop = chooseProp
     val templates = List(
-      s"{ $kind $k $params {} }",
-      s"{ $kind $k $params { throw 0 ; } }",
+      s"{ $kind $prop $params {} }",
+      s"{ $kind $prop $params { throw 0 ; } }",
     )
     cfg
-      .esParser(PRIMARY_EXPRESSION, args)
+      .esParser("PrimaryExpression", args)
       .from(choose(templates))
       .asInstanceOf[Syntactic]
 
@@ -95,236 +84,6 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
 
   private def generateSetter(args: List[Boolean]): Syntactic =
     generateAccessor("set", "(_)", args)
-
-  // ---------------------------------------------------------------------------
-  // Guided mutation
-  // ---------------------------------------------------------------------------
-
-  /** Build a Proxy expression from raw strings */
-  private def makeProxy(
-    args: List[Boolean],
-    targetStr: String,
-    trap: String,
-    handler: String,
-  ): Syntactic =
-    val raw = s"(new Proxy($targetStr, { $trap : $handler }))"
-    cfg.esParser(PRIMARY_EXPRESSION, args).from(raw).asInstanceOf[Syntactic]
-
-  // remove a specific property from an existing object literal
-  def ejectProp(
-    prop: String,
-    args: List[Boolean],
-    from: Syntactic,
-  ): List[Syntactic] =
-    if (from.name == "ObjectLiteral")
-      val props = getProps(from)
-      val filtered = props.filterNot(propDef => propKey(propDef).contains(prop))
-      if (filtered.length == props.length) Nil
-      else List(withProps(filtered, from.args))
-    else
-      findTopLevelObjectLiterals(from).flatMap { inner =>
-        val props = getProps(inner)
-        val filtered =
-          props.filterNot(propDef => propKey(propDef).contains(prop))
-        if (filtered.length == props.length) Nil
-        else
-          replaceObjectLiteral(
-            from,
-            inner,
-            withProps(filtered, inner.args),
-          ).toList
-      }
-
-  // inject a data property into an object literal
-  // propHint: property name to use; if None, a random spec property is chosen
-  def injectProp(
-    propHint: Option[String],
-    args: List[Boolean],
-    into: Option[Syntactic],
-    value: String,
-  ): List[Syntactic] =
-    val k = propHint.getOrElse(chooseProp)
-    injectPropDef(s"$k : $value", args, into)
-
-  // inject a getter accessor; value=None produces a throwing getter
-  // propHint: property name to use; if None, a random spec property is chosen
-  def injectGetter(
-    propHint: Option[String],
-    args: List[Boolean],
-    into: Option[Syntactic],
-    value: Option[String] = None,
-  ): List[Syntactic] =
-    val k = propHint.getOrElse(chooseProp)
-    val body = value.fold("throw 0 ;")(v => s"return $v ;")
-    injectPropDef(s"get $k ( ) { $body }", args, into)
-
-  /** inject a raw property definition string into ObjectLiterals */
-  private def injectPropDef(
-    propDefStr: String,
-    args: List[Boolean],
-    into: Option[Syntactic],
-  ): List[Syntactic] = try {
-    val parsed = cfg
-      .esParser(PRIMARY_EXPRESSION, args)
-      .from(s"{ $propDefStr }")
-      .asInstanceOf[Syntactic]
-    (for {
-      obj <- findObjectLiteral(parsed)
-      propDef <- getProps(obj).headOption
-    } yield into match
-      case Some(target: Syntactic) if target.name == "ObjectLiteral" =>
-        List(withProps(getProps(target) :+ propDef, target.args))
-      case Some(target: Syntactic) =>
-        findTopLevelObjectLiterals(target).flatMap { inner =>
-          replaceObjectLiteral(
-            target,
-            inner,
-            withProps(getProps(inner) :+ propDef, inner.args),
-          ).toList
-        }
-      case None => List(withProps(List(propDef), args))
-    ).getOrElse(Nil)
-  } catch { case _: Exception => Nil }
-
-  // ---------------------------------------------------------------------------
-  // ObjectLiteral AST manipulation
-  // ---------------------------------------------------------------------------
-
-  private def getProps(obj: Syntactic): List[Ast] = obj match
-    case Syntactic("ObjectLiteral", _, 1 | 2, children) =>
-      flattenPropList(children(0).get)
-    case _ => Nil
-
-  private def withProps(props: List[Ast], args: List[Boolean]): Syntactic =
-    if (props.isEmpty) Syntactic("ObjectLiteral", args, 0, Vector())
-    else
-      val propDefs = buildPropList(props, args)
-      Syntactic("ObjectLiteral", args, 1, Vector(Some(propDefs)))
-
-  private def flattenPropList(pdl: Ast): List[Ast] = pdl match
-    case Syntactic("PropertyDefinitionList", _, 0, children) =>
-      children(0).toList
-    case Syntactic("PropertyDefinitionList", _, 1, children)
-        if children(0).isDefined =>
-      children(0).toList.flatMap(flattenPropList) ++ children(1).toList
-    case _ => Nil
-
-  private def buildPropList(props: List[Ast], args: List[Boolean]): Syntactic =
-    val (rhsIdx, children) =
-      if (props.init.isEmpty) (0, Vector(Some(props.last)))
-      else (1, Vector(Some(buildPropList(props.init, args)), Some(props.last)))
-    Syntactic("PropertyDefinitionList", args, rhsIdx, children)
-
-  private def findObjectLiteral(ast: Ast): Option[Syntactic] = ast match
-    case s @ Syntactic("ObjectLiteral", _, _, _) => Some(s)
-    case Syntactic(_, _, _, children) =>
-      children.flatten.flatMap(findObjectLiteral).headOption
-    case _ => None
-
-  private def findTopLevelObjectLiterals(ast: Ast): List[Syntactic] = ast match
-    case s @ Syntactic("ObjectLiteral", _, _, _) => List(s)
-    case Syntactic(_, _, _, children) =>
-      children.flatten.flatMap(findTopLevelObjectLiterals).toList
-    case _ => Nil
-
-  /** Replace a specific ObjectLiteral inside an AST with a new one (by ref) */
-  private def replaceObjectLiteral(
-    ast: Syntactic,
-    target: Syntactic,
-    replacement: Syntactic,
-  ): Option[Syntactic] =
-    if (ast eq target) Some(replacement)
-    else
-      var found = false
-      val newChildren = ast.children.map(_.map { child =>
-        if (found) child
-        else
-          child match
-            case s: Syntactic =>
-              replaceObjectLiteral(s, target, replacement) match
-                case Some(modified) => found = true; modified
-                case None           => child
-            case _ => child
-      })
-      if (found) Some(Syntactic(ast.name, ast.args, ast.rhsIdx, newChildren))
-      else None
-
-  private def propKey(pd: Ast): Option[String] = pd match
-    case Syntactic("PropertyDefinition", _, 0, children) =>
-      children(0).map(_.toString(grammar = Some(cfg.grammar)).trim)
-    case Syntactic(_, _, _, children) =>
-      children.flatten.collectFirst {
-        case s @ Syntactic("LiteralPropertyName", _, _, cs) =>
-          cs(0).map(_.toString(grammar = Some(cfg.grammar)).trim)
-      }.flatten
-    case _ => None
-
-  // ---------------------------------------------------------------------------
-  // Provenance analysis
-  // ---------------------------------------------------------------------------
-
-  /** Extract algo name and property from a prop-reading CallInst */
-  private def propReadingInfo(call: CallInst): Option[(String, String)] =
-    call match
-      case ICall(_, EClo(name, _), _ :: EStr(prop) :: _)
-          if propReadingAlgos.contains(name) =>
-        Some((name, prop))
-      case _ => None
-
-  /** Trace def-use chain to find a prop-reading call and intermediate check */
-  private def findDefCall(
-    func: Func,
-    node: Node,
-    target: Local,
-    visited: Set[(Node, Local)] = Set(),
-  ): Option[(CallInst, Option[String])] =
-    if (visited((node, target))) None
-    else {
-      val newVisited = visited + ((node, target))
-      val dataDep = cfg.depGraph.dataDeps(func)
-      val defNodes =
-        dataDep.useToDefs.getOrElse(node, Map()).getOrElse(target, Set())
-      // direct match: the defining call is a prop-reading algo
-      defNodes
-        .collectFirst {
-          case c: Call
-              if c.callInst.lhs == target &&
-              propReadingInfo(c.callInst).isDefined =>
-            (c.callInst, None)
-        }
-        .orElse {
-          // indirect: record intermediate call name and follow def-use chain
-          defNodes.flatMap { n =>
-            val intermediate = n match
-              case c: Call if c.callInst.lhs == target =>
-                c.callInst match
-                  case ICall(_, EClo(name, _), _) => Some(name)
-                  case _                          => None
-              case _ => None
-            dataDep.uses(n).flatMap { v =>
-              findDefCall(func, n, v, newVisited).map {
-                case (call, existing) => (call, existing.orElse(intermediate))
-              }
-            }
-          }.headOption
-        }
-    }
-
-  /** Find provenance info for a target branch condition */
-  private def findProvenance(cond: Cond): Option[Provenance] =
-    val Cond(branch, taken) = cond
-    if (findCondStr(branch.cond).isDefined) None
-    else {
-      for {
-        func <- cfg.funcOf.get(branch)
-        (condVar, takenSide) <- condRefVar(branch.cond, taken)
-        (call, intermediateCheck) <- findDefCall(func, branch, condVar)
-        (algoName, prop) <- propReadingInfo(call)
-      } yield
-        val check =
-          if (branch.isAbruptNode) Some("Abrupt") else intermediateCheck
-        Provenance(algoName, Some(prop), !takenSide, check)
-    }
 
   // ---------------------------------------------------------------------------
   // Spec analysis
@@ -338,7 +97,7 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
     reachable: Map[Func, Set[String]],
     all: Set[String],
   ): String =
-    val cands = targetFunc match
+    val cands = targetCond.flatMap(c => cfg.funcOf.get(c.branch)) match
       case Some(func) =>
         val s =
           if (randBool) reachable.getOrElse(func, Set())
@@ -409,8 +168,6 @@ class SpecStringSynthesizer(val base: Synthesizer)(using cfg: CFG)
 
 object SpecStringSynthesizer {
   import Coverage.*
-
-  val PRIMARY_EXPRESSION = "PrimaryExpression"
 
   // ---------------------------------------------------------------------------
   // Spec constants
@@ -498,46 +255,12 @@ object SpecStringSynthesizer {
     "{ then ( ) { throw 0 ; } }",
   )
 
-  // Composed value lists
-  val falsyValues = falsyPrimitives
-  val truthyValues = truthyPrimitives ++ plainObjects ++ callableForms
   val defaultValues =
     falsyPrimitives ++ truthyPrimitives ++ plainObjects ++
     callableForms ++ iterators ++ thenables
-
-  // ---------------------------------------------------------------------------
-  // Provenance helpers
-  // ---------------------------------------------------------------------------
 
   def findCondStr(e: Expr): Option[String] = e match
     case EBinary(BOp.Eq, EStr(str), _) => Some(str)
     case EBinary(BOp.Eq, _, EStr(str)) => Some(str)
     case _                             => None
-
-  case class Provenance(
-    algoName: String,
-    propHint: Option[String],
-    side: Boolean,
-    check: Option[String] = None,
-  )
-
-  /** extract variable reference and side from a branch */
-  def condRefVar(expr: Expr, cond: Boolean): Option[(Local, Boolean)] =
-    import esmeta.ty.AbruptT
-    expr match
-      case EBinary(BOp.Eq, ERef(v: Local), EBool(b)) => Some((v, cond == b))
-      case EBinary(BOp.Eq, EBool(b), ERef(v: Local)) => Some((v, cond == b))
-      case EBinary(BOp.Eq, ERef(v: Local), EUndef()) => Some((v, !cond))
-      case EBinary(BOp.Eq, EUndef(), ERef(v: Local)) => Some((v, !cond))
-      case EBinary(BOp.Eq, ERef(v: Local), ENull())  => Some((v, !cond))
-      case EBinary(BOp.Eq, ENull(), ERef(v: Local))  => Some((v, !cond))
-      case EUnary(UOp.Not, inner)                    => condRefVar(inner, !cond)
-      case EBinary(BOp.And, l, r) =>
-        condRefVar(l, cond).orElse(condRefVar(r, cond))
-      case EBinary(BOp.Or, l, r) =>
-        condRefVar(l, cond).orElse(condRefVar(r, cond))
-      case ETypeCheck(ERef(v: Local), ty) if ty.toValue == AbruptT =>
-        Some((v, cond))
-      case ERef(v: Local) => Some((v, cond))
-      case _              => None
 }

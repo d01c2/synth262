@@ -4,7 +4,7 @@ import esmeta.es.*
 import esmeta.es.util.{Walker => AstWalker}
 import esmeta.es.util.*
 import esmeta.fuzzer.*
-import esmeta.fuzzer.synthesizer.*
+import esmeta.fuzzer.synthesizer.{Synthesizer, RandomSynthesizer}
 import esmeta.util.BaseUtils.*
 import esmeta.cfg.CFG
 
