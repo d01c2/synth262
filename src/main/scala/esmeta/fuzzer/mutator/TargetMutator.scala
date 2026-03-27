@@ -12,7 +12,8 @@ import esmeta.util.BaseUtils.*
 class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
   val synBuilder: Synthesizer.Builder = RandomSynthesizer,
 ) extends Mutator {
-  import Mutator.*, Coverage.*, SpecStringSynthesizer.*, TargetMutator.*
+  import Mutator.*, Coverage.*, SpecStringSynthesizer.*, TargetMutator.*,
+  CondTarget.*
 
   val randomMutator = RandomMutator()
 
@@ -85,12 +86,16 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
     into: Option[Syntactic], // where to inject (None = create new object)
   ): List[Syntactic] =
     /** mutation helpers */
+    // template: { propDef }
+    def injectPropRaw(propDef: String): List[Syntactic] =
+      injectPropDef(propDef, ast.args, into)
+
     // template: { propHint: value }
     def injectProp(value: String): List[Syntactic] = prov.propHint match
-      case Some(k) => injectPropDef(s"$k : $value", ast.args, into)
+      case Some(k) => injectPropRaw(s"$k : $value")
       case None    => List()
 
-    // template: { ... } (no propHint)
+    // template: { ... } (remove propHint)
     def ejectProp(): List[Syntactic] = for {
       target <- into.toList
       prop <- prov.propHint.toList
@@ -99,54 +104,129 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
 
     // template: { get propHint() { throw 0; } }
     def injectThrowingGetter(): List[Syntactic] = prov.propHint match
-      case Some(k) =>
-        injectPropDef(s"get $k ( ) { throw 0 ; }", ast.args, into)
-      case None => List()
+      case Some(k) => injectPropRaw(s"get $k ( ) { throw 0 ; }")
+      case None    => List()
 
     // template: { [Symbol.toPrimitive]: () => value }
     def injectToPrimitive(value: String): List[Syntactic] =
-      injectPropDef(s"[Symbol.toPrimitive]: () => $value", ast.args, into)
+      injectPropRaw(s"[Symbol.toPrimitive]: () => $value")
 
-    (prov.chain, prov.side) match
+    // template: { [Symbol.toPrimitive]() { throw 0; } }
+    def injectThrowingToPrimitive(): List[Syntactic] =
+      injectPropRaw(s"[Symbol.toPrimitive] ( ) { throw 0 ; }")
+
+    // template: site -> code
+    def replaceSite(code: String): List[Syntactic] =
+      try {
+        List(
+          cfg.esParser(ast.name, ast.args).from(code).asInstanceOf[Syntactic],
+        )
+      } catch { case _: Exception => List() }
+
+    prov.chain match
 
       /** Property Reading Algorithms */
-      // Property existence: HasProperty
-      case ("HasProperty" :: _, true)  => injectProp("0")
-      case ("HasProperty" :: _, false) => ejectProp()
+      // property existence: HasProperty
+      case ("HasProperty", Normal(Some(true))) :: _  => injectProp("0")
+      case ("HasProperty", Normal(Some(false))) :: _ => ejectProp()
 
-      // Abrupt: Get (getter throw)
-      case ("Get" :: _, true) if prov.isAbrupt  => injectThrowingGetter()
-      case ("Get" :: _, false) if prov.isAbrupt => injectProp("0")
+      // property get: Get
+      case ("Get", Normal(Some(true))) :: _  => injectProp("42")
+      case ("Get", Normal(Some(false))) :: _ => ejectProp()
+      case ("Get", Abrupt) :: _              => injectThrowingGetter()
 
-      // Abrupt: GetMethod (non-callable or getter throw)
-      case ("GetMethod" :: _, true) if prov.isAbrupt  => injectProp("0")
-      case ("GetMethod" :: _, false) if prov.isAbrupt => injectProp("() => {}")
+      // callable value: IsCallable + Get chain
+      case ("IsCallable", Normal(Some(true))) :: ("Get", Normal(_)) :: _ =>
+        injectProp("() => {}")
+      case ("IsCallable", Normal(Some(false))) :: ("Get", Normal(_)) :: _ =>
+        injectProp("0")
 
-      // Callable value: IsCallable + Get chain
-      case ("IsCallable" :: "Get" :: _, true)  => injectProp("() => {}")
-      case ("IsCallable" :: "Get" :: _, false) => injectProp("0")
+      // callable value: GetMethod
+      case ("GetMethod", Normal(Some(true))) :: _  => injectProp("() => {}")
+      case ("GetMethod", Normal(Some(false))) :: _ => ejectProp()
+      case ("GetMethod", Abrupt) :: _              => injectProp("0")
 
-      // Callable value: GetMethod (default)
-      case ("GetMethod" :: _, true)  => injectProp("() => {}")
-      case ("GetMethod" :: _, false) => ejectProp()
-
-      // Property get: Get (default)
-      case ("Get" :: _, true)  => injectProp("0")
-      case ("Get" :: _, false) => ejectProp()
+      // callable invocation: Invoke
+      case ("Invoke", Normal(_)) :: _ => injectProp("() => {}")
+      case ("Invoke", Abrupt) :: _    => injectProp("0")
 
       /** TODO: PropWritingAlgos */
 
       /** Type Coercion Algorithms */
-      // Abrupt: ToString/ToNumber via ToPrimitive
-      // e.g. { [Symbol.toPrimitive]: () => ... }
-      case ("ToString" :: "ToPrimitive" :: _, true) if prov.isAbrupt =>
+      // primitive coercion: ToPrimitive
+      case ("ToPrimitive", Normal(_)) :: _ => replaceSite("0")
+      case ("ToPrimitive", Abrupt) :: _    => injectThrowingToPrimitive()
+
+      // multi-step coercion via ToPrimitive
+      case ("ToString", Normal(_)) :: ("ToPrimitive", _) :: _ =>
+        injectToPrimitive("0")
+      case ("ToString", Abrupt) :: ("ToPrimitive", _) :: _ =>
         injectToPrimitive("Symbol()")
-      case ("ToString" :: "ToPrimitive" :: _, false) if prov.isAbrupt =>
+      case ("ToNumber", Normal(_)) :: ("ToPrimitive", _) :: _ =>
         injectToPrimitive("0")
-      case ("ToNumber" :: "ToPrimitive" :: _, true) if prov.isAbrupt =>
+      case ("ToNumber", Abrupt) :: ("ToPrimitive", _) :: _ =>
         injectToPrimitive("0n")
-      case ("ToNumber" :: "ToPrimitive" :: _, false) if prov.isAbrupt =>
+      case ("ToBigInt", Normal(_)) :: ("ToPrimitive", _) :: _ =>
+        injectToPrimitive("0n")
+      case ("ToBigInt", Abrupt) :: ("ToPrimitive", _) :: _ =>
         injectToPrimitive("0")
+      case ("ToNumeric", Normal(_)) :: ("ToPrimitive", _) :: _ =>
+        injectToPrimitive("0")
+      case ("ToNumeric", Abrupt) :: ("ToPrimitive", _) :: _ =>
+        injectToPrimitive("Symbol()")
+
+      // primitive coercion: ToString
+      case ("ToString", Normal(_)) :: _ => replaceSite("\"x\"")
+      case ("ToString", Abrupt) :: _    => replaceSite("Symbol()")
+
+      // primitive coercion: ToNumber
+      case ("ToNumber", Normal(_)) :: _ => replaceSite("0")
+      case ("ToNumber", Abrupt) :: _    => replaceSite("0n")
+
+      // primitive coercion: ToBigInt
+      case ("ToBigInt", Normal(_)) :: _ => replaceSite("0n")
+      case ("ToBigInt", Abrupt) :: _    => replaceSite("0")
+
+      // primitive coercion: ToBoolean
+      case ("ToBoolean", Normal(Some(true))) :: _  => replaceSite("true")
+      case ("ToBoolean", Normal(Some(false))) :: _ => replaceSite("false")
+      case ("ToBoolean", Normal(None)) :: _        => replaceSite("0")
+
+      // numeric coercion: ToNumeric
+      case ("ToNumeric", Normal(_)) :: _ => replaceSite("0")
+      case ("ToNumeric", Abrupt) :: _    => replaceSite("Symbol()")
+
+      // numeric coercion: ToIntegerOrInfinity
+      case ("ToIntegerOrInfinity", Normal(_)) :: _ => replaceSite("0")
+      case ("ToIntegerOrInfinity", Abrupt) :: _    => replaceSite("Symbol()")
+
+      // numeric coercion: ToLength
+      case ("ToLength", Normal(_)) :: _ => replaceSite("0")
+      case ("ToLength", Abrupt) :: _    => replaceSite("Symbol()")
+
+      // numeric coercion: ToInt32
+      case ("ToInt32", Normal(_)) :: _ => replaceSite("0")
+      case ("ToInt32", Abrupt) :: _    => replaceSite("Symbol()")
+
+      // numeric coercion: ToUint32
+      case ("ToUint32", Normal(_)) :: _ => replaceSite("0")
+      case ("ToUint32", Abrupt) :: _    => replaceSite("Symbol()")
+
+      // key/index coercion: ToPropertyKey
+      case ("ToPropertyKey", Normal(_)) :: _ => replaceSite("\"x\"")
+      case ("ToPropertyKey", Abrupt) :: _    => injectThrowingToPrimitive()
+
+      // key/index coercion: ToIndex
+      case ("ToIndex", Normal(_)) :: _ => replaceSite("0")
+      case ("ToIndex", Abrupt) :: _    => replaceSite("-1")
+
+      // object coercion: ToObject
+      case ("ToObject", Normal(_)) :: _ => replaceSite("0")
+      case ("ToObject", Abrupt) :: _    => replaceSite("null")
+
+      // object coercion: RequireObjectCoercible
+      case ("RequireObjectCoercible", Normal(_)) :: _ => replaceSite("0")
+      case ("RequireObjectCoercible", Abrupt) :: _    => replaceSite("null")
 
       // others
       case _ => List()
@@ -165,8 +245,9 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
     func: Func,
     node: Node,
     target: Local,
+    ct: CondTarget,
     visited: Set[(Node, Local)] = Set(),
-  ): List[List[(String, CallInst)]] =
+  ): List[List[(String, CallInst, CondTarget)]] =
     if (visited((node, target))) List()
     else {
       val newVisited = visited + ((node, target))
@@ -174,14 +255,16 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
       val defNodes =
         dataDep.useToDefs.getOrElse(node, Map()).getOrElse(target, Set())
       defNodes.toList.flatMap { n =>
-        val callEntry: Option[(String, CallInst)] = n match
+        val callEntry: Option[(String, CallInst, CondTarget)] = n match
           case c: Call if c.callInst.lhs == target =>
             c.callInst match
-              case ICall(_, EClo(name, _), _) => Some((name, c.callInst))
-              case _                          => None
+              case ICall(_, EClo(name, _), _) =>
+                Some((name, c.callInst, ct))
+              case _ => None
           case _ => None
+        val deeperCt = callEntry.map(_._3).getOrElse(ct)
         val deeperChains = dataDep.uses(n).toList.flatMap { v =>
-          findDefCall(func, n, v, newVisited)
+          findDefCall(func, n, v, deeperCt, newVisited)
         }
         callEntry match
           case Some(entry) =>
@@ -195,47 +278,94 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
     val Cond(branch, taken) = cond
     if (findCondStr(branch.cond).isDefined) List()
     else
+      val goal = !taken
       for {
         func <- cfg.funcOf.get(branch).toList
-        (condVar, takenSide) <- condRefVar(branch.cond, taken).toList
-        calls <- findDefCall(func, branch, condVar)
+        dataDep = cfg.depGraph.dataDeps(func)
+        condVar <- dataDep.uses(branch).toList
+        ct <- condTarget(branch, condVar, goal).toList
+        calls <- findDefCall(func, branch, condVar, ct)
         if calls.nonEmpty
       } yield
-        val chain = calls.map(_._1)
+        val chain = calls.map((name, _, ct) => (name, ct))
         val propHint = calls.collectFirst {
-          case (name, ICall(_, _, _ :: EStr(prop) :: _))
+          case (name, ICall(_, _, _ :: EStr(prop) :: _), _)
               if propReadingAlgos.contains(name) =>
             prop
         }
-        Provenance(chain, propHint, !takenSide, branch.isAbruptNode)
+        Provenance(chain, propHint)
 }
 
 object TargetMutator {
   import esmeta.ir.{Func => IRFunc, *}
-  import esmeta.ty.AbruptT
+
+  /** condition target for the branch variable */
+  enum CondTarget:
+    case Abrupt
+    case Normal(truthy: Option[Boolean]) // None = not yet determined
 
   case class Provenance(
-    chain: List[String], // ordered nearest-to-branch
+    chain: List[(String, CondTarget)], // ordered nearest-to-branch
     propHint: Option[String], // property name (property-reading only)
-    side: Boolean,
-    isAbrupt: Boolean = false, // whether branch is an abrupt check
   )
 
-  def condRefVar(expr: Expr, cond: Boolean): Option[(Local, Boolean)] =
-    expr match
-      case EBinary(BOp.Eq, ERef(v: Local), EBool(b)) => Some((v, cond == b))
-      case EBinary(BOp.Eq, EBool(b), ERef(v: Local)) => Some((v, cond == b))
-      case EBinary(BOp.Eq, ERef(v: Local), EUndef()) => Some((v, !cond))
-      case EBinary(BOp.Eq, EUndef(), ERef(v: Local)) => Some((v, !cond))
-      case EBinary(BOp.Eq, ERef(v: Local), ENull())  => Some((v, !cond))
-      case EBinary(BOp.Eq, ENull(), ERef(v: Local))  => Some((v, !cond))
-      case EUnary(UOp.Not, inner)                    => condRefVar(inner, !cond)
-      case EBinary(BOp.And, l, r) =>
-        condRefVar(l, cond).orElse(condRefVar(r, cond))
-      case EBinary(BOp.Or, l, r) =>
-        condRefVar(l, cond).orElse(condRefVar(r, cond))
-      case ETypeCheck(ERef(v: Local), ty) if ty.toValue == AbruptT =>
-        Some((v, cond))
-      case ERef(v: Local) => Some((v, cond))
-      case _              => None
+  /** check if a ref contains the condition variable */
+  private def isCondVar(ref: Ref, condVar: Local): Boolean = ref match
+    case x: Local       => x == condVar
+    case Field(base, _) => isCondVar(base, condVar)
+    case _              => false
+
+  /** resolve equality comparand to a CondTarget */
+  private def resolveEq(comparand: Expr, goal: Boolean): Option[CondTarget] =
+    comparand match
+      case EBool(b) => Some(CondTarget.Normal(Some(goal == b)))
+      case ENull()  => Some(CondTarget.Normal(Some(!goal)))
+      case EUndef() => Some(CondTarget.Normal(Some(!goal)))
+      case EEnum(_) => Some(CondTarget.Normal(Some(goal)))
+      case _        => None
+
+  /** determine what the condition variable needs to be */
+  def condTarget(
+    branch: Branch,
+    condVar: Local,
+    goal: Boolean,
+  ): Option[CondTarget] =
+    if (branch.isAbruptNode)
+      Some(if (goal) CondTarget.Abrupt else CondTarget.Normal(None))
+    else exprCondTarget(branch.cond, condVar, goal)
+
+  private def exprCondTarget(
+    expr: Expr,
+    condVar: Local,
+    goal: Boolean,
+  ): Option[CondTarget] = expr match
+    // compound abrupt check
+    case EBinary(BOp.And, ETypeCheck(ERef(x: Local), ty), _)
+        if x == condVar && ty.isCompletion =>
+      Some(if (goal) CondTarget.Abrupt else CondTarget.Normal(None))
+    // type check
+    case ETypeCheck(ERef(ref), _) if isCondVar(ref, condVar) =>
+      Some(CondTarget.Normal(Some(goal)))
+    // existence check
+    case EExists(ref) if isCondVar(ref, condVar) =>
+      Some(CondTarget.Normal(Some(goal)))
+    // equality
+    case EBinary(BOp.Eq, ERef(ref), rhs) if isCondVar(ref, condVar) =>
+      resolveEq(rhs, goal)
+    case EBinary(BOp.Eq, lhs, ERef(ref)) if isCondVar(ref, condVar) =>
+      resolveEq(lhs, goal)
+    // bare variable as condition
+    case ERef(ref) if isCondVar(ref, condVar) =>
+      Some(CondTarget.Normal(Some(goal)))
+    // negation
+    case EUnary(UOp.Not, inner) =>
+      exprCondTarget(inner, condVar, !goal)
+    // conjunction / disjunction
+    case EBinary(BOp.And, l, r) =>
+      exprCondTarget(l, condVar, goal)
+        .orElse(exprCondTarget(r, condVar, goal))
+    case EBinary(BOp.Or, l, r) =>
+      exprCondTarget(l, condVar, goal)
+        .orElse(exprCondTarget(r, condVar, goal))
+    case _ => None
 }

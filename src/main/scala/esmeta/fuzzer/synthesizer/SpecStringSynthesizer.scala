@@ -173,7 +173,7 @@ object SpecStringSynthesizer {
   // Spec constants
   // ---------------------------------------------------------------------------
 
-  val propReadingAlgos = Set("Get", "GetMethod", "HasProperty")
+  val propReadingAlgos = Set("Get", "GetMethod", "HasProperty", "Invoke")
 
   val trapAlgos: Map[String, String] = Map(
     "Get" -> "get",
