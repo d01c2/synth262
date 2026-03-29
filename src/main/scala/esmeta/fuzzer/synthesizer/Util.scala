@@ -80,11 +80,14 @@ object Util {
   def propKey(pd: Ast)(using cfg: CFG): Option[String] = pd match
     case Syntactic("PropertyDefinition", _, 0, children) =>
       children(0).map(_.toString(grammar = Some(cfg.grammar)).trim)
-    case Syntactic(_, _, _, children) =>
-      children.flatten.collectFirst {
-        case s @ Syntactic("LiteralPropertyName", _, _, cs) =>
+    case Syntactic(_, _, _, _) =>
+      def findLPN(ast: Ast): Option[String] = ast match
+        case Syntactic("LiteralPropertyName", _, _, cs) =>
           cs(0).map(_.toString(grammar = Some(cfg.grammar)).trim)
-      }.flatten
+        case Syntactic(_, _, _, ch) =>
+          ch.flatten.collectFirst(Function.unlift(findLPN))
+        case _ => None
+      findLPN(pd)
     case _ => None
 
   // ---------------------------------------------------------------------------
@@ -104,19 +107,26 @@ object Util {
     (for {
       obj <- findObjectLiteral(parsed)
       propDef <- getProps(obj).headOption
-    } yield into match
-      case Some(target: Syntactic) if target.name == "ObjectLiteral" =>
-        List(withProps(getProps(target) :+ propDef, target.args))
-      case Some(target: Syntactic) =>
-        findTopLevelObjectLiterals(target).flatMap { inner =>
-          replaceSyntactic(
-            target,
-            inner,
-            withProps(getProps(inner) :+ propDef, inner.args),
-          ).toList
-        }
-      case None => List(withProps(List(propDef), args))
-    ).getOrElse(List())
+    } yield {
+      // replace existing property with same key, or append if new
+      def mergeProps(existing: List[Ast]): List[Ast] =
+        propKey(propDef) match
+          case Some(key) if existing.exists(p => propKey(p).contains(key)) =>
+            existing.map(p => if propKey(p).contains(key) then propDef else p)
+          case _ => existing :+ propDef
+      into match
+        case Some(target: Syntactic) if target.name == "ObjectLiteral" =>
+          List(withProps(mergeProps(getProps(target)), target.args))
+        case Some(target: Syntactic) =>
+          findTopLevelObjectLiterals(target).flatMap { inner =>
+            replaceSyntactic(
+              target,
+              inner,
+              withProps(mergeProps(getProps(inner)), inner.args),
+            ).toList
+          }
+        case None => List(withProps(List(propDef), args))
+    }).getOrElse(List())
   } catch { case _: Exception => List() }
 
   /** remove a property from an existing ObjectLiteral */

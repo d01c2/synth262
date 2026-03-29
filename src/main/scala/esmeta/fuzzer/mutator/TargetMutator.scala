@@ -58,13 +58,18 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
         if (!ablation) {
           provenance
             .flatMap { prov =>
-              nodes.flatMap { site =>
-                val injected = provenanceGuided(site, prov, into = Some(site))
-                val mutations =
-                  if (injected.nonEmpty) injected
-                  else provenanceGuided(site, prov, into = None)
-                mutations.flatMap(r => replaceSyntactic(ast, site, r))
+              val intoSome = nodes.flatMap { site =>
+                provenanceGuided(site, prov, into = Some(site)).flatMap { r =>
+                  replaceSyntactic(ast, site, r)
+                }
               }
+              if (intoSome.nonEmpty) intoSome
+              else
+                nodes.flatMap { site =>
+                  provenanceGuided(site, prov, into = None).flatMap { r =>
+                    replaceSyntactic(ast, site, r)
+                  }
+                }
             }
             .distinctBy(_.toString(grammar = Some(cfg.grammar)))
         } else List()
@@ -111,28 +116,18 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
     def injectToPrimitive(value: String): List[Syntactic] =
       injectPropRaw(s"[Symbol.toPrimitive]: () => $value")
 
-    // template: { [Symbol.toPrimitive]() { throw 0; } }
-    def injectThrowingToPrimitive(): List[Syntactic] =
-      injectPropRaw(s"[Symbol.toPrimitive] ( ) { throw 0 ; }")
-
-    // template: site -> code
-    def replaceSite(code: String): List[Syntactic] =
-      try {
-        List(
-          cfg.esParser(ast.name, ast.args).from(code).asInstanceOf[Syntactic],
-        )
-      } catch { case _: Exception => List() }
-
     prov.chain match
 
       /** Property Reading Algorithms */
       // property existence: HasProperty
       case ("HasProperty", Normal(Some(true))) :: _  => injectProp("0")
       case ("HasProperty", Normal(Some(false))) :: _ => ejectProp()
+      case ("HasProperty", Normal(None)) :: _        => injectProp("0")
 
       // property get: Get
       case ("Get", Normal(Some(true))) :: _  => injectProp("42")
       case ("Get", Normal(Some(false))) :: _ => ejectProp()
+      case ("Get", Normal(None)) :: _        => injectProp("42")
       case ("Get", Abrupt) :: _              => injectThrowingGetter()
 
       // callable value: IsCallable + Get chain
@@ -144,89 +139,15 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
       // callable value: GetMethod
       case ("GetMethod", Normal(Some(true))) :: _  => injectProp("() => {}")
       case ("GetMethod", Normal(Some(false))) :: _ => ejectProp()
+      case ("GetMethod", Normal(None)) :: _        => injectProp("() => {}")
       case ("GetMethod", Abrupt) :: _              => injectProp("0")
 
-      // callable invocation: Invoke
-      case ("Invoke", Normal(_)) :: _ => injectProp("() => {}")
-      case ("Invoke", Abrupt) :: _    => injectProp("0")
-
-      /** TODO: PropWritingAlgos */
-
       /** Type Coercion Algorithms */
-      // primitive coercion: ToPrimitive
-      case ("ToPrimitive", Normal(_)) :: _ => replaceSite("0")
-      case ("ToPrimitive", Abrupt) :: _    => injectThrowingToPrimitive()
-
-      // multi-step coercion via ToPrimitive
-      case ("ToString", Normal(_)) :: ("ToPrimitive", _) :: _ =>
-        injectToPrimitive("0")
+      // multi-step coercion via ToPrimitive (abrupt path)
       case ("ToString", Abrupt) :: ("ToPrimitive", _) :: _ =>
         injectToPrimitive("Symbol()")
-      case ("ToNumber", Normal(_)) :: ("ToPrimitive", _) :: _ =>
-        injectToPrimitive("0")
       case ("ToNumber", Abrupt) :: ("ToPrimitive", _) :: _ =>
         injectToPrimitive("0n")
-      case ("ToBigInt", Normal(_)) :: ("ToPrimitive", _) :: _ =>
-        injectToPrimitive("0n")
-      case ("ToBigInt", Abrupt) :: ("ToPrimitive", _) :: _ =>
-        injectToPrimitive("0")
-      case ("ToNumeric", Normal(_)) :: ("ToPrimitive", _) :: _ =>
-        injectToPrimitive("0")
-      case ("ToNumeric", Abrupt) :: ("ToPrimitive", _) :: _ =>
-        injectToPrimitive("Symbol()")
-
-      // primitive coercion: ToString
-      case ("ToString", Normal(_)) :: _ => replaceSite("\"x\"")
-      case ("ToString", Abrupt) :: _    => replaceSite("Symbol()")
-
-      // primitive coercion: ToNumber
-      case ("ToNumber", Normal(_)) :: _ => replaceSite("0")
-      case ("ToNumber", Abrupt) :: _    => replaceSite("0n")
-
-      // primitive coercion: ToBigInt
-      case ("ToBigInt", Normal(_)) :: _ => replaceSite("0n")
-      case ("ToBigInt", Abrupt) :: _    => replaceSite("0")
-
-      // primitive coercion: ToBoolean
-      case ("ToBoolean", Normal(Some(true))) :: _  => replaceSite("true")
-      case ("ToBoolean", Normal(Some(false))) :: _ => replaceSite("false")
-      case ("ToBoolean", Normal(None)) :: _        => replaceSite("0")
-
-      // numeric coercion: ToNumeric
-      case ("ToNumeric", Normal(_)) :: _ => replaceSite("0")
-      case ("ToNumeric", Abrupt) :: _    => replaceSite("Symbol()")
-
-      // numeric coercion: ToIntegerOrInfinity
-      case ("ToIntegerOrInfinity", Normal(_)) :: _ => replaceSite("0")
-      case ("ToIntegerOrInfinity", Abrupt) :: _    => replaceSite("Symbol()")
-
-      // numeric coercion: ToLength
-      case ("ToLength", Normal(_)) :: _ => replaceSite("0")
-      case ("ToLength", Abrupt) :: _    => replaceSite("Symbol()")
-
-      // numeric coercion: ToInt32
-      case ("ToInt32", Normal(_)) :: _ => replaceSite("0")
-      case ("ToInt32", Abrupt) :: _    => replaceSite("Symbol()")
-
-      // numeric coercion: ToUint32
-      case ("ToUint32", Normal(_)) :: _ => replaceSite("0")
-      case ("ToUint32", Abrupt) :: _    => replaceSite("Symbol()")
-
-      // key/index coercion: ToPropertyKey
-      case ("ToPropertyKey", Normal(_)) :: _ => replaceSite("\"x\"")
-      case ("ToPropertyKey", Abrupt) :: _    => injectThrowingToPrimitive()
-
-      // key/index coercion: ToIndex
-      case ("ToIndex", Normal(_)) :: _ => replaceSite("0")
-      case ("ToIndex", Abrupt) :: _    => replaceSite("-1")
-
-      // object coercion: ToObject
-      case ("ToObject", Normal(_)) :: _ => replaceSite("0")
-      case ("ToObject", Abrupt) :: _    => replaceSite("null")
-
-      // object coercion: RequireObjectCoercible
-      case ("RequireObjectCoercible", Normal(_)) :: _ => replaceSite("0")
-      case ("RequireObjectCoercible", Abrupt) :: _    => replaceSite("null")
 
       // others
       case _ => List()
@@ -262,9 +183,8 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
                 Some((name, c.callInst, ct))
               case _ => None
           case _ => None
-        val deeperCt = callEntry.map(_._3).getOrElse(ct)
         val deeperChains = dataDep.uses(n).toList.flatMap { v =>
-          findDefCall(func, n, v, deeperCt, newVisited)
+          findDefCall(func, n, v, ct, newVisited)
         }
         callEntry match
           case Some(entry) =>
@@ -306,7 +226,7 @@ object TargetMutator {
 
   case class Provenance(
     chain: List[(String, CondTarget)], // ordered nearest-to-branch
-    propHint: Option[String], // property name (property-reading only)
+    propHint: Option[String], // property name from provenance chain
   )
 
   /** check if a ref contains the condition variable */
@@ -362,10 +282,8 @@ object TargetMutator {
       exprCondTarget(inner, condVar, !goal)
     // conjunction / disjunction
     case EBinary(BOp.And, l, r) =>
-      exprCondTarget(l, condVar, goal)
-        .orElse(exprCondTarget(r, condVar, goal))
+      exprCondTarget(l, condVar, goal).orElse(exprCondTarget(r, condVar, goal))
     case EBinary(BOp.Or, l, r) =>
-      exprCondTarget(l, condVar, goal)
-        .orElse(exprCondTarget(r, condVar, goal))
+      exprCondTarget(l, condVar, goal).orElse(exprCondTarget(r, condVar, goal))
     case _ => None
 }
