@@ -58,18 +58,13 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
         if (!ablation) {
           provenance
             .flatMap { prov =>
-              val intoSome = nodes.flatMap { site =>
-                provenanceGuided(site, prov, into = Some(site)).flatMap { r =>
-                  replaceSyntactic(ast, site, r)
-                }
+              nodes.flatMap { site =>
+                val injected = provenanceGuided(site, prov, into = Some(site))
+                val mutations =
+                  if (injected.nonEmpty) injected
+                  else provenanceGuided(site, prov, into = None)
+                mutations.flatMap(r => replaceSyntactic(ast, site, r))
               }
-              if (intoSome.nonEmpty) intoSome
-              else
-                nodes.flatMap { site =>
-                  provenanceGuided(site, prov, into = None).flatMap { r =>
-                    replaceSyntactic(ast, site, r)
-                  }
-                }
             }
             .distinctBy(_.toString(grammar = Some(cfg.grammar)))
         } else List()
