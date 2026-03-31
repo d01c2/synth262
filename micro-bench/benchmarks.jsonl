@@ -13,3 +13,4 @@
 {"id": "iec-getCauseNormal", "branch": 19895, "seed": "micro-bench/seeds/iec-getCauseNormal.js", "func": "InstallErrorCause"}
 {"id": "tpd-callableGetter", "branch": 873, "seed": "micro-bench/seeds/tpd-callableGetter.js", "func": "ToPropertyDescriptor"}
 {"id": "pxg-ejectGetTrap", "branch": 7853, "seed": "micro-bench/seeds/pxg-ejectGetTrap.js", "func": "Record[ProxyExoticObject].Get"}
+{"id": "cla-getElement", "branch": 2049, "seed": "micro-bench/seeds/cla-getElement.js", "func": "CreateListFromArrayLike"}
