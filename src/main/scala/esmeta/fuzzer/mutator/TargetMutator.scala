@@ -69,6 +69,17 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
             .distinctBy(_.toString(grammar = Some(cfg.grammar)))
         } else List()
 
+      // .call() wrapping (expose `this` as mutable argument)
+      val callWrapped: List[Syntactic] =
+        if (!ablation) {
+          provenance.flatMap { prov =>
+            val receivers = provenanceGuided(ast, prov, into = None)
+            receivers.flatMap { receiver =>
+              wrapWithCall(ast, receiver.toString(grammar = Some(cfg.grammar)))
+            }
+          }
+        } else List()
+
       // blind mutations (manual + synthesized per node)
       val blind: List[Syntactic] = nodes.flatMap { site =>
         val manual = shuffle(manuals(site)).take(c)
@@ -76,7 +87,7 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
         (manual ++ synthesized).flatMap(r => replaceSyntactic(ast, site, r))
       }
 
-      (shuffle(guided) ++ shuffle(blind)).take(n).toList
+      (shuffle(guided) ++ callWrapped ++ shuffle(blind)).take(n).toList
   }
 
   /** provenance guided mutation */
@@ -90,8 +101,11 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
     def injectPropRaw(propDef: String): List[Syntactic] =
       injectPropDef(propDef, ast.args, into)
 
-    // template: { propHint: value }
-    def injectProp(value: String): List[Syntactic] = prov.propHint match
+    // template: { key: value }
+    def injectProp(
+      value: String,
+      key: Option[String] = prov.propHint,
+    ): List[Syntactic] = key match
       case Some(k) =>
         val propDef = s"$k : $value"
         val injected = injectPropRaw(propDef)
@@ -106,8 +120,10 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
       result <- ejectPropDef(prop, target)
     } yield result
 
-    // template: { get propHint() { throw 0; } }
-    def injectThrowingGetter(): List[Syntactic] = prov.propHint match
+    // template: { get key() { throw 0; } }
+    def injectThrowingGetter(
+      key: Option[String] = prov.propHint,
+    ): List[Syntactic] = key match
       case Some(k) =>
         val injected = injectPropRaw(s"get $k ( ) { throw 0 ; }")
         if (injected.nonEmpty) injected
@@ -139,10 +155,7 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
       case ("Get", Abrupt) :: _ =>
         val fromGetter = injectThrowingGetter()
         if (fromGetter.nonEmpty) fromGetter
-        else
-          into.toList.flatMap { t =>
-            wrapDefineProperty(t, "0", "get ( ) { throw 0 ; }")
-          }
+        else injectThrowingGetter(Some("0"))
       // callable value: IsCallable + Get chain
       case ("IsCallable", Normal(Some(true))) :: ("Get", Normal(_)) :: _ =>
         injectProp("() => {}")
@@ -154,6 +167,18 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
       case ("GetMethod", Normal(Some(false))) :: _ => ejectProp()
       case ("GetMethod", Normal(None)) :: _        => injectProp("() => {}")
       case ("GetMethod", Abrupt) :: _              => injectProp("0")
+
+      // iterator access: GetIteratorDirect
+      case ("GetIteratorDirect", Normal(_)) :: _ =>
+        injectProp("function ( ) { return { done : true } }", Some("next"))
+      case ("GetIteratorDirect", Abrupt) :: _ =>
+        injectThrowingGetter(Some("next"))
+
+      // iterator step: IteratorStepValue
+      case ("IteratorStepValue", Normal(_)) :: _ =>
+        injectProp("function ( ) { return { done : true } }", Some("next"))
+      case ("IteratorStepValue", Abrupt) :: _ =>
+        injectProp("function ( ) { throw 0 ; }", Some("next"))
 
       /** Type Coercion Algorithms */
       // multi-step coercion via ToPrimitive (abrupt path)

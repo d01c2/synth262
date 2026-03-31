@@ -72,10 +72,33 @@ object Util {
 
   /** Collect all Syntactic nodes in pre-order traversal */
   def enumerateNodes(ast: Syntactic): List[Syntactic] =
-    ast :: ast.children.flatten
+    val childAsts =
+      if (isCallWrapped(ast)) ast.children.drop(1).flatten
+      else ast.children.flatten
+    ast :: childAsts
       .collect { case s: Syntactic => enumerateNodes(s) }
       .flatten
       .toList
+
+  /** Check if a Syntactic node is a .call() invocation */
+  def isCallWrapped(ast: Syntactic): Boolean =
+    val isCall =
+      ast.name == "CoverCallExpressionAndAsyncArrowHead" ||
+      (ast.name == "CallExpression" && ast.rhsIdx == 3)
+    isCall && ast.children.headOption.flatten.exists(endsWithCall)
+
+  private def endsWithCall(ast: Ast): Boolean = ast match
+    case Syntactic("MemberExpression", _, 2, ch) =>
+      ch.lift(1).flatten.exists {
+        case Lexical(_, s) => s.trim == "call"
+        case _             => false
+      }
+    case Syntactic("CallExpression", _, 5, ch) =>
+      ch.lift(1).flatten.exists {
+        case Lexical(_, s) => s.trim == "call"
+        case _             => false
+      }
+    case _ => false
 
   def propKey(pd: Ast)(using cfg: CFG): Option[String] = pd match
     case Syntactic("PropertyDefinition", _, 0, children) =>
@@ -191,4 +214,33 @@ object Util {
           .asInstanceOf[Syntactic],
       )
     } catch { case _: Exception => List() }
+
+  /** Transform callee(args) to callee.call(receiver, args) */
+  def wrapWithCall(
+    ast: Syntactic,
+    receiverStr: String,
+  )(using cfg: CFG): List[Syntactic] = ast match
+    case Syntactic("CoverCallExpressionAndAsyncArrowHead", args, 0, children)
+        if children(0).isDefined =>
+      val calleeStr = children(0).get.toString(grammar = Some(cfg.grammar))
+      val innerArgs = children
+        .lift(1)
+        .flatten
+        .map {
+          _.toString(grammar = Some(cfg.grammar)).trim
+            .stripPrefix("(")
+            .stripSuffix(")")
+            .trim
+        }
+        .filter(_.nonEmpty)
+      val newArgs = innerArgs match
+        case Some(args) => s"( $receiverStr , $args )"
+        case None       => s"( $receiverStr )"
+      val wrapped = s"$calleeStr . call $newArgs"
+      try {
+        List(
+          cfg.esParser(ast.name, ast.args).from(wrapped).asInstanceOf[Syntactic],
+        )
+      } catch { case _: Exception => List() }
+    case _ => List()
 }
