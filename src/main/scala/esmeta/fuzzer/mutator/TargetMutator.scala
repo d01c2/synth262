@@ -92,8 +92,12 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
 
     // template: { propHint: value }
     def injectProp(value: String): List[Syntactic] = prov.propHint match
-      case Some(k) => injectPropRaw(s"$k : $value")
-      case None    => List()
+      case Some(k) =>
+        val propDef = s"$k : $value"
+        val injected = injectPropRaw(propDef)
+        if (injected.nonEmpty) injected
+        else into.toList.flatMap(t => wrapAssign(t, propDef))
+      case None => List()
 
     // template: { ... } (remove propHint)
     def ejectProp(): List[Syntactic] = for {
@@ -104,12 +108,21 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
 
     // template: { get propHint() { throw 0; } }
     def injectThrowingGetter(): List[Syntactic] = prov.propHint match
-      case Some(k) => injectPropRaw(s"get $k ( ) { throw 0 ; }")
-      case None    => List()
+      case Some(k) =>
+        val injected = injectPropRaw(s"get $k ( ) { throw 0 ; }")
+        if (injected.nonEmpty) injected
+        else
+          into.toList.flatMap { t =>
+            wrapDefineProperty(t, k, "get ( ) { throw 0 ; }")
+          }
+      case None => List()
 
     // template: { [Symbol.toPrimitive]: () => value }
     def injectToPrimitive(value: String): List[Syntactic] =
-      injectPropRaw(s"[Symbol.toPrimitive]: () => $value")
+      val propDef = s"[Symbol.toPrimitive]: () => $value"
+      val injected = injectPropRaw(propDef)
+      if (injected.nonEmpty) injected
+      else into.toList.flatMap { t => wrapAssign(t, propDef) }
 
     prov.chain match
 
@@ -123,8 +136,13 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
       case ("Get", Normal(Some(true))) :: _  => injectProp("42")
       case ("Get", Normal(Some(false))) :: _ => ejectProp()
       case ("Get", Normal(None)) :: _        => injectProp("42")
-      case ("Get", Abrupt) :: _              => injectThrowingGetter()
-
+      case ("Get", Abrupt) :: _ =>
+        val fromGetter = injectThrowingGetter()
+        if (fromGetter.nonEmpty) fromGetter
+        else
+          into.toList.flatMap { t =>
+            wrapDefineProperty(t, "0", "get ( ) { throw 0 ; }")
+          }
       // callable value: IsCallable + Get chain
       case ("IsCallable", Normal(Some(true))) :: ("Get", Normal(_)) :: _ =>
         injectProp("() => {}")

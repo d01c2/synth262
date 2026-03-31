@@ -152,4 +152,43 @@ object Util {
             withProps(filtered, inner.args),
           ).toList
       }
+
+  // ---------------------------------------------------------------------------
+  // Expression wrapping (for non-ObjectLiteral targets)
+  // ---------------------------------------------------------------------------
+
+  /** wrap with Object.assign to inject a data property */
+  def wrapAssign(
+    target: Syntactic,
+    propDefStr: String,
+  )(using cfg: CFG): List[Syntactic] =
+    val targetStr = target.toString(grammar = Some(cfg.grammar))
+    val wrapped = s"Object.assign($targetStr, { $propDefStr })"
+    try {
+      List(
+        cfg
+          .esParser(target.name, target.args)
+          .from(wrapped)
+          .asInstanceOf[Syntactic],
+      )
+    } catch { case _: Exception => List() }
+
+  /** wrap with Object.defineProperty for accessor properties */
+  def wrapDefineProperty(
+    target: Syntactic,
+    prop: String,
+    descriptorBody: String,
+  )(using cfg: CFG): List[Syntactic] =
+    val targetStr = target.toString(grammar = Some(cfg.grammar))
+    val propStr = if (prop.startsWith("[")) prop else s"\"$prop\""
+    val wrapped =
+      s"Object.defineProperty($targetStr, $propStr, { $descriptorBody })"
+    try {
+      List(
+        cfg
+          .esParser(target.name, target.args)
+          .from(wrapped)
+          .asInstanceOf[Syntactic],
+      )
+    } catch { case _: Exception => List() }
 }
