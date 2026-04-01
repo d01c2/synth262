@@ -115,11 +115,19 @@ async function runMonitor(
   const outfile = join(RESULTS_DIR, "monitor.json");
   await Deno.writeTextFile(outfile, JSON.stringify(results, null, 2));
 
+  const passedResults: Results = {};
+  for (const [id, r] of Object.entries(results)) {
+    if (r.iteration !== null) passedResults[id] = r;
+  }
+  const passedFile = join(RESULTS_DIR, "monitor-passed.json");
+  await Deno.writeTextFile(passedFile, JSON.stringify(passedResults, null, 2));
+
   console.log(`\n=== Summary ===`);
   console.log(`Total: ${benchmarks.length}`);
   console.log(`Passed: ${passed}`);
   console.log(`Failed: ${failed}`);
   console.log(`\nResults saved to ${outfile}`);
+  console.log(`Passed results saved to ${passedFile}`);
 }
 
 // --- CLI ---
