@@ -42,52 +42,62 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
   /** internal walker for finding and mutating target */
   class Walker(target: Target, n: Int) extends Util.MultiplicativeListWalker {
     override def walk(ast: Syntactic): List[Syntactic] =
-      if (ast.matches(target)) TotalWalker(ast, n)
-      else super.walk(ast)
+      if (ast.matches(target)) TotalWalker(ast, n) ++ callWrapVariants(ast)
+      else
+        val childMutations = super.walk(ast)
+        if (childMutations.sizeIs != 1) // target found in subtree
+          childMutations ++ callWrapVariants(ast)
+        else childMutations
+
+    /** .call(receiver, args) variants for unwrapped call expressions */
+    private def callWrapVariants(ast: Syntactic): List[Syntactic] =
+      if (ablation || !isUnwrappedCall(ast)) List()
+      else
+        for {
+          prov <- provenance
+          receiver <- provenanceGuided(ast, prov, into = None)
+          wrapped <- wrapWithCall(
+            ast,
+            receiver.toString(grammar = Some(cfg.grammar)),
+          )
+        } yield wrapped
+
+    private def isUnwrappedCall(ast: Syntactic): Boolean =
+      ast.name == "CoverCallExpressionAndAsyncArrowHead" &&
+      ast.rhsIdx == 0 && !isCallWrapped(ast)
   }
 
-  /** Generates all mutations for the target subtree */
+  /** per-node mutations (guided + blind) for a matched target subtree */
   object TotalWalker {
     def apply(ast: Syntactic, n: Int): List[Syntactic] =
       val nodes = enumerateNodes(ast)
       val k = Util.simpleAstCounter(ast)
       val c = (n - 1) / k + 1
 
-      // provenance-guided mutations (priority)
       val guided: List[Syntactic] =
-        if (!ablation) {
+        if (ablation) List()
+        else
           provenance
             .flatMap { prov =>
               nodes.flatMap { site =>
                 val injected = provenanceGuided(site, prov, into = Some(site))
                 val mutations =
                   if (injected.nonEmpty) injected
-                  else provenanceGuided(site, prov, into = None)
+                  else if (site eq ast) // into=None fallback only at root
+                    provenanceGuided(ast, prov, into = None)
+                  else List()
                 mutations.flatMap(r => replaceSyntactic(ast, site, r))
               }
             }
             .distinctBy(_.toString(grammar = Some(cfg.grammar)))
-        } else List()
 
-      // .call() wrapping (expose `this` as mutable argument)
-      val callWrapped: List[Syntactic] =
-        if (!ablation) {
-          provenance.flatMap { prov =>
-            val receivers = provenanceGuided(ast, prov, into = None)
-            receivers.flatMap { receiver =>
-              wrapWithCall(ast, receiver.toString(grammar = Some(cfg.grammar)))
-            }
-          }
-        } else List()
-
-      // blind mutations (manual + synthesized per node)
       val blind: List[Syntactic] = nodes.flatMap { site =>
         val manual = shuffle(manuals(site)).take(c)
         val synthesized = List.tabulate(c)(_ => synthesizer(site))
         (manual ++ synthesized).flatMap(r => replaceSyntactic(ast, site, r))
       }
 
-      (shuffle(guided) ++ callWrapped ++ shuffle(blind)).take(n).toList
+      (shuffle(guided) ++ shuffle(blind)).take(n).toList
   }
 
   /** provenance guided mutation */
