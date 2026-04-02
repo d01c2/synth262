@@ -160,13 +160,6 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
           }
       case None => List()
 
-    // template: { [Symbol.toPrimitive]: () => value }
-    def injectToPrimitive(value: String): List[Syntactic] =
-      val propDef = s"[Symbol.toPrimitive]: () => $value"
-      val injected = injectPropRaw(propDef)
-      if (injected.nonEmpty) injected
-      else into.toList.flatMap { t => wrapAssign(t, propDef) }
-
     prov.chain match
 
       /** Property Reading Algorithms */
@@ -197,22 +190,26 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
 
       // iterator access: GetIteratorDirect
       case ("GetIteratorDirect", Normal(_)) :: _ =>
-        injectProp("function ( ) { return { done : true } }", Some("next"))
+        injectProp("() => ({ done: true })", Some("next"))
       case ("GetIteratorDirect", Abrupt) :: _ =>
         injectThrowingGetter(Some("next"))
 
       // iterator step: IteratorStepValue
-      case ("IteratorStepValue", Normal(_)) :: _ =>
-        injectProp("function ( ) { return { done : true } }", Some("next"))
+      case ("IteratorStepValue", Normal(Some(true))) :: _ =>
+        injectProp("() => ({ done: true })", Some("next"))
+      case ("IteratorStepValue", Normal(Some(false))) :: _ =>
+        injectProp("() => ({ done: false, value: 0 })", Some("next"))
+      case ("IteratorStepValue", Normal(None)) :: _ =>
+        injectProp("() => ({ done: true })", Some("next"))
       case ("IteratorStepValue", Abrupt) :: _ =>
-        injectProp("function ( ) { throw 0 ; }", Some("next"))
+        injectProp("() => { throw 0; }", Some("next"))
 
       /** Type Coercion Algorithms */
       // multi-step coercion via ToPrimitive (abrupt path)
       case ("ToString", Abrupt) :: ("ToPrimitive", _) :: _ =>
-        injectToPrimitive("Symbol()")
+        injectProp("() => Symbol()", Some("[Symbol.toPrimitive]"))
       case ("ToNumber", Abrupt) :: ("ToPrimitive", _) :: _ =>
-        injectToPrimitive("0n")
+        injectProp("() => 0n", Some("[Symbol.toPrimitive]"))
 
       // others
       case _ => List()
