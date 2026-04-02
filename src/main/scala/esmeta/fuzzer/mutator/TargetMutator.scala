@@ -34,15 +34,15 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
   } yield {
     synthesizer.targetCond = Some(cond)
     targetCond = Some(cond)
-    val mutationCite = choose(targets)
+    val mutationSite = choose(targets)
     val syn = ast.asInstanceOf[Syntactic]
-    Walker(mutationCite, n).walk(syn)
+    Walker(mutationSite, n).walk(syn)
   }).getOrElse(randomMutator(ast, n, target))
 
   /** internal walker for finding and mutating target */
   class Walker(target: Target, n: Int) extends Util.MultiplicativeListWalker {
     override def walk(ast: Syntactic): List[Syntactic] =
-      if (ast.matches(target)) TotalWalker(ast, n) ++ callWrapVariants(ast)
+      if (ast.matches(target)) TotalWalker(ast, n)
       else
         val childMutations = super.walk(ast)
         if (childMutations.sizeIs != 1) // target found in subtree
@@ -61,11 +61,11 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
             receiver.toString(grammar = Some(cfg.grammar)),
           )
         } yield wrapped
-
-    private def isUnwrappedCall(ast: Syntactic): Boolean =
-      ast.name == "CoverCallExpressionAndAsyncArrowHead" &&
-      ast.rhsIdx == 0 && !isCallWrapped(ast)
   }
+
+  private def isUnwrappedCall(ast: Syntactic): Boolean =
+    ast.name == "CoverCallExpressionAndAsyncArrowHead" &&
+    ast.rhsIdx == 0 && !isCallWrapped(ast)
 
   /** per-node mutations (guided + blind) for a matched target subtree */
   object TotalWalker {
@@ -77,7 +77,7 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
       val guided: List[Syntactic] =
         if (ablation) List()
         else
-          provenance
+          val perNode = provenance
             .flatMap { prov =>
               nodes.flatMap { site =>
                 val injected = provenanceGuided(site, prov, into = Some(site))
@@ -89,7 +89,24 @@ class TargetMutator(ablation: Boolean = false)(using cfg: CFG)(
                 mutations.flatMap(r => replaceSyntactic(ast, site, r))
               }
             }
-            .distinctBy(_.toString(grammar = Some(cfg.grammar)))
+          // .call() wrapping for unwrapped calls in the target subtree
+          val callWraps = provenance.flatMap { prov =>
+            nodes.flatMap { site =>
+              if (!isUnwrappedCall(site)) List()
+              else
+                for {
+                  receiver <- provenanceGuided(site, prov, into = None)
+                  recStr = receiver.toString(grammar = Some(cfg.grammar))
+                  wrapped <- wrapWithCall(site, recStr)
+                  result <-
+                    if (site eq ast) List(wrapped)
+                    else replaceSyntactic(ast, site, wrapped).toList
+                } yield result
+            }
+          }
+          (perNode ++ callWraps).distinctBy(
+            _.toString(grammar = Some(cfg.grammar)),
+          )
 
       val blind: List[Syntactic] = nodes.flatMap { site =>
         val manual = shuffle(manuals(site)).take(c)

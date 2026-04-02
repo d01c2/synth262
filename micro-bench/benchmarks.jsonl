@@ -14,3 +14,6 @@
 {"id": "tpd-callableGetter", "branch": 873, "seed": "micro-bench/seeds/tpd-callableGetter.js", "func": "ToPropertyDescriptor"}
 {"id": "pxg-ejectGetTrap", "branch": 7853, "seed": "micro-bench/seeds/pxg-ejectGetTrap.js", "func": "Record[ProxyExoticObject].Get"}
 {"id": "cla-getElement", "branch": 2049, "seed": "micro-bench/seeds/cla-getElement.js", "func": "CreateListFromArrayLike"}
+{"id": "ip-every", "branch": 35659, "seed": "micro-bench/seeds/ip-every.js", "func": "Iterator.prototype.every"}
+{"id": "ip-forEach", "branch": 35949, "seed": "micro-bench/seeds/ip-forEach.js", "func": "Iterator.prototype.forEach"}
+{"id": "ip-toArray", "branch": 36249, "seed": "micro-bench/seeds/ip-toArray.js", "func": "Iterator.prototype.toArray"}

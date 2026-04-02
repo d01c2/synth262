@@ -234,8 +234,8 @@ object Util {
         }
         .filter(_.nonEmpty)
       val newArgs = innerArgs match
-        case Some(args) => s"( $receiverStr , $args )"
-        case None       => s"( $receiverStr )"
+        case Some(argStr) => s"( $receiverStr , $argStr )"
+        case None         => s"( $receiverStr )"
       val wrapped = s"$calleeStr . call $newArgs"
       try {
         List(
