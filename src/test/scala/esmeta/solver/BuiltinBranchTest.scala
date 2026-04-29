@@ -139,45 +139,32 @@ class BuiltinBranchTest extends ESMetaTest {
       for ((cnt, entries) <- grouped)
         println(s"    $cnt paths: ${entries.size} branches")
 
-      val knownAOs = Reify.internalMethods
-      var callFree = 0
-      var onlyKnown = 0
-      var hasUnknown = 0
+      // app-blocked analysis after AO rewriting
+      var solvable = 0
+      var appBlocked = 0
       val appBlockedFreq = scala.collection.mutable.Map[String, Int]()
       for (f <- builtins) {
         val tgt = targetBranches(List(f))
         for (b <- tgt.sortBy(_.id)) {
           val paths = PathEnumerator(f, b)
           if (paths.nonEmpty) {
-            def pathCalls(p: Path): Set[String] = p
-              .collect {
-                case c: Call =>
-                  c.callInst match
-                    case ICall(_, EClo(n, _), _) => n
-                    case _                       => ""
-              }
-              .filter(_.nonEmpty)
-              .toSet
-            val allCalls = paths.map(pathCalls)
-            val bestPath = allCalls.minBy(_.size)
-            val unknowns = bestPath -- knownAOs
-            if (bestPath.isEmpty) callFree += 1
-            else if (unknowns.isEmpty) onlyKnown += 1
+            val goals =
+              paths.flatMap(p => SymbolicInterpreter(f, p, Cond(b, true)))
+            val rewritten = goals.map(Solver.rewriteApps)
+            if (rewritten.exists(!Reify.hasUninterpretableApp(_))) solvable += 1
             else {
-              hasUnknown += 1
-              unknowns.foreach(n =>
-                appBlockedFreq(n) = appBlockedFreq.getOrElse(n, 0) + 1,
-              )
+              appBlocked += 1
+              for (g <- rewritten; f <- g) Reify.outerAppNames(f).foreach { n =>
+                appBlockedFreq(n) = appBlockedFreq.getOrElse(n, 0) + 1
+              }
             }
           }
         }
       }
-      println(s"\n  Call-site analysis (of $enumerable enumerable):")
-      println(s"    No calls on path:          $callFree")
-      println(s"    Only known AOs:            $onlyKnown")
-      println(s"    Has unknown AO calls:      $hasUnknown")
-      println(s"    Ideal solvable (no unknowns): ${callFree + onlyKnown}")
-      println(s"\n  Top unknown AOs:")
+      println(s"\n  App analysis (of $enumerable enumerable):")
+      println(s"    Solvable:     $solvable")
+      println(s"    App-blocked:  $appBlocked")
+      println(s"\n  Top blocking AOs:")
       for ((name, cnt) <- appBlockedFreq.toList.sortBy(-_._2).take(20))
         println(s"    $name: $cnt branches")
 

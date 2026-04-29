@@ -317,6 +317,24 @@ object Reify {
       case FExists(b, _) => fromTerm(b)
     fs.exists(fromFormula(_).exists(!internalMethods.contains(_)))
 
+  def outerAppNames(f: Formula): Set[String] =
+    def fromTerm(t: Term): Set[String] = t match
+      case TApp(fname, _) if !internalMethods(fname) => Set(fname)
+      case TApp(_, args)   => args.flatMap(fromTerm).toSet
+      case TField(base, _) => fromTerm(base)
+      case TList(elems)    => elems.flatMap(fromTerm).toSet
+      case TUOp(_, t)      => fromTerm(t)
+      case TBOp(_, l, r)   => fromTerm(l) ++ fromTerm(r)
+      case TVOp(_, args)   => args.flatMap(fromTerm).toSet
+      case TSizeOf(t)      => fromTerm(t)
+      case TTypeOf(t)      => fromTerm(t)
+      case _               => Set()
+    f match
+      case FNot(inner)   => outerAppNames(inner)
+      case FEq(l, r)     => fromTerm(l) ++ fromTerm(r)
+      case FLt(l, r)     => fromTerm(l) ++ fromTerm(r)
+      case FExists(b, _) => fromTerm(b)
+
   /** JS expression to access a builtin function */
   def funcAccessExpr(f: Func): Option[String] =
     f.head

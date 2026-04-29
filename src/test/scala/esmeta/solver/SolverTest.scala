@@ -237,14 +237,6 @@ class SolverTest extends ESMetaTest {
       assert(result.get("y") == "{}")
     }
 
-    // --- unknown AO rejection ---
-    check("unknown AO: ToString(x) ∈ Abrupt → None") {
-      val goal =
-        List(FEq(TTypeOf(TApp("ToString", List(TVar("x")))), TType(AbruptT)))
-      val result = Solver.solve(goal, List("x"))
-      assert(result.isEmpty)
-    }
-
     // --- normal completion stripping ---
     check("normal completion on internal method is default — stripped") {
       val goal = List(

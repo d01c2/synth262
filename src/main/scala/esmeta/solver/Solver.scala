@@ -11,8 +11,75 @@ type Witness = Map[String, String]
 object Solver:
   def solve(goal: Goal, entryParams: List[String]): Option[Witness] =
     val entrySet = entryParams.toSet
-    val eliminated = eliminate(goal, entrySet)
+    val eliminated = eliminate(rewriteApps(goal), entrySet)
     simplify(eliminated).flatMap(Reify(_, entryParams).witness)
+
+  // Rewrite known AO calls into equivalent type constraints
+  // FIXME: Manual modeling
+  def rewriteApps(fs: Goal): Goal =
+    val rewritten = fs.map(flatten).flatMap(rewriteFormula)
+    if (rewritten != fs) rewriteApps(rewritten) else rewritten
+
+  private def rewriteFormula(f: Formula): List[Formula] = f match
+    // IsCallable(x) == true/false
+    case FEq(TApp("IsCallable", List(x)), TLit(EBool(b))) =>
+      val eq = FEq(TTypeOf(x), TType(FunctionT))
+      List(if (b) eq else FNot(eq))
+    // IsConstructor(x) == true/false
+    case FEq(TApp("IsConstructor", List(x)), TLit(EBool(b))) =>
+      val eq = FEq(TTypeOf(x), TType(ConstructorT))
+      List(if (b) eq else FNot(eq))
+    // typeof ToObject(x) is Abrupt/Normal
+    case FEq(TTypeOf(TApp("ToObject", List(x))), TType(ty)) if ty <= AbruptT =>
+      List(FEq(TTypeOf(x), TType(UndefT || NullT)))
+    case FEq(TTypeOf(TApp("ToObject", List(x))), TType(ty)) if ty <= NormalT =>
+      List(FNot(FEq(TTypeOf(x), TType(UndefT || NullT))))
+    // typeof ToNumber(x) is Abrupt/Normal
+    case FEq(TTypeOf(TApp("ToNumber", List(x))), TType(ty)) if ty <= AbruptT =>
+      List(FEq(TTypeOf(x), TType(SymbolT || BigIntT)))
+    case FEq(TTypeOf(TApp("ToNumber", List(x))), TType(ty)) if ty <= NormalT =>
+      List(FNot(FEq(TTypeOf(x), TType(SymbolT || BigIntT))))
+    // typeof ToString(x) is Abrupt/Normal
+    case FEq(TTypeOf(TApp("ToString", List(x))), TType(ty)) if ty <= AbruptT =>
+      List(FEq(TTypeOf(x), TType(SymbolT)))
+    case FEq(TTypeOf(TApp("ToString", List(x))), TType(ty)) if ty <= NormalT =>
+      List(FNot(FEq(TTypeOf(x), TType(SymbolT))))
+    // ToIntegerOrInfinity/ToLength/ToIndex: Abrupt delegates to ToNumber
+    case FEq(TTypeOf(TApp(n, List(x))), TType(ty))
+        if Set("ToIntegerOrInfinity", "ToLength", "ToIndex")(n)
+        && ty <= AbruptT =>
+      List(FEq(TTypeOf(x), TType(SymbolT || BigIntT)))
+    case FEq(TTypeOf(TApp(n, List(x))), TType(ty))
+        if Set("ToIntegerOrInfinity", "ToLength", "ToIndex")(n)
+        && ty <= NormalT =>
+      List(FNot(FEq(TTypeOf(x), TType(SymbolT || BigIntT))))
+    // RequireInternalSlot(x, slot) is Normal/Abrupt
+    case FEq(
+          TTypeOf(TApp("RequireInternalSlot", List(x, TLit(EStr(slot))))),
+          TType(ty),
+        ) if ty <= NormalT =>
+      List(FEq(TTypeOf(x), TType(ObjectT)), FExists(x, slot))
+    case FEq(
+          TTypeOf(TApp("RequireInternalSlot", List(x, TLit(EStr(slot))))),
+          TType(ty),
+        ) if ty <= AbruptT =>
+      List(FNot(FEq(TTypeOf(x), TType(ObjectT))))
+    // RequireObjectCoercible(x): passthrough on Normal, throws on Undef|Null
+    case FEq(TTypeOf(TApp("RequireObjectCoercible", List(x))), TType(ty))
+        if ty <= AbruptT =>
+      List(FEq(TTypeOf(x), TType(UndefT || NullT)))
+    case FEq(TTypeOf(TApp("RequireObjectCoercible", List(x))), TType(ty))
+        if ty <= NormalT =>
+      List(FNot(FEq(TTypeOf(x), TType(UndefT || NullT))))
+    // RequireObjectCoercible(x) has specific value type -> typeof(x) is ty
+    case FEq(TTypeOf(TApp("RequireObjectCoercible", List(x))), TType(ty)) =>
+      List(FEq(TTypeOf(x), TType(ty)))
+    // Completion(x) is identity
+    case FEq(TApp("Completion", List(x)), t) => List(FEq(x, t))
+    case FEq(t, TApp("Completion", List(x))) => List(FEq(t, x))
+    case FEq(TTypeOf(TApp("Completion", List(x))), ty) =>
+      List(FEq(TTypeOf(x), ty))
+    case f => List(f)
 
   // Eliminate non-entry variables occurring in conjunction of formulas
   private def eliminate(

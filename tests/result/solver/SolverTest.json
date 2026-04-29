@@ -21,6 +21,5 @@
   "type exclusion: x ∉ Object" : true,
   "type narrowing: x ∈ Function" : true,
   "type narrowing: x ∈ Object" : true,
-  "type narrowing: x ∈ String" : true,
-  "unknown AO: ToString(x) ∈ Abrupt → None" : true
+  "type narrowing: x ∈ String" : true
 }
