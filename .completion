@@ -11,7 +11,7 @@ _esmeta_completions() {
   local cur prev opts lastc informats outformats datafiles
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  cmdList="help extract compile build-cfg tycheck param-flow parse eval web test262-test fuzz inject mutate dump-debugger dump-visualizer llm-evaluate"
+  cmdList="help extract compile build-cfg tycheck param-flow parse eval web test262-test fuzz inject mutate dump-debugger dump-visualizer llm-evaluate solve"
   globalOpt="-silent -error -status -time -test262dir"
   helpOpt=""
   extractOpt="-extract:target -extract:log -extract:eval -extract:repl -extract:strict -extract:allowed-yets -extract:warn-action"
@@ -29,6 +29,7 @@ _esmeta_completions() {
   dumpdebuggerOpt=""
   dumpvisualizerOpt=""
   llmevaluateOpt="-llm-evaluate:debug"
+  solveOpt="-solve:branch -solve:side"
   # completion for commands
   case "${COMP_CWORD}" in
     1)
@@ -103,6 +104,10 @@ _esmeta_completions() {
           ;;
         llm-evaluate)
           COMPREPLY=($(compgen -W "${globalOpt} ${extractOpt} ${compileOpt} ${buildcfgOpt} ${llmevaluateOpt}"))
+          return 0
+          ;;
+        solve)
+          COMPREPLY=($(compgen -W "${globalOpt} ${extractOpt} ${compileOpt} ${buildcfgOpt} ${solveOpt}"))
           return 0
           ;;
       esac

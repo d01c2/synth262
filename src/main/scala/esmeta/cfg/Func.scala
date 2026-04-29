@@ -7,7 +7,7 @@ import esmeta.ty.*
 import esmeta.util.SystemUtils.*
 import esmeta.util.BaseUtils.*
 import esmeta.util.{Appender, UId}
-import scala.collection.mutable.{Map => MMap}
+import scala.collection.mutable.{Map => MMap, Queue}
 
 /** CFG functions */
 case class Func(
@@ -74,6 +74,22 @@ case class Func(
     } preds(succ) = preds.getOrElse(succ, Set()) + node
     preds.toMap.withDefaultValue(Set())
   }
+
+  /** nodes within this function that can reach the target via predecessors */
+  def reachingTo(target: Node): Set[Node] =
+    var visited = Set[Node](target)
+    val queue = Queue[Node](target)
+    while (!queue.isEmpty) {
+      val cur = queue.dequeue()
+      for {
+        pred <- preds(cur)
+        if !visited.contains(pred)
+      } {
+        queue.enqueue(pred)
+        visited += pred
+      }
+    }
+    visited
 
   /** check whether it is an exit */
   def isExit(node: Node): Boolean = succs(node).isEmpty
