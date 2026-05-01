@@ -4,6 +4,7 @@ import esmeta.cfg.Func
 import esmeta.ir.*
 import esmeta.spec.{BuiltinHead, BuiltinPath}
 import esmeta.ty.*
+import esmeta.util.*
 import esmeta.util.BaseUtils.*
 import scala.collection.mutable.{Set => MSet}
 import Formula.*, Term.*
@@ -35,14 +36,20 @@ case class Reify(formulas: List[Formula], entryParams: List[String]) {
       case f @ FEq(TVar(_), TLit(lit)) => consumed += f; lit
     }
 
-    // narrow type from all type constraints
-    val narrowedTy = fs.foldLeft(ESValueT) {
-      case (ty, f @ FEq(TTypeOf(TVar(_)), TType(pos))) =>
-        consumed += f; ty && pos
-      case (ty, f @ FNot(FEq(TTypeOf(TVar(_)), TType(neg)))) =>
-        consumed += f; ty -- neg
-      case (ty, _) => ty
-    }
+    // narrow type from type constraints and internal slot existence
+    var ty = ESValueT
+    for (f <- fs) f match
+      case f @ FEq(TTypeOf(TVar(_)), TType(pos)) =>
+        consumed += f; ty = ty && pos
+      case f @ FNot(FEq(TTypeOf(TVar(_)), TType(neg))) =>
+        consumed += f; ty = ty -- neg
+      case f @ FExists(TVar(_), field) if fieldToRecordTy.contains(field) =>
+        consumed += f; ty = ty && fieldToRecordTy(field)
+      case f @ FNot(FExists(TVar(_), field))
+          if fieldToRecordTy.contains(field) =>
+        consumed += f; ty = ty -- fieldToRecordTy(field)
+      case _ => ()
+    val narrowedTy = ty
     val hasTyConstraint = narrowedTy != ESValueT
 
     // property constraints from Get/HasProperty
@@ -61,9 +68,10 @@ case class Reify(formulas: List[Formula], entryParams: List[String]) {
             TLit(EBool(exists)),
           ) =>
         consumed += f; (key, exists)
-      case f @ FExists(TVar(_), field) =>
+      case f @ FExists(TVar(_), field) if !fieldToRecordTy.contains(field) =>
         consumed += f; (field, true)
-      case f @ FNot(FExists(TVar(_), field)) =>
+      case f @ FNot(FExists(TVar(_), field))
+          if !fieldToRecordTy.contains(field) =>
         consumed += f; (field, false)
     }.toMap
 
@@ -146,7 +154,7 @@ case class Reify(formulas: List[Formula], entryParams: List[String]) {
     propsExist: Map[String, Boolean],
     extensible: Option[Boolean],
     prototype: Option[LiteralExpr],
-  ): Option[String] = recordFactory(ty).map { base =>
+  ): Option[String] = defaultFor(ty).map { base =>
     val entries = List.newBuilder[String]
     for ((key, lit) <- propsValue)
       litToJs(lit).foreach(jsLit => entries += s"$key: $jsLit")
@@ -190,11 +198,10 @@ case class Reify(formulas: List[Formula], entryParams: List[String]) {
           trap <- proxyTrapName.get(fname)
         } traps += trap -> s"return $jsLit;"
       case FNot(FEq(TApp(fname, _), TLit(lit))) =>
-        proxyTrapName
-          .get(fname)
-          .foreach(trap =>
-            traps += trap -> s"return ${defaultFor(ESValueT, Set(lit))};",
-          )
+        for {
+          jsVal <- defaultFor(ESValueT, Set(lit))
+          trap <- proxyTrapName.get(fname)
+        } traps += trap -> s"return $jsVal;"
       case FEq(TTypeOf(TApp(fname, _)), TType(ty))
           if !(ty <= AbruptT) && !(ty <= NormalT) =>
         for {
@@ -262,36 +269,76 @@ object Reify {
     case EUndef()       => Some("undefined")
     case _: EEnum       => None
 
-  // ordered literal candidates per type; first non-excluded wins
-  private val literalCandidates: List[(ValueTy, List[LiteralExpr])] = List(
-    NumberT -> List(EMath(0), EMath(1)),
-    StrT -> List(EStr(""), EStr("a")),
-    BoolT -> List(EBool(true), EBool(false)),
-    NullT -> List(ENull()),
-    UndefT -> List(EUndef()),
-    BigIntT -> List(EBigInt(0)),
+  // specific record types (language-type only)
+  private val specificDefaults: List[(ValueTy, String)] = List(
+    RecordT("TypedArray") -> "new Int8Array()",
+    RecordT("ArrayIteratorInstance") -> "[][Symbol.iterator]()",
+    RecordT("RegExp") -> "/(?:)/",
+    RecordT("BooleanObject") -> "Object(true)",
+    RecordT("NumberObject") -> "Object(0)",
+    RecordT("BigIntObject") -> "Object(0n)",
+    RecordT("StringExoticObject") -> "Object('')",
+    RecordT("Map") -> "new Map()",
+    RecordT("Set") -> "new Set()",
+    RecordT("WeakMap") -> "new WeakMap()",
+    RecordT("WeakSet") -> "new WeakSet()",
+    RecordT("ArrayBuffer") -> "new ArrayBuffer(0)",
+    RecordT("DataView") -> "new DataView(new ArrayBuffer(0))",
+    RecordT("Date") -> "new Date()",
+    RecordT("Promise") -> "new Promise(() => {})",
+    RecordT("ErrorObject") -> "new Error()",
+    RecordT("Generator") -> "(function*(){})()",
+    RecordT("AsyncGenerator") -> "(async function*(){})()",
+    RecordT("WeakRef") -> "new WeakRef({})",
+    RecordT("FinalizationRegistry") -> "new FinalizationRegistry(() => {})",
   )
 
-  // pick first value matching type and not excluded
+  // abstract types (primitives + general object categories)
+  private val abstractDefaults: List[(ValueTy, String)] = List(
+    ConstructorT -> "function(){}",
+    FunctionT -> "() => {}",
+    NumberT -> "0",
+    StrT -> "\"\"",
+    BoolT -> "true",
+    NullT -> "null",
+    UndefT -> "undefined",
+    BigIntT -> "0n",
+    SymbolT -> "Symbol()",
+    ObjectT -> "{}",
+  )
+
+  // all candidates: specific first (for exact match)
+  private val defaults = specificDefaults ++ abstractDefaults
+
   private def defaultFor(
     ty: ValueTy,
     excluded: Set[LiteralExpr] = Set(),
   ): Option[String] =
-    // non-literal types (not excludable)
-    if (!(ty && FunctionT).isBottom) Some("function(){}")
-    else if (!(ty && ObjectT).isBottom) Some("{}")
-    else if (!(ty && SymbolT).isBottom) Some("Symbol()")
-    else
-      literalCandidates.collectFirst {
-        case (candidateTy, lits) if !(ty && candidateTy).isBottom =>
-          lits.find(!excluded.contains(_)).flatMap(litToJs)
-      }.flatten
+    val excJs = excluded.flatMap(litToJs)
+    // exact match (specific first), then compatible abstract types
+    defaults
+      .collectFirst {
+        case (ct, js) if ty <= ct && !excJs(js) => js
+      }
+      .orElse {
+        abstractDefaults.collectFirst {
+          case (ct, js) if !(ty && ct).isBottom && !excJs(js) => js
+        }
+      }
 
-  private def recordFactory(ty: ValueTy): Option[String] =
-    if (ty <= ConstructorT) Some("function(){}")
-    else if (ty <= FunctionT) Some("() => {}")
-    else if (ty.record.names <= ObjectT.record.names) Some("{}")
-    else None
+  // reverse index: field name -> union of record types that have it
+  private lazy val fieldToRecordTy: Map[String, ValueTy] =
+    val tyModel = ManualInfo.tyModel
+    val pairs = for {
+      (name, _) <- tyModel.declMap.toList
+      (field, binding) <- tyModel.fieldsOf(name)
+      if !binding.absent
+    } yield (field, name)
+    pairs
+      .groupMap(_._1)(_._2)
+      .map { (field, names) =>
+        field -> names.foldLeft(BotT: ValueTy)((ty, n) => ty || RecordT(n))
+      }
 
   // normalize FEq so non-literal term is always on the left
   private def normalizeEq(f: Formula): Formula = f match
@@ -360,8 +407,11 @@ object Reify {
         case path =>
           val name = pathStr(path)
           if (newTarget != "undefined")
+            val nt =
+              if (newTarget == "function(){}") s"class extends $name {}"
+              else newTarget
             Some(
-              s"Reflect.construct($name, [${args.mkString(", ")}], $newTarget)",
+              s"Reflect.construct($name, [${args.mkString(", ")}], $nt)",
             )
           else Some(s"$name.call(${(thisVal :: args).mkString(", ")})")
     }

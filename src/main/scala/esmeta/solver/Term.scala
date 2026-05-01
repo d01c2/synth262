@@ -1,6 +1,6 @@
 package esmeta.solver
 
-import esmeta.ir.{BOp, UOp, VOp, LiteralExpr}
+import esmeta.ir.*
 import esmeta.ty.ValueTy
 
 // Solver terms

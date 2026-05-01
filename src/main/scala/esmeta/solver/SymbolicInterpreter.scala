@@ -11,9 +11,8 @@ import scala.collection.mutable.{Map => MMap}
 class SymbolicInterpreter(func: Func, path: Path, cond: Cond) {
   import SymbolicInterpreter.*
 
-  private val state = MMap[Local, Expr]()
-  private val calls = MMap[Local, Term]()
-  private val fields = MMap[(Local, String), Expr]() // TODO: symbolic heap?
+  private val env = MMap[Local, Term]()
+  private val fields = MMap[(Local, String), Term]()
 
   private var goals: List[Goal] = List(List())
 
@@ -33,51 +32,30 @@ class SymbolicInterpreter(func: Func, path: Path, cond: Cond) {
         else branch.thenNode.exists(_.id == path(idx + 1).id) // follow path
       goals = for {
         prev <- goals
-        cond <- getConstraints(subst(branch.cond), pos)
+        cond <- getConstraints(branch.cond, pos)
       } yield prev ++ cond
 
-  /** inlines variable bindings and field state */
-  private object subst extends esmeta.ir.util.Walker:
-    def apply(expr: Expr): Expr = walk(expr)
-    def apply(ref: Ref): Ref = walk(ref)
-    override def walk(ref: Ref): Ref = ref match
-      case x: Local => state.get(x).collect { case ERef(r) => r }.getOrElse(ref)
-      case _        => super.walk(ref)
-    override def walk(expr: Expr): Expr = expr match
-      case ERef(x: Local) => state.getOrElse(x, expr)
-      case ERef(Field(x: Local, EStr(k))) if fields.contains((x, k)) =>
-        fields((x, k))
-      case _ => super.walk(expr)
-
-  /** assignment with completion unwrap and type field skip */
-  private def assign(x: Local, expr: Expr): Unit = expr match
-    case ERef(Field(base: Local, EStr("Value"))) if base == x => ()
-    case ERef(Field(_, EStr("Type")))                         => ()
-    case _ =>
-      state(x) = subst(expr)
-      calls.remove(x)
-      fields.filterInPlace((k, _) => k._1 != x)
+  private def bind(x: Local, expr: Expr): Unit =
+    try env(x) = eval(expr)
+    catch case _: Throwable => env.remove(x)
+    fields.filterInPlace((k, _) => k._1 != x)
 
   /** evaluation for blocks */
   private def eval(block: Block): Unit =
     for (inst <- block.insts)
       inst match
-        case ILet(lhs, expr) =>
-          state(lhs) = subst(expr)
-          calls.remove(lhs)
-          fields.filterInPlace((k, _) => k._1 != lhs)
-        case IAssign(x: Local, expr) => assign(x, expr)
+        case ILet(lhs, expr)         => bind(lhs, expr)
+        case IAssign(x: Local, expr) => bind(x, expr)
         case IAssign(Field(x: Local, EStr(key)), expr) =>
-          fields((x, key)) = subst(expr)
+          try fields((x, key)) = eval(expr)
+          catch case _: Throwable => fields.remove((x, key))
         // TODO: global assign, computed-key field assign [heap]
         case _: IAssign => ()
         // TODO: record field addition, deletion, list push [heap]
         case _: IExpand | _: IDelete | _: IPush => ()
         // argument pop handled by entryParams in Solve
         case IPop(Name(_), ERef(Name("ArgumentsList")), _) => ()
-        case IPop(x: Local, _, _) =>
-          state.remove(x)
-          calls.remove(x)
+        case IPop(x: Local, _, _)                          => env.remove(x)
         // TODO: return value propagation [interproc]
         case _: IReturn => ()
         // no symbolic effect: IExpr, IAssert, IPrint, INop
@@ -86,14 +64,12 @@ class SymbolicInterpreter(func: Func, path: Path, cond: Cond) {
   /** evaluation for calls */
   private def eval(call: Call): Unit =
     val ret = call.lhs
-    state.remove(ret)
     call.callInst match
       case ICall(_, EClo(fname, _), args) =>
-        calls(ret) = TApp(fname, args.map(a => eval(subst(a))))
+        env(ret) = TApp(fname, args.map(eval))
       case ICall(_, ERef(Field(base, EStr(method))), args) =>
-        calls(ret) = TApp(method, eval(base) :: args.map(a => eval(subst(a))))
-      // unknown call pattern: clear result binding
-      case _ => calls.remove(ret)
+        env(ret) = TApp(method, eval(base) :: args.map(eval))
+      case _ => env.remove(ret)
 
   /** evaluation for expressions */
   private def eval(expr: Expr): Term = expr match
@@ -119,9 +95,10 @@ class SymbolicInterpreter(func: Func, path: Path, cond: Cond) {
       fold(op, ts).getOrElse(TVOp(op, ts))
     case _: EMathOp => ??? // TODO [term]
     case EConvert(cop, e) =>
-      eval(e) match
-        case TLit(lit) => fold(cop, lit).getOrElse(???)
-        case _         => ???
+      val t = eval(e)
+      t match
+        case TLit(lit) => fold(cop, lit).getOrElse(t)
+        case _         => t
     case _: EExists        => ??? // condition-only: handled in getConstraints
     case ETypeOf(e)        => TTypeOf(eval(e))
     case _: EInstanceOf    => ??? // condition-only: handled in getConstraints
@@ -146,10 +123,12 @@ class SymbolicInterpreter(func: Func, path: Path, cond: Cond) {
   /** evaluation for references */
   private def eval(ref: Ref): Term = ref match
     case x: Local =>
-      calls.getOrElse(x, TVar(x.toString))
+      env.getOrElse(x, TVar(x.toString))
     case Global(name) =>
       val ty = ValueTy.fromTypeOf(name)
       if (!ty.isBottom) TType(ty) else TVar(name)
+    case Field(x: Local, EStr(k)) if fields.contains((x, k)) =>
+      fields((x, k))
     case Field(base, EStr(name)) => TField(eval(base), name)
     case f @ Field(_, _)         => TVar(f.toString) // opaque computed field
 
@@ -187,9 +166,20 @@ class SymbolicInterpreter(func: Func, path: Path, cond: Cond) {
     case EExists(Field(base, EStr(field))) =>
       val f = FExists(eval(base), field)
       List(List(if (pos) f else FNot(f)))
-    case EContains(_, _) => ???
-    case ERef(ref)       => List(List(FEq(eval(ref), TLit(EBool(pos)))))
-    case _               => ???
+    case EContains(list, elem) =>
+      (eval(list), eval(elem)) match
+        case (TList(elems), t) =>
+          if (pos) elems.map(e => List(FEq(t, e)))
+          else List(elems.map(e => FNot(FEq(t, e))))
+        case (TLit(EStr(s)), TLit(EStr(sub))) =>
+          val result = s.contains(sub)
+          if (result == pos) List(List()) else Nil
+        case (l, r) =>
+          val f = FEq(TApp("Contains", List(l, r)), TLit(EBool(true)))
+          List(List(if (pos) f else FNot(f)))
+    case ERef(ref) => List(List(FEq(eval(ref), TLit(EBool(pos)))))
+    case _: EYet   => Nil
+    case _         => ???
 }
 
 object SymbolicInterpreter {
