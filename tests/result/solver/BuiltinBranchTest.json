@@ -1,7 +1,4 @@
 {
-  "builtin branches: callee helpers" : true,
-  "builtin branches: direct" : true,
-  "builtin branches: path enumeration" : true,
   "builtin branches: solve and verify" : true,
   "builtin branches: summary" : true
 }

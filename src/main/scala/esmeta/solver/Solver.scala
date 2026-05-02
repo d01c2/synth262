@@ -167,6 +167,24 @@ object Solver:
         ),
       )
 
+    // === sizeof constraints ===
+    // sizeof(x) > 0: non-empty string → x != ""
+    case FLt(TLit(EMath(n)), TSizeOf(x)) if n == 0 =>
+      List(FNot(FEq(x, TLit(EStr("")))))
+    // !(sizeof(x) > 0): empty string → x == ""
+    case FNot(FLt(TLit(EMath(n)), TSizeOf(x))) if n == 0 =>
+      List(FEq(x, TLit(EStr(""))))
+
+    // === Explicit FNot patterns for multi-conjunct Normal cases ===
+    // !(typeof RequireInternalSlot(x, slot) = Abrupt) → Normal case
+    case FNot(
+          FEq(
+            TTypeOf(TApp("RequireInternalSlot", List(x, TLit(EStr(slot))))),
+            TType(ty),
+          ),
+        ) if ty <= AbruptT =>
+      List(FEq(TTypeOf(x), TType(ObjectT)), FExists(x, slot))
+
     // === General FNot unwrapping ===
     case FNot(inner) =>
       rewriteFormula(inner) match

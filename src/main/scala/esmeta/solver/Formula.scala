@@ -13,6 +13,12 @@ enum Formula:
     case FLt(l, r)     => l.freeVars ++ r.freeVars
     case FExists(b, _) => b.freeVars
 
+  override def toString: String = this match
+    case FNot(f)       => s"!($f)"
+    case FEq(l, r)     => s"($l = $r)"
+    case FLt(l, r)     => s"($l < $r)"
+    case FExists(b, k) => s"""($b has "$k")"""
+
   def rewrite(target: Term, rep: Term): Formula = this match
     case FNot(f)       => FNot(f.rewrite(target, rep))
     case FEq(l, r)     => FEq(l.rewrite(target, rep), r.rewrite(target, rep))

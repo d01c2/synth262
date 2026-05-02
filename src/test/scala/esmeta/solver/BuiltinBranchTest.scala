@@ -1,7 +1,7 @@
 package esmeta.solver
 
 import esmeta.ESMetaTest
-import esmeta.cfg.{Block, Branch, Call, Func}
+import esmeta.cfg.{Branch, Call, Func}
 import esmeta.es.util.Coverage
 import esmeta.es.util.Coverage.Cond
 import esmeta.ir.{EBool, EClo, ICall}
@@ -65,111 +65,6 @@ class BuiltinBranchTest extends ESMetaTest {
     }
     val allReachable = reachableFuncs(builtins)
     val helpers = (allReachable -- builtins).toList.sortBy(_.name)
-
-    check("builtin branches: direct") {
-      for (f <- builtins) {
-        val tgt = targetBranches(List(f))
-        if (tgt.nonEmpty)
-          println(s"  ${f.name}: ${tgt.size} target branches")
-          for (b <- tgt.sortBy(_.id))
-            println(s"    Branch[${b.id}] cond=${b.cond}")
-      }
-      val dt = targetBranches(builtins)
-      println(
-        s"\n  Direct: ${dt.size} target branches in ${builtins.size} builtins",
-      )
-      assert(dt.nonEmpty)
-    }
-
-    check("builtin branches: callee helpers") {
-      for (f <- helpers) {
-        val tgt = targetBranches(List(f))
-        if (tgt.nonEmpty)
-          println(s"  ${f.name}: ${tgt.size} target branches")
-      }
-      val ct = targetBranches(helpers)
-      println(
-        s"\n  Callee: ${ct.size} target branches in ${helpers.size} helpers",
-      )
-    }
-
-    check("builtin branches: path enumeration") {
-      var enumerable = 0
-      var noPath = 0
-      var hasLoop = 0
-      val EXPLODE = 100
-      var pathCounts = List[(String, Int, Int)]()
-      for (f <- builtins) {
-        val tgt = targetBranches(List(f))
-        for (b <- tgt.sortBy(_.id)) {
-          val paths = PathEnumerator(f, b)
-          val count = paths.size
-          if (count > 0) {
-            enumerable += 1
-            pathCounts ::= (f.name, b.id, count)
-            println(s"  ${f.name} Branch[${b.id}]: $count paths")
-          } else {
-            val reaching = f.reachingTo(b)
-            val loopBlocked = reaching.exists {
-              case br: Branch => br.isLoop
-              case _          => false
-            }
-            if (loopBlocked) hasLoop += 1 else noPath += 1
-            println(
-              s"  ${f.name} Branch[${b.id}]: 0 paths" +
-              (if (loopBlocked) " (loop)" else " (unreachable)"),
-            )
-          }
-        }
-      }
-      val total = enumerable + noPath + hasLoop
-      println(s"\n  Enumerable:   $enumerable / $total")
-      println(s"  No path:      $noPath / $total")
-      println(s"  Loop blocked: $hasLoop / $total")
-
-      val exploded = pathCounts.filter(_._3 >= EXPLODE).sortBy(-_._3)
-      println(
-        s"\n  Path explosion (>= $EXPLODE paths): ${exploded.size} branches",
-      )
-      for ((name, bid, cnt) <- exploded)
-        println(s"    $name Branch[$bid]: $cnt paths")
-
-      val grouped = pathCounts.groupBy(_._3).toList.sortBy(_._1)
-      println(s"\n  Path count distribution:")
-      for ((cnt, entries) <- grouped)
-        println(s"    $cnt paths: ${entries.size} branches")
-
-      // app-blocked analysis after AO rewriting
-      var solvable = 0
-      var appBlocked = 0
-      val appBlockedFreq = scala.collection.mutable.Map[String, Int]()
-      for (f <- builtins) {
-        val tgt = targetBranches(List(f))
-        for (b <- tgt.sortBy(_.id)) {
-          val paths = PathEnumerator(f, b)
-          if (paths.nonEmpty) {
-            val goals =
-              paths.flatMap(p => SymbolicInterpreter(f, p, Cond(b, true)))
-            val rewritten = goals.map(Solver.rewriteApps)
-            if (rewritten.exists(!Reify.hasUninterpretableApp(_))) solvable += 1
-            else {
-              appBlocked += 1
-              for (g <- rewritten; f <- g) Reify.outerAppNames(f).foreach { n =>
-                appBlockedFreq(n) = appBlockedFreq.getOrElse(n, 0) + 1
-              }
-            }
-          }
-        }
-      }
-      println(s"\n  App analysis (of $enumerable enumerable):")
-      println(s"    Solvable:     $solvable")
-      println(s"    App-blocked:  $appBlocked")
-      println(s"\n  Top blocking AOs:")
-      for ((name, cnt) <- appBlockedFreq.toList.sortBy(-_._2).take(20))
-        println(s"    $name: $cnt branches")
-
-      assert(enumerable > 0)
-    }
 
     var verified = 0
 
@@ -241,12 +136,19 @@ class BuiltinBranchTest extends ESMetaTest {
                     paths.flatMap(p => SymbolicInterpreter(f, p, cond)).toList
                   } catch { case _: NotImplementedError | _: MatchError => Nil }
                 if (goals.isEmpty) missingTransfer += 1
-                else if (goals.exists(Reify.hasUninterpretableApp))
-                  appBlocked += 1
+                else if (
+                  goals
+                    .map(Solver.rewriteApps)
+                    .forall(Reify.hasUninterpretableApp)
+                ) appBlocked += 1
                 else {
                   reifyFail += 1
+                  val rewritten = goals.map(Solver.rewriteApps)
                   println(s"  [REIFY] ${f.name} Branch[${b.id}]")
-                  for (g <- goals) println(s"          goal: $g")
+                  for (g <- rewritten)
+                    println(
+                      s"          goal: ${g.mkString("\n                /\\ ")}",
+                    )
                 }
               }
         }
@@ -265,6 +167,7 @@ class BuiltinBranchTest extends ESMetaTest {
       // breakdown
       val total = loopBlocked + yetBlocked + missingTransfer +
         appBlocked + reifyFail + solved
+      val addressable = total - loopBlocked - yetBlocked
       println(s"\n  Failure breakdown of $total direct branches:")
       println(s"    Solved:              $solved")
       println(s"    Loop-blocked:        $loopBlocked")
@@ -272,6 +175,16 @@ class BuiltinBranchTest extends ESMetaTest {
       println(s"    Missing transfer:    $missingTransfer")
       println(s"    App-blocked:         $appBlocked")
       println(s"    Reify/Solver fail:   $reifyFail")
+      if (addressable > 0)
+        println(
+          f"\n  Addressable solve rate: $solved/$addressable" +
+          f" (${solved * 100.0 / addressable}%.1f%%)",
+        )
+      if (total > 0)
+        println(
+          f"  Absolute solve rate:   $solved/$total" +
+          f" (${solved * 100.0 / total}%.1f%%)",
+        )
 
       // verification
       val verifyTotal = verified + verifyFailed

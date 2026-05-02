@@ -32,6 +32,19 @@ enum Term:
 
   def occurs(name: String): Boolean = freeVars.contains(name)
 
+  override def toString: String = this match
+    case TVar(n)         => n
+    case TLit(v)         => v.toString
+    case TField(base, k) => s"$base.$k"
+    case TApp(n, args)   => s"$n(${args.mkString(", ")})"
+    case TList(elems)    => s"[${elems.mkString(", ")}]"
+    case TUOp(op, t)     => s"($op $t)"
+    case TBOp(op, l, r)  => s"($l $op $r)"
+    case TVOp(op, args)  => s"$op(${args.mkString(", ")})"
+    case TSizeOf(t)      => s"sizeof($t)"
+    case TTypeOf(t)      => s"typeof($t)"
+    case TType(ty)       => ty.toString
+
   def rewrite(target: Term, rep: Term): Term =
     if (this == target) rep
     else
