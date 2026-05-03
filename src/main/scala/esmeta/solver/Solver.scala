@@ -57,10 +57,6 @@ object Solver:
     case TField(base, k) => TField(unfoldTerm(base), k)
     case TApp(op, args)  => TApp(op, args.map(unfoldTerm))
     case TList(elems)    => TList(elems.map(unfoldTerm))
-    case TUOp(op, x)     => TUOp(op, unfoldTerm(x))
-    case TBOp(op, l, r)  => TBOp(op, unfoldTerm(l), unfoldTerm(r))
-    case TVOp(op, args)  => TVOp(op, args.map(unfoldTerm))
-    case TSizeOf(x)      => TSizeOf(unfoldTerm(x))
     case _               => t
 
   // safe unfold: only IR artifacts and structural, no type-conversion
@@ -167,14 +163,6 @@ object Solver:
         ),
       )
 
-    // === sizeof constraints ===
-    // sizeof(x) > 0: non-empty string → x != ""
-    case FLt(TLit(EMath(n)), TSizeOf(x)) if n == 0 =>
-      List(FNot(FEq(x, TLit(EStr("")))))
-    // !(sizeof(x) > 0): empty string → x == ""
-    case FNot(FLt(TLit(EMath(n)), TSizeOf(x))) if n == 0 =>
-      List(FEq(x, TLit(EStr(""))))
-
     // === Explicit FNot patterns for multi-conjunct Normal cases ===
     // !(typeof RequireInternalSlot(x, slot) = Abrupt) → Normal case
     case FNot(
@@ -275,17 +263,17 @@ object Solver:
       FEq(TTypeOf(t), TType(NormalT))
     case FNot(inner) => FNot(flatten(inner))
     // boolean term → formula promotion
-    case FEq(TUOp(UOp.Not, t), TLit(EBool(b))) =>
+    case FEq(TApp(UOp.Not, List(t)), TLit(EBool(b))) =>
       flatten(FEq(t, TLit(EBool(!b))))
-    case FEq(TLit(EBool(b)), TUOp(UOp.Not, t)) =>
+    case FEq(TLit(EBool(b)), TApp(UOp.Not, List(t))) =>
       flatten(FEq(t, TLit(EBool(!b))))
-    case FEq(TBOp(BOp.Eq, l, r), TLit(EBool(b))) =>
+    case FEq(TApp(BOp.Eq, List(l, r)), TLit(EBool(b))) =>
       if (b) FEq(l, r) else FNot(FEq(l, r))
-    case FEq(TLit(EBool(b)), TBOp(BOp.Eq, l, r)) =>
+    case FEq(TLit(EBool(b)), TApp(BOp.Eq, List(l, r))) =>
       if (b) FEq(l, r) else FNot(FEq(l, r))
-    case FEq(TBOp(BOp.Lt, l, r), TLit(EBool(b))) =>
+    case FEq(TApp(BOp.Lt, List(l, r)), TLit(EBool(b))) =>
       if (b) FLt(l, r) else FNot(FLt(l, r))
-    case FEq(TLit(EBool(b)), TBOp(BOp.Lt, l, r)) =>
+    case FEq(TLit(EBool(b)), TApp(BOp.Lt, List(l, r))) =>
       if (b) FLt(l, r) else FNot(FLt(l, r))
     case _ => f
 
@@ -312,7 +300,7 @@ object Solver:
         case FNot(FEq(t, TLit(v))) => termToLit.get(t).exists(_ != v)
         case FNot(FEq(TLit(v), t)) => termToLit.get(t).exists(_ != v)
         // normal completion from modeled internal method is default — strip
-        case FEq(TTypeOf(TApp(fname, _)), TType(ty))
+        case FEq(TTypeOf(TApp(fname: String, _)), TType(ty))
             if ty <= NormalT && Reify.isInternalMethod(fname) =>
           true
         case _ => false

@@ -95,13 +95,6 @@ case class Branch(
   def isLoop: Boolean = kind match
     case BranchKind.If    => false
     case BranchKind.While => true
-
-  /** builtin prefix: `n < sizeof(ArgumentsList)` */
-  def isBuiltinPrefix: Boolean =
-    isFiltered && (cond match
-      case EBinary(BOp.Lt, _, ESizeOf(ERef(Name("ArgumentsList")))) => true
-      case _                                                        => false
-    )
 }
 enum BranchKind extends CFGElem:
   case If

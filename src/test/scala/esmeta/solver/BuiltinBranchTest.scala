@@ -120,6 +120,15 @@ class BuiltinBranchTest extends ESMetaTest {
                   println(
                     s"         js: $js (tried ${candidates.size} candidates)",
                   )
+                  // debug: show goals for MISS cases
+                  val cond0 = Cond(b, true)
+                  val paths0 = PathEnumerator(f, b)
+                  val goals0 =
+                    paths0.flatMap(p => SymbolicInterpreter(f, p, cond0)).toList
+                  for ((g, i) <- goals0.zipWithIndex) {
+                    val rw = Solver.rewriteApps(g)
+                    println(s"         goal[$i]: ${rw.mkString(" /\\ ")}")
+                  }
             case None =>
               // diagnose failure reason
               val paths = PathEnumerator(f, b)

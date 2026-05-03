@@ -44,15 +44,50 @@ class SymbolicInterpreter(func: Func, path: Path, cond: Cond) {
   private def eval(block: Block): Unit =
     for (inst <- block.insts)
       inst match
-        case ILet(lhs, expr)         => bind(lhs, expr)
-        case IAssign(x: Local, expr) => bind(x, expr)
+        // NOTE: __args__ tracks optional argument presence via IExpand,
+        // but the path enumerator forces all-args-present (filtered branches),
+        // so modeling it as TRecord would make absent-arg paths infeasible.
+        // Keep it as TVar so field presence stays symbolic.
+        case ILet(lhs, _) if lhs == Name(ARGS_STR) => ()
+        case ILet(lhs, expr)                       => bind(lhs, expr)
+        case IAssign(x: Local, expr)               => bind(x, expr)
         case IAssign(Field(x: Local, EStr(key)), expr) =>
-          try fields((x, key)) = eval(expr)
+          try
+            val v = eval(expr)
+            env.get(x) match
+              case Some(TRecord(tn, fs)) =>
+                env(x) = TRecord(tn, fs + (key -> v))
+              case _ => fields((x, key)) = v
           catch case _: Throwable => fields.remove((x, key))
-        // TODO: global assign, computed-key field assign [heap]
         case _: IAssign => ()
-        // TODO: record field addition, deletion, list push [heap]
-        case _: IExpand | _: IDelete | _: IPush => ()
+        case IExpand(x: Local, expr) =>
+          try
+            eval(expr) match
+              case TLit(EStr(field)) =>
+                env.get(x) match
+                  case Some(TRecord(tn, fs)) if !fs.contains(field) =>
+                    env(x) = TRecord(tn, fs + (field -> TLit(EUndef())))
+                  case _ => ()
+              case _ => ()
+          catch case _: Throwable => ()
+        case _: IExpand => ()
+        case IDelete(x: Local, expr) =>
+          try
+            val k = eval(expr)
+            env.get(x) match
+              case Some(TMap(es)) => env(x) = TMap(es.filterNot(_._1 == k))
+              case _              => ()
+          catch case _: Throwable => ()
+        case _: IDelete => ()
+        case IPush(elem, ERef(x: Local), front) =>
+          try
+            val e = eval(elem)
+            env.get(x) match
+              case Some(TList(es)) =>
+                env(x) = if (front) TList(e :: es) else TList(es :+ e)
+              case _ => ()
+          catch case _: Throwable => ()
+        case _: IPush => ()
         // argument pop handled by entryParams in Solve
         case IPop(Name(_), ERef(Name("ArgumentsList")), _) => ()
         case IPop(x: Local, _, _)                          => env.remove(x)
@@ -69,55 +104,63 @@ class SymbolicInterpreter(func: Func, path: Path, cond: Cond) {
         env(ret) = TApp(fname, args.map(eval))
       case ICall(_, ERef(Field(base, EStr(method))), args) =>
         env(ret) = TApp(method, eval(base) :: args.map(eval))
+      case ISdoCall(_, base, op, args) =>
+        env(ret) = TApp(op, eval(base) :: args.map(eval))
       case _ => env.remove(ret)
 
   /** evaluation for expressions */
   private def eval(expr: Expr): Term = expr match
-    case _: EParse         => ??? // not modelable
-    case _: EGrammarSymbol => ??? // not modelable
-    case _: ESourceText    => ??? // not modelable
-    case _: EYet           => ??? // not modelable
+    case _: EParse         => ??? // not modelable (AST parsing)
+    case _: EGrammarSymbol => ??? // not modelable (AST grammar)
+    case _: ESourceText    => ??? // not modelable (AST source text)
+    case _: EYet           => ??? // not modelable (unimplemented spec)
     case _: EContains      => ??? // TODO [term]
     case _: ESubstring     => ??? // TODO [term]
     case _: ETrim          => ??? // TODO [term]
     case ERef(ref)         => eval(ref)
     case EUnary(op, e) =>
       eval(e) match
-        case TLit(lit) => fold(op, lit).getOrElse(TUOp(op, TLit(lit)))
-        case t         => TUOp(op, t)
+        case TLit(lit) => fold(op, lit).getOrElse(TApp(op, List(TLit(lit))))
+        case t         => TApp(op, List(t))
     case EBinary(op, lhs, rhs) =>
       (eval(lhs), eval(rhs)) match
         case (TLit(l), TLit(r)) =>
-          fold(op, l, r).getOrElse(TBOp(op, TLit(l), TLit(r)))
-        case (l, r) => TBOp(op, l, r)
+          fold(op, l, r).getOrElse(TApp(op, List(TLit(l), TLit(r))))
+        case (l, r) => TApp(op, List(l, r))
     case EVariadic(op, exprs) =>
       val ts = exprs.map(eval)
-      fold(op, ts).getOrElse(TVOp(op, ts))
+      fold(op, ts).getOrElse(TApp(op, ts))
     case _: EMathOp => ??? // TODO [term]
     case EConvert(cop, e) =>
       val t = eval(e)
       t match
         case TLit(lit) => fold(cop, lit).getOrElse(t)
         case _         => t
-    case _: EExists        => ??? // condition-only: handled in getConstraints
-    case ETypeOf(e)        => TTypeOf(eval(e))
-    case _: EInstanceOf    => ??? // condition-only: handled in getConstraints
-    case ETypeCheck(e, ty) => TBOp(BOp.Eq, TTypeOf(eval(e)), TType(ty.toValue))
+    case _: EExists     => ??? // condition-only: handled in getConstraints
+    case ETypeOf(e)     => TTypeOf(eval(e))
+    case _: EInstanceOf => ??? // not modelable (AST-related)
+    case ETypeCheck(e, ty) =>
+      TApp(BOp.Eq, List(TTypeOf(eval(e)), TType(ty.toValue)))
     case ESizeOf(e) =>
       eval(e) match
         case TList(elems) => TLit(EMath(BigDecimal(elems.size)))
-        case t            => TSizeOf(t)
-    case _: EClo              => ??? // opaque: used as call targets
-    case _: ECont             => ??? // opaque: used as call targets
-    case _: EDebug            => ??? // not modelable
-    case _: ERandom           => ??? // not modelable
-    case _: ESyntactic        => ??? // not modelable
-    case _: ELexical          => ??? // not modelable
-    case _: ERecord           => ??? // TODO [heap]
-    case _: EMap              => ??? // TODO [heap]
-    case EList(exprs)         => TList(exprs.map(eval))
-    case _: ECopy             => ??? // TODO [heap]
-    case _: EKeys             => ??? // TODO [heap]
+        case t            => TApp("@SizeOf", List(t))
+    case _: EClo       => ??? // opaque: used as call targets
+    case _: ECont      => ??? // opaque: used as call targets
+    case _: EDebug     => ??? // not modelable (debugging)
+    case _: ERandom    => ??? // not modelable (non-deterministic)
+    case _: ESyntactic => ??? // not modelable (AST construction)
+    case _: ELexical   => ??? // not modelable (AST construction)
+    case ERecord(tname, pairs) =>
+      TRecord(tname, pairs.map((k, e) => k -> eval(e)).toMap)
+    case EMap(_, pairs) => TMap(pairs.map((k, v) => (eval(k), eval(v))))
+    case EList(exprs)   => TList(exprs.map(eval))
+    case ECopy(obj)     => eval(obj)
+    case EKeys(map, _) =>
+      eval(map) match
+        case TRecord(_, fs) => TList(fs.keys.map(k => TLit(EStr(k))).toList)
+        case TMap(es)       => TList(es.map(_._1))
+        case _              => ???
     case literal: LiteralExpr => TLit(literal)
 
   /** evaluation for references */
@@ -129,8 +172,24 @@ class SymbolicInterpreter(func: Func, path: Path, cond: Cond) {
       if (!ty.isBottom) TType(ty) else TVar(name)
     case Field(x: Local, EStr(k)) if fields.contains((x, k)) =>
       fields((x, k))
-    case Field(base, EStr(name)) => TField(eval(base), name)
-    case f @ Field(_, _)         => TVar(f.toString) // opaque computed field
+    case Field(base, EStr(name)) =>
+      eval(base) match
+        case TRecord(_, fs) if fs.contains(name) => fs(name)
+        case TMap(es) =>
+          val k = TLit(EStr(name))
+          es.collectFirst { case (`k`, v) => v }
+            .getOrElse(TField(TMap(es), name))
+        case t => TField(t, name)
+    case f @ Field(base, idx) =>
+      try
+        (eval(base), eval(idx)) match
+          case (TList(es), TLit(EMath(n)))
+              if n.isValidInt && es.indices.contains(n.toInt) =>
+            es(n.toInt)
+          case (TMap(es), k) =>
+            es.collectFirst { case (`k`, v) => v }.getOrElse(TVar(f.toString))
+          case _ => TVar(f.toString)
+      catch case _: Throwable => TVar(f.toString)
 
   /** get constraints from branch condition as DNF */
   // NOTE: forks into multiple goals at disjunction to preserve DNF form
@@ -164,8 +223,12 @@ class SymbolicInterpreter(func: Func, path: Path, cond: Cond) {
     case EBinary(BOp.Or, lhs, rhs) =>
       getConstraints(lhs, true) ++ getConstraints(rhs, true)
     case EExists(Field(base, EStr(field))) =>
-      val f = FExists(eval(base), field)
-      List(List(if (pos) f else FNot(f)))
+      eval(base) match
+        case TRecord(_, fs) if fs.contains(field) =>
+          if (pos) List(List()) else Nil
+        case t =>
+          val f = FExists(t, field)
+          List(List(if (pos) f else FNot(f)))
     case EContains(list, elem) =>
       (eval(list), eval(elem)) match
         case (TList(elems), t) =>
@@ -175,7 +238,7 @@ class SymbolicInterpreter(func: Func, path: Path, cond: Cond) {
           val result = s.contains(sub)
           if (result == pos) List(List()) else Nil
         case (l, r) =>
-          val f = FEq(TApp("Contains", List(l, r)), TLit(EBool(true)))
+          val f = FEq(TApp("@Contains", List(l, r)), TLit(EBool(true)))
           List(List(if (pos) f else FNot(f)))
     case ERef(ref) => List(List(FEq(eval(ref), TLit(EBool(pos)))))
     case _: EYet   => Nil

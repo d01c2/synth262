@@ -92,33 +92,68 @@ case class Reify(formulas: List[Formula], entryParams: List[String]) {
       case f @ FNot(FEq(TVar(_), TLit(lit))) => consumed += f; lit
     }
 
-    // interval bounds from FLt constraints: [lo, hi]
-    var lo: Option[BigDecimal] = None
-    var hi: Option[BigDecimal] = None
+    // interval bounds from FLt constraints
+    // strict: (lo, hi), inclusive: [lo, hi]
+    var loStrict: Option[BigDecimal] = None
+    var hiStrict: Option[BigDecimal] = None
+    var loIncl: Option[BigDecimal] = None
+    var hiIncl: Option[BigDecimal] = None
+    def numVal(lit: LiteralExpr): Option[BigDecimal] = lit match
+      case EMath(n)                                => Some(n)
+      case ENumber(d) if !d.isNaN && !d.isInfinite => Some(BigDecimal(d))
+      case _                                       => None
     for (f <- fs) f match
-      case f @ FLt(TVar(_), TLit(EMath(k))) =>
-        consumed += f; hi = Some(hi.fold(k - 1)(_ min (k - 1)))
-      case f @ FLt(TLit(EMath(k)), TVar(_)) =>
-        consumed += f; lo = Some(lo.fold(k + 1)(_ max (k + 1)))
-      case f @ FNot(FLt(TVar(_), TLit(EMath(k)))) =>
-        consumed += f; lo = Some(lo.fold(k)(_ max k))
-      case f @ FNot(FLt(TLit(EMath(k)), TVar(_))) =>
-        consumed += f; hi = Some(hi.fold(k)(_ min k))
+      case f @ FLt(TVar(_), TLit(lit)) => // x < k
+        numVal(lit).foreach(k => {
+          consumed += f; hiStrict = Some(hiStrict.fold(k)(_ min k))
+        })
+      case f @ FLt(TLit(lit), TVar(_)) => // k < x
+        numVal(lit).foreach(k => {
+          consumed += f; loStrict = Some(loStrict.fold(k)(_ max k))
+        })
+      case f @ FNot(FLt(TVar(_), TLit(lit))) => // x >= k
+        numVal(lit).foreach(k => {
+          consumed += f; loIncl = Some(loIncl.fold(k)(_ max k))
+        })
+      case f @ FNot(FLt(TLit(lit), TVar(_))) => // k >= x
+        numVal(lit).foreach(k => {
+          consumed += f; hiIncl = Some(hiIncl.fold(k)(_ min k))
+        })
       case _ => ()
-    val hasInterval = lo.isDefined || hi.isDefined
-    val excMath = excluded.collect { case EMath(n) => n }.toSet
+    val hasInterval = loStrict.isDefined || hiStrict.isDefined ||
+      loIncl.isDefined || hiIncl.isDefined
+    val excSet = excluded.flatMap(numVal).toSet
     val intervalPick: Option[BigDecimal] =
       if (!hasInterval) None
-      else {
-        val l = lo.getOrElse(BigDecimal(0))
-        val h = hi.getOrElse(l)
-        if (l > h) None
-        else
-          Iterator
-            .iterate(l)(_ + 1)
-            .takeWhile(_ <= h)
-            .find(!excMath.contains(_))
-      }
+      else
+        def valid(v: BigDecimal): Boolean =
+          !excSet.contains(v) &&
+          loStrict.forall(_ < v) && hiStrict.forall(v < _) &&
+          loIncl.forall(_ <= v) && hiIncl.forall(v >= _)
+        // effective bounds for picking
+        val effLo = List(loStrict, loIncl).flatten match
+          case Nil => None
+          case xs  => Some(xs.max)
+        val effHi = List(hiStrict, hiIncl).flatten match
+          case Nil => None
+          case xs  => Some(xs.min)
+        // single-point range
+        val singlePick = for {
+          l <- effLo; h <- effHi; if l <= h
+        } yield (l + h) / 2
+        // try integers in a bounded window
+        val lo = effLo.getOrElse(effHi.getOrElse(BigDecimal(0)) - 100)
+        val hi = effHi.getOrElse(effLo.getOrElse(BigDecimal(0)) + 100)
+        val intLo = lo.setScale(0, BigDecimal.RoundingMode.CEILING)
+        val intHi = hi.setScale(0, BigDecimal.RoundingMode.FLOOR)
+        val intPick = Iterator
+          .iterate(intLo)(_ + 1)
+          .takeWhile(_ <= intHi)
+          .take(200) // safety bound
+          .find(valid)
+        intPick.orElse {
+          singlePick.filter(valid)
+        }
 
     val unconsumed = fs.filterNot(consumed)
 
@@ -181,34 +216,36 @@ case class Reify(formulas: List[Formula], entryParams: List[String]) {
   ): Option[String] =
     val target = trapFormulas
       .collectFirst {
-        case FEq(TTypeOf(TApp(fname, _)), TType(_))       => proxyTarget(fname)
-        case FEq(TApp(fname, _), _)                       => proxyTarget(fname)
-        case FNot(FEq(TApp(fname, _), _))                 => proxyTarget(fname)
-        case FNot(FEq(TTypeOf(TApp(fname, _)), TType(_))) => proxyTarget(fname)
+        case FEq(TTypeOf(TApp(fname: String, _)), TType(_)) =>
+          proxyTarget(fname)
+        case FEq(TApp(fname: String, _), _)       => proxyTarget(fname)
+        case FNot(FEq(TApp(fname: String, _), _)) => proxyTarget(fname)
+        case FNot(FEq(TTypeOf(TApp(fname: String, _)), TType(_))) =>
+          proxyTarget(fname)
       }
       .getOrElse("{}")
 
     val traps = List.newBuilder[(String, String)]
     for (formula <- trapFormulas) formula match
-      case FEq(TTypeOf(TApp(fname, _)), TType(ty)) if ty <= AbruptT =>
+      case FEq(TTypeOf(TApp(fname: String, _)), TType(ty)) if ty <= AbruptT =>
         proxyTrapName.get(fname).foreach(trap => traps += trap -> "throw 0;")
-      case FEq(TApp(fname, _), TLit(lit)) =>
+      case FEq(TApp(fname: String, _), TLit(lit)) =>
         for {
           jsLit <- litToJs(lit)
           trap <- proxyTrapName.get(fname)
         } traps += trap -> s"return $jsLit;"
-      case FNot(FEq(TApp(fname, _), TLit(lit))) =>
+      case FNot(FEq(TApp(fname: String, _), TLit(lit))) =>
         for {
           jsVal <- defaultFor(ESValueT, Set(lit))
           trap <- proxyTrapName.get(fname)
         } traps += trap -> s"return $jsVal;"
-      case FEq(TTypeOf(TApp(fname, _)), TType(ty))
+      case FEq(TTypeOf(TApp(fname: String, _)), TType(ty))
           if !(ty <= AbruptT) && !(ty <= NormalT) =>
         for {
           jsVal <- defaultFor(ty)
           trap <- proxyTrapName.get(fname)
         } traps += trap -> s"return $jsVal;"
-      case FNot(FEq(TTypeOf(TApp(fname, _)), TType(ty)))
+      case FNot(FEq(TTypeOf(TApp(fname: String, _)), TType(ty)))
           if !(ty <= AbruptT) && !(ty <= NormalT) =>
         for {
           jsVal <- defaultFor(ESValueT -- ty)
@@ -348,15 +385,14 @@ object Reify {
 
   def hasUninterpretableApp(fs: List[Formula]): Boolean =
     def fromTerm(t: Term): Set[String] = t match
-      case TApp(fname, args) => Set(fname) ++ args.flatMap(fromTerm)
-      case TField(base, _)   => fromTerm(base)
-      case TList(elems)      => elems.flatMap(fromTerm).toSet
-      case TUOp(_, t)        => fromTerm(t)
-      case TBOp(_, lhs, rhs) => fromTerm(lhs) ++ fromTerm(rhs)
-      case TVOp(_, args)     => args.flatMap(fromTerm).toSet
-      case TSizeOf(t)        => fromTerm(t)
-      case TTypeOf(t)        => fromTerm(t)
-      case _                 => Set()
+      case TApp(fname: String, args) => Set(fname) ++ args.flatMap(fromTerm)
+      case TApp(_, args)             => args.flatMap(fromTerm).toSet
+      case TField(base, _)           => fromTerm(base)
+      case TList(elems)              => elems.flatMap(fromTerm).toSet
+      case TRecord(_, fs)            => fs.values.flatMap(fromTerm).toSet
+      case TMap(es)   => es.flatMap((k, v) => fromTerm(k) ++ fromTerm(v)).toSet
+      case TTypeOf(t) => fromTerm(t)
+      case _          => Set()
     def fromFormula(f: Formula): Set[String] = f match
       case FNot(inner)   => fromFormula(inner)
       case FEq(l, r)     => fromTerm(l) ++ fromTerm(r)
@@ -366,16 +402,14 @@ object Reify {
 
   def outerAppNames(f: Formula): Set[String] =
     def fromTerm(t: Term): Set[String] = t match
-      case TApp(fname, _) if !internalMethods(fname) => Set(fname)
+      case TApp(fname: String, _) if !internalMethods(fname) => Set(fname)
       case TApp(_, args)   => args.flatMap(fromTerm).toSet
       case TField(base, _) => fromTerm(base)
       case TList(elems)    => elems.flatMap(fromTerm).toSet
-      case TUOp(_, t)      => fromTerm(t)
-      case TBOp(_, l, r)   => fromTerm(l) ++ fromTerm(r)
-      case TVOp(_, args)   => args.flatMap(fromTerm).toSet
-      case TSizeOf(t)      => fromTerm(t)
-      case TTypeOf(t)      => fromTerm(t)
-      case _               => Set()
+      case TRecord(_, fs)  => fs.values.flatMap(fromTerm).toSet
+      case TMap(es)   => es.flatMap((k, v) => fromTerm(k) ++ fromTerm(v)).toSet
+      case TTypeOf(t) => fromTerm(t)
+      case _          => Set()
     f match
       case FNot(inner)   => outerAppNames(inner)
       case FEq(l, r)     => fromTerm(l) ++ fromTerm(r)
