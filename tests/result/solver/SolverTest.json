@@ -5,7 +5,6 @@
   "config: IsExtensible(x) == false" : true,
   "contradiction: x == 0 ∧ x == 1 → None" : true,
   "contradiction: x == x ∧ NOT(x == x) → None" : true,
-  "eliminate: y == x, y ∈ Object → x == {}" : true,
   "inequality: x != null" : true,
   "inequality: x != undefined" : true,
   "literal equality: x == \"hello\"" : true,

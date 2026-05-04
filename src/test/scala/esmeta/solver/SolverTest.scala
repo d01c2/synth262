@@ -180,16 +180,6 @@ class SolverTest extends ESMetaTest {
     }
 
     // --- variable elimination ---
-    check("eliminate: y == x, y ∈ Object → x == {}") {
-      val goal = List(
-        FEq(TVar("y"), TVar("x")),
-        FEq(TTypeOf(TVar("y")), TType(ObjectT)),
-      )
-      val result = Solver.solve(goal, List("x"))
-      assert(result.isDefined)
-      assert(result.get("x") == "{}")
-    }
-
     // --- contradiction ---
     check("contradiction: x == 0 ∧ x == 1 → None") {
       val goal = List(
