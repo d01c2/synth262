@@ -74,6 +74,8 @@ class BuiltinBranchTest extends ESMetaTest {
       var yetBlocked = 0
       var missingTransfer = 0
       var appBlocked = 0
+      val appBlockedNames = scala.collection.mutable.Map[String, Int]()
+      val missingTransferFuncs = scala.collection.mutable.ListBuffer[String]()
       var reifyFail = 0
       var solved = 0
       var verifyFailed = 0
@@ -148,13 +150,23 @@ class BuiltinBranchTest extends ESMetaTest {
                       .flatMap(p => SymbolicInterpreter(cfg, f, p, cond))
                       .toList
                   } catch { case _: NotImplementedError | _: MatchError => Nil }
-                if (goals.isEmpty) missingTransfer += 1
-                else if (
+                if (goals.isEmpty) {
+                  missingTransfer += 1;
+                  missingTransferFuncs += s"${f.name}[${b.id}]"
+                } else if (
                   goals
                     .map(Solver.rewriteApps)
                     .forall(Reify.hasUninterpretableApp)
-                ) appBlocked += 1
-                else {
+                ) {
+                  appBlocked += 1
+                  for (g <- goals.map(Solver.rewriteApps))
+                    g.flatMap(Reify.outerAppNames)
+                      .foreach(n =>
+                        appBlockedNames.updateWith(n)(c =>
+                          Some(c.getOrElse(0) + 1),
+                        ),
+                      )
+                } else {
                   reifyFail += 1
                   val rewritten = goals.map(Solver.rewriteApps)
                   println(s"  [REIFY] ${f.name} Branch[${b.id}]")
@@ -188,6 +200,12 @@ class BuiltinBranchTest extends ESMetaTest {
       println(s"    Missing transfer:    $missingTransfer")
       println(s"    App-blocked:         $appBlocked")
       println(s"    Reify/Solver fail:   $reifyFail")
+      println(s"\n  App-blocked AO names (top 20):")
+      appBlockedNames.toList.sortBy(-_._2).take(20).foreach { (n, c) =>
+        println(f"    $c%4d  $n")
+      }
+      println(s"\n  Missing transfer (${missingTransferFuncs.size}):")
+      missingTransferFuncs.foreach(f => println(s"    $f"))
       if (addressable > 0)
         println(
           f"\n  Addressable solve rate: $solved/$addressable" +
