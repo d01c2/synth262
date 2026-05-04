@@ -3,154 +3,145 @@ package esmeta.solver
 import esmeta.cfg.*
 import esmeta.es.util.Coverage.*
 import esmeta.ir.{Func => _, *}
+import esmeta.state.*
 import esmeta.ty.ValueTy
 import Formula.*, Term.*
 import scala.collection.mutable.{Map => MMap}
 
-// Forward Symbolic Interpreter: walks a path, producing DNF goals
-class SymbolicInterpreter(func: Func, path: Path, cond: Cond) {
+class SymbolicInterpreter(cfg: CFG, func: Func, path: Path, cond: Cond) {
   import SymbolicInterpreter.*
 
-  private val env = MMap[Local, Term]()
+  private val state = MMap[Local, Term]()
   private val fields = MMap[(Local, String), Term]()
 
   private var goals: List[Goal] = List(List())
 
-  /** walk the path, accumulating constraints into goals */
   lazy val result: List[Goal] =
     for ((node, idx) <- path.zipWithIndex) eval(node, idx)
     goals
 
-  /** evaluation for nodes */
   private def eval(node: Node, idx: Int): Unit = node match
     case block: Block                        => eval(block)
     case call: Call                          => eval(call)
     case branch: Branch if branch.isFiltered => ()
     case branch: Branch =>
-      val pos =
-        if (branch.id == cond.branch.id) cond.cond // target branch
-        else branch.thenNode.exists(_.id == path(idx + 1).id) // follow path
+      val pos = // lookup the side taken at the branch
+        if (branch.id == cond.branch.id) cond.cond
+        else branch.thenNode.exists(_.id == path(idx + 1).id)
       goals = for {
         prev <- goals
-        cond <- getConstraints(branch.cond, pos)
-      } yield prev ++ cond
+        cs <- getConstraints(branch.cond, pos)
+      } yield prev ++ cs
 
-  private def bind(x: Local, expr: Expr): Unit =
-    try env(x) = eval(expr)
-    catch case _: Throwable => env.remove(x)
-    fields.filterInPlace((k, _) => k._1 != x)
+  private def eval(block: Block): Unit = block.insts.foreach(eval)
 
-  /** evaluation for blocks */
-  private def eval(block: Block): Unit =
-    for (inst <- block.insts)
-      inst match
-        // NOTE: __args__ tracks optional argument presence via IExpand,
-        // but the path enumerator forces all-args-present (filtered branches),
-        // so modeling it as TRecord would make absent-arg paths infeasible.
-        // Keep it as TVar so field presence stays symbolic.
-        case ILet(lhs, _) if lhs == Name(ARGS_STR) => ()
-        case ILet(lhs, expr)                       => bind(lhs, expr)
-        case IAssign(x: Local, expr)               => bind(x, expr)
-        case IAssign(Field(x: Local, EStr(key)), expr) =>
-          try
-            val v = eval(expr)
-            env.get(x) match
-              case Some(TRecord(tn, fs)) =>
-                env(x) = TRecord(tn, fs + (key -> v))
-              case _ => fields((x, key)) = v
-          catch case _: Throwable => fields.remove((x, key))
-        case _: IAssign => ()
-        case IExpand(x: Local, expr) =>
-          try
-            eval(expr) match
-              case TLit(EStr(field)) =>
-                env.get(x) match
-                  case Some(TRecord(tn, fs)) if !fs.contains(field) =>
-                    env(x) = TRecord(tn, fs + (field -> TLit(EUndef())))
-                  case _ => ()
-              case _ => ()
-          catch case _: Throwable => ()
-        case _: IExpand => ()
-        case IDelete(x: Local, expr) =>
-          try
-            val k = eval(expr)
-            env.get(x) match
-              case Some(TMap(es)) => env(x) = TMap(es.filterNot(_._1 == k))
-              case _              => ()
-          catch case _: Throwable => ()
-        case _: IDelete => ()
-        case IPush(elem, ERef(x: Local), front) =>
-          try
-            val e = eval(elem)
-            env.get(x) match
-              case Some(TList(es)) =>
-                env(x) = if (front) TList(e :: es) else TList(es :+ e)
-              case _ => ()
-          catch case _: Throwable => ()
-        case _: IPush => ()
-        // argument pop handled by entryParams in Solve
-        case IPop(Name(_), ERef(Name("ArgumentsList")), _) => ()
-        case IPop(x: Local, _, _)                          => env.remove(x)
-        // TODO: return value propagation [interproc]
-        case _: IReturn => ()
-        // no symbolic effect: IExpr, IAssert, IPrint, INop
+  // check if normalInst is builtin prefix
+  private def isBuiltinPrefix(inst: NormalInst): Boolean = inst match
+    case ILet(lhs, _) if lhs == Name(ARGS_STR)         => true
+    case IPop(Name(_), ERef(Name("ArgumentsList")), _) => true
+    case IExpand(base, _) if base == Name(ARGS_STR)    => true
+    case _                                             => false
+
+  private def eval(inst: NormalInst): Unit = inst match
+    case inst if isBuiltinPrefix(inst) => ()
+    case ILet(lhs, expr) =>
+      state(lhs) = eval(expr)
+      fields.keys.filter(_._1 == lhs).foreach(fields.remove)
+    case IAssign(x: Local, expr) =>
+      state(x) = eval(expr)
+      fields.keys.filter(_._1 == x).foreach(fields.remove)
+    case IAssign(Field(x: Local, EStr(key)), expr) =>
+      val t = eval(expr)
+      state.get(x) match
+        case Some(TRecord(tn, fs)) => state(x) = TRecord(tn, fs + (key -> t))
+        case _                     => fields((x, key)) = t
+    case _: IAssign => () // global or dynamic-key assign
+    case IExpand(base: Local, expr) =>
+      eval(expr) match
+        case TLit(EStr(field)) =>
+          state.get(base) match
+            case Some(TRecord(tn, fs)) if !fs.contains(field) =>
+              state(base) = TRecord(tn, fs + (field -> TLit(EUndef())))
+            case _ => ()
         case _ => ()
+    case _: IExpand => () // non-local or dynamic-key expand
+    case IDelete(base: Local, expr) =>
+      val t = eval(expr)
+      state.get(base) match
+        case Some(TMap(es)) => state(base) = TMap(es.filterNot(_._1 == t))
+        case _              => ()
+    case _: IDelete => () // non-local or dynamic-key delete
+    case IPush(elem, ERef(x: Local), front) =>
+      val t = eval(elem)
+      state.get(x) match
+        case Some(TList(es)) =>
+          state(x) = if (front) TList(t :: es) else TList(es :+ t)
+        case _ => ()
+    case _: IPush             => () // non-local list
+    case IPop(x: Local, _, _) => state.remove(x)
+    case _: IReturn           => () // TODO: support inter-procedural
+    case _                    => ()
 
-  /** evaluation for calls */
+  // TODO: support inter-procedural
   private def eval(call: Call): Unit =
     val ret = call.lhs
     call.callInst match
       case ICall(_, EClo(fname, _), args) =>
-        env(ret) = TApp(fname, args.map(eval))
+        state(ret) = TApp(fname, args.map(eval))
       case ICall(_, ERef(Field(base, EStr(method))), args) =>
-        env(ret) = TApp(method, eval(base) :: args.map(eval))
+        state(ret) = TApp(method, eval(base) :: args.map(eval))
       case ISdoCall(_, base, op, args) =>
-        env(ret) = TApp(op, eval(base) :: args.map(eval))
-      case _ => env.remove(ret)
+        state(ret) = TApp(op, eval(base) :: args.map(eval))
+      case _ => state.remove(ret)
 
-  /** evaluation for expressions */
   private def eval(expr: Expr): Term = expr match
-    case _: EParse         => ??? // not modelable (AST parsing)
-    case _: EGrammarSymbol => ??? // not modelable (AST grammar)
-    case _: ESourceText    => ??? // not modelable (AST source text)
-    case _: EYet           => ??? // not modelable (unimplemented spec)
-    case _: EContains      => ??? // TODO [term]
-    case _: ESubstring     => ??? // TODO [term]
-    case _: ETrim          => ??? // TODO [term]
-    case ERef(ref)         => eval(ref)
+    case _: EParse         => ??? // syntactic part
+    case _: EGrammarSymbol => ??? // syntactic part
+    case _: ESourceText    => ??? // syntactic part
+    case _: EYet           => ??? // not implemented
+    case EContains(list, elem) =>
+      simplify(TApp("[ir:contains]", List(eval(list), eval(elem))))
+    case ESubstring(base, from, to) =>
+      val args = List(eval(base), eval(from)) ++ to.map(eval)
+      simplify(TApp("[ir:substring]", args))
+    case ETrim(base, isStarting) =>
+      val op = if (isStarting) "[ir:trim-start]" else "[ir:trim-end]"
+      simplify(TApp(op, List(eval(base))))
+    case ERef(ref) => eval(ref)
     case EUnary(op, e) =>
-      eval(e) match
-        case TLit(lit) => fold(op, lit).getOrElse(TApp(op, List(TLit(lit))))
-        case t         => TApp(op, List(t))
+      simplify(TApp(op, List(eval(e))))
     case EBinary(op, lhs, rhs) =>
-      (eval(lhs), eval(rhs)) match
-        case (TLit(l), TLit(r)) =>
-          fold(op, l, r).getOrElse(TApp(op, List(TLit(l), TLit(r))))
-        case (l, r) => TApp(op, List(l, r))
+      simplify(TApp(op, List(eval(lhs), eval(rhs))))
     case EVariadic(op, exprs) =>
-      val ts = exprs.map(eval)
-      fold(op, ts).getOrElse(TApp(op, ts))
-    case _: EMathOp => ??? // TODO [term]
+      simplify(TApp(op, exprs.map(eval)))
+    case EMathOp(mop, args) =>
+      simplify(TApp(mop, args.map(eval)))
     case EConvert(cop, e) =>
-      val t = eval(e)
-      t match
-        case TLit(lit) => fold(cop, lit).getOrElse(t)
-        case _         => t
-    case _: EExists     => ??? // condition-only: handled in getConstraints
+      simplify(TApp(cop, List(eval(e))))
+    case EExists(ref) =>
+      ref match
+        case Field(base, EStr(field)) =>
+          eval(base) match
+            case TRecord(_, fs) => TLit(EBool(fs.contains(field)))
+            case TMap(es) =>
+              val k = TLit(EStr(field))
+              TLit(EBool(es.exists(_._1 == k)))
+            case t => TApp("[ir:exists]", List(t, TLit(EStr(field))))
+        case _ => TLit(EBool(true))
     case ETypeOf(e)     => TTypeOf(eval(e))
-    case _: EInstanceOf => ??? // not modelable (AST-related)
+    case _: EInstanceOf => ??? // syntactic part
     case ETypeCheck(e, ty) =>
-      TApp(BOp.Eq, List(TTypeOf(eval(e)), TType(ty.toValue)))
+      simplify(TApp(BOp.Eq, List(TTypeOf(eval(e)), TType(ty.toValue))))
     case ESizeOf(e) =>
       eval(e) match
         case TList(elems) => TLit(EMath(BigDecimal(elems.size)))
-        case t            => TApp("@SizeOf", List(t))
-    case _: EClo       => ??? // opaque: used as call targets
-    case _: ECont      => ??? // opaque: used as call targets
-    case _: EDebug     => ??? // not modelable (debugging)
-    case _: ERandom    => ??? // not modelable (non-deterministic)
-    case _: ESyntactic => ??? // not modelable (AST construction)
-    case _: ELexical   => ??? // not modelable (AST construction)
+        case t            => TApp("[ir:sizeof]", List(t))
+    case _: EClo       => ??? // opaque closure
+    case _: ECont      => ??? // opaque continuation
+    case _: EDebug     => ??? // debug
+    case _: ERandom    => ??? // non-deterministic
+    case _: ESyntactic => ??? // syntactic part
+    case _: ELexical   => ??? // syntactic part
     case ERecord(tname, pairs) =>
       TRecord(tname, pairs.map((k, e) => k -> eval(e)).toMap)
     case EMap(_, pairs) => TMap(pairs.map((k, v) => (eval(k), eval(v))))
@@ -160,13 +151,12 @@ class SymbolicInterpreter(func: Func, path: Path, cond: Cond) {
       eval(map) match
         case TRecord(_, fs) => TList(fs.keys.map(k => TLit(EStr(k))).toList)
         case TMap(es)       => TList(es.map(_._1))
-        case _              => ???
+        case t              => TApp("[ir:keys]", List(t))
     case literal: LiteralExpr => TLit(literal)
 
-  /** evaluation for references */
   private def eval(ref: Ref): Term = ref match
     case x: Local =>
-      env.getOrElse(x, TVar(x.toString))
+      state.getOrElse(x, TVar(x.toString))
     case Global(name) =>
       val ty = ValueTy.fromTypeOf(name)
       if (!ty.isBottom) TType(ty) else TVar(name)
@@ -181,18 +171,14 @@ class SymbolicInterpreter(func: Func, path: Path, cond: Cond) {
             .getOrElse(TField(TMap(es), name))
         case t => TField(t, name)
     case f @ Field(base, idx) =>
-      try
-        (eval(base), eval(idx)) match
-          case (TList(es), TLit(EMath(n)))
-              if n.isValidInt && es.indices.contains(n.toInt) =>
-            es(n.toInt)
-          case (TMap(es), k) =>
-            es.collectFirst { case (`k`, v) => v }.getOrElse(TVar(f.toString))
-          case _ => TVar(f.toString)
-      catch case _: Throwable => TVar(f.toString)
+      (eval(base), eval(idx)) match
+        case (TList(es), TLit(EMath(n)))
+            if n.isValidInt && es.indices.contains(n.toInt) =>
+          es(n.toInt)
+        case (TMap(es), k) =>
+          es.collectFirst { case (`k`, v) => v }.getOrElse(TVar(f.toString))
+        case _ => TVar(f.toString)
 
-  /** get constraints from branch condition as DNF */
-  // NOTE: forks into multiple goals at disjunction to preserve DNF form
   private def getConstraints(expr: Expr, pos: Boolean): List[Goal] = expr match
     case EUnary(UOp.Not, inner) => getConstraints(inner, !pos)
     case ETypeCheck(base, ty) =>
@@ -238,110 +224,195 @@ class SymbolicInterpreter(func: Func, path: Path, cond: Cond) {
           val result = s.contains(sub)
           if (result == pos) List(List()) else Nil
         case (l, r) =>
-          val f = FEq(TApp("@Contains", List(l, r)), TLit(EBool(true)))
+          val f = FEq(TApp("[ir:contains]", List(l, r)), TLit(EBool(true)))
           List(List(if (pos) f else FNot(f)))
     case ERef(ref) => List(List(FEq(eval(ref), TLit(EBool(pos)))))
     case _: EYet   => Nil
     case _         => ???
+
+  // constant folding for literals
+  private def simplify(t: Term): Term = t match
+    case TApp(op: UOp, List(TLit(lit))) =>
+      foldUOp(op, lit).getOrElse(t)
+    case TApp(op: BOp, List(TLit(l), TLit(r))) =>
+      foldBOp(op, l, r).getOrElse(t)
+    case TApp(op: VOp, args) =>
+      foldVOp(op, args).getOrElse(t)
+    case TApp(op: MOp, args) =>
+      foldMOp(op, args).getOrElse(t)
+    case TApp(op: COp, List(TLit(lit))) =>
+      foldCOp(op, lit).getOrElse(t)
+    case TApp(_: COp, List(arg)) => arg
+    case TApp("[ir:contains]", List(TList(es), t)) =>
+      TLit(EBool(es.contains(t)))
+    case TApp("[ir:contains]", List(TLit(EStr(s)), TLit(EStr(sub)))) =>
+      TLit(EBool(s.contains(sub)))
+    case TApp(
+          "[ir:substring]",
+          List(TLit(EStr(s)), TLit(EMath(f)), TLit(EMath(to))),
+        ) =>
+      val end = if (s.length < to.toInt) s.length else to.toInt
+      TLit(EStr(s.substring(f.toInt, end)))
+    case TApp("[ir:substring]", List(TLit(EStr(s)), TLit(EMath(f)))) =>
+      TLit(EStr(s.substring(f.toInt)))
+    case TApp("[ir:trim-start]", List(TLit(EStr(s)))) =>
+      TLit(EStr(trimString(s, true, cfg.esParser)))
+    case TApp("[ir:trim-end]", List(TLit(EStr(s)))) =>
+      TLit(EStr(trimString(s, false, cfg.esParser)))
+    case _ => t
 }
 
 object SymbolicInterpreter {
 
-  /** diagnostic: track unsupported expressions */
-  val failedExprs = MMap[String, Int]()
+  def apply(cfg: CFG, func: Func, path: Path, cond: Cond): List[Goal] =
+    try { new SymbolicInterpreter(cfg, func, path, cond).result }
+    catch { case _: Throwable => Nil }
 
-  def apply(func: Func, path: Path, cond: Cond): List[Goal] =
-    try { new SymbolicInterpreter(func, path, cond).result }
-    catch {
-      case e: Throwable =>
-        // record the failing expression
-        val key =
-          // extract the failing method from stack trace
-          val frame = e.getStackTrace.find(f =>
-            f.getClassName.contains("SymbolicInterpreter") &&
-            !f.getMethodName.contains("apply"),
-          )
-          val loc =
-            frame.fold("")(f => s"${f.getMethodName}:${f.getLineNumber}")
-          s"${e.getClass.getSimpleName}($loc)"
-        failedExprs.synchronized {
-          failedExprs(key) = failedExprs.getOrElse(key, 0) + 1
-        }
-        Nil
-    }
-
-  /** constant folding for binary operations */
-  private def fold(op: BOp, l: LiteralExpr, r: LiteralExpr): Option[Term] =
-    import BOp.*
-    (op, l, r) match
-      case (Add, EMath(a), EMath(b)) => Some(TLit(EMath(a + b)))
-      case (Sub, EMath(a), EMath(b)) => Some(TLit(EMath(a - b)))
-      case (Mul, EMath(a), EMath(b)) => Some(TLit(EMath(a * b)))
-      case (Mod, EMath(a), EMath(b)) if b != BigDecimal(0) =>
-        Some(TLit(EMath(a % b)))
-      case (Lt, EMath(a), EMath(b)) => Some(TLit(EBool(a < b)))
-      case (Eq, a, b)               => Some(TLit(EBool(a == b)))
-      case _                        => None
-
-  /** constant folding for unary operations */
-  private def fold(op: UOp, lit: LiteralExpr): Option[Term] =
+  private def foldUOp(op: UOp, lit: LiteralExpr): Option[Term] =
     import UOp.*
     (op, lit) match
-      case (Neg, EMath(n)) => Some(TLit(EMath(-n)))
-      case (Not, EBool(b)) => Some(TLit(EBool(!b)))
-      case _               => None
+      case (Abs, EMath(n)) => Some(TLit(EMath(n.abs)))
+      case (Floor, EMath(n)) =>
+        val f = if (n.isWhole) n else n - (n % 1) - (if (n < 0) 1 else 0)
+        Some(TLit(EMath(f)))
+      case (Neg, ENumber(n))     => Some(TLit(ENumber(-n)))
+      case (Neg, EMath(n))       => Some(TLit(EMath(-n)))
+      case (Neg, EInfinity(pos)) => Some(TLit(EInfinity(!pos)))
+      case (Neg, EBigInt(n))     => Some(TLit(EBigInt(-n)))
+      case (Not, EBool(b))       => Some(TLit(EBool(!b)))
+      case (BNot, EMath(n))      => Some(TLit(EMath(~n.toInt)))
+      case (BNot, ENumber(n))    => Some(TLit(ENumber(~n.toInt)))
+      case (BNot, EBigInt(n))    => Some(TLit(EBigInt(~n)))
+      case _                     => None
 
-  /** constant folding for variadic operations */
-  private def fold(op: VOp, terms: List[Term]): Option[Term] =
+  private def foldBOp(op: BOp, l: LiteralExpr, r: LiteralExpr): Option[Term] =
+    import BOp.*
+    (op, l, r) match
+      case (Add, ENumber(a), ENumber(b)) => Some(TLit(ENumber(a + b)))
+      case (Sub, ENumber(a), ENumber(b)) => Some(TLit(ENumber(a - b)))
+      case (Mul, ENumber(a), ENumber(b)) => Some(TLit(ENumber(a * b)))
+      case (Pow, ENumber(a), ENumber(b)) => Some(TLit(ENumber(math.pow(a, b))))
+      case (Div, ENumber(a), ENumber(b)) => Some(TLit(ENumber(a / b)))
+      case (Mod, ENumber(a), ENumber(b)) => Some(TLit(ENumber(a % b)))
+      case (Lt, ENumber(a), ENumber(b))  => Some(TLit(EBool(a < b)))
+      case (Add, EMath(a), EMath(b))     => Some(TLit(EMath(a + b)))
+      case (Sub, EMath(a), EMath(b))     => Some(TLit(EMath(a - b)))
+      case (Mul, EMath(a), EMath(b))     => Some(TLit(EMath(a * b)))
+      case (Mod, EMath(a), EMath(b)) if b != BigDecimal(0) =>
+        Some(TLit(EMath(a % b)))
+      case (Pow, EMath(a), EMath(b)) if b.isValidInt && b >= 0 =>
+        Some(TLit(EMath(a.pow(b.toInt))))
+      case (BAnd, EMath(a), EMath(b)) =>
+        Some(TLit(EMath(BigDecimal(a.toBigInt & b.toBigInt))))
+      case (BOr, EMath(a), EMath(b)) =>
+        Some(TLit(EMath(BigDecimal(a.toBigInt | b.toBigInt))))
+      case (BXOr, EMath(a), EMath(b)) =>
+        Some(TLit(EMath(BigDecimal(a.toBigInt ^ b.toBigInt))))
+      case (LShift, EMath(a), EMath(b)) =>
+        Some(TLit(EMath(BigDecimal(a.toBigInt << b.toInt))))
+      case (RShift, EMath(a), EMath(b)) =>
+        Some(TLit(EMath(BigDecimal(a.toBigInt >> b.toInt))))
+      case (Lt, EMath(a), EMath(b))         => Some(TLit(EBool(a < b)))
+      case (Add, EInfinity(true), EMath(_)) => Some(TLit(EInfinity(true)))
+      case (Add, EMath(_), EInfinity(true)) => Some(TLit(EInfinity(true)))
+      case (Add, EInfinity(true), EInfinity(true)) =>
+        Some(TLit(EInfinity(true)))
+      case (Add, EInfinity(false), EMath(_)) => Some(TLit(EInfinity(false)))
+      case (Add, EMath(_), EInfinity(false)) => Some(TLit(EInfinity(false)))
+      case (Add, EInfinity(false), EInfinity(false)) =>
+        Some(TLit(EInfinity(false)))
+      case (Sub, EInfinity(true), EMath(_)) => Some(TLit(EInfinity(true)))
+      case (Sub, EInfinity(true), EInfinity(false)) =>
+        Some(TLit(EInfinity(true)))
+      case (Sub, EMath(_), EInfinity(true))  => Some(TLit(EInfinity(false)))
+      case (Sub, EInfinity(false), EMath(_)) => Some(TLit(EInfinity(false)))
+      case (Sub, EInfinity(false), EInfinity(true)) =>
+        Some(TLit(EInfinity(false)))
+      case (Sub, EMath(_), EInfinity(false)) => Some(TLit(EInfinity(true)))
+      case (Eq, a, b)                        => Some(TLit(EBool(a == b)))
+      case _                                 => None
+
+  private def foldVOp(op: VOp, terms: List[Term]): Option[Term] =
     import VOp.*
     op match
+      case Min =>
+        if (terms.contains(TLit(EInfinity(false)))) Some(TLit(EInfinity(false)))
+        else {
+          val filtered = terms.filter(_ != TLit(EInfinity(true)))
+          if (filtered.isEmpty) Some(TLit(EInfinity(true)))
+          else {
+            val nums = filtered.collect { case TLit(EMath(n)) => n }
+            if (nums.size == filtered.size) Some(TLit(EMath(nums.min)))
+            else None
+          }
+        }
+      case Max =>
+        if (terms.contains(TLit(EInfinity(true)))) Some(TLit(EInfinity(true)))
+        else {
+          val filtered = terms.filter(_ != TLit(EInfinity(false)))
+          if (filtered.isEmpty) Some(TLit(EInfinity(false)))
+          else {
+            val nums = filtered.collect { case TLit(EMath(n)) => n }
+            if (nums.size == filtered.size) Some(TLit(EMath(nums.max)))
+            else None
+          }
+        }
       case Concat =>
-        val strs = terms.collect { case TLit(EStr(s)) => s }
+        val strs = terms.collect {
+          case TLit(EStr(s))      => s
+          case TLit(ECodeUnit(c)) => c.toString
+        }
         if (strs.size == terms.size) Some(TLit(EStr(strs.mkString)))
         else {
           val lists = terms.collect { case TList(es) => es }
           if (lists.size == terms.size) Some(TList(lists.flatten))
           else None
         }
-      case Min =>
-        val nums = terms.collect { case TLit(EMath(n)) => n }
-        if (nums.size == terms.size && nums.nonEmpty)
-          Some(TLit(EMath(nums.min)))
-        else None
-      case Max =>
-        val nums = terms.collect { case TLit(EMath(n)) => n }
-        if (nums.size == terms.size && nums.nonEmpty)
-          Some(TLit(EMath(nums.max)))
-        else None
 
-  /** constant folding for type conversions */
-  private def fold(cop: COp, lit: LiteralExpr): Option[Term] =
+  private def foldMOp(mop: MOp, terms: List[Term]): Option[Term] =
+    import MOp.*
+    val nums = terms.collect { case TLit(EMath(n)) => n.toDouble }
+    if (nums.size != terms.size) None
+    else
+      val r: Option[Double] = (mop, nums) match
+        case (Expm1, List(a))    => Some(math.expm1(a))
+        case (Log10, List(a))    => Some(math.log10(a))
+        case (Log2, List(a))     => Some(math.log(a) / math.log(2))
+        case (Cos, List(a))      => Some(math.cos(a))
+        case (Cbrt, List(a))     => Some(math.cbrt(a))
+        case (Exp, List(a))      => Some(math.exp(a))
+        case (Cosh, List(a))     => Some(math.cosh(a))
+        case (Sinh, List(a))     => Some(math.sinh(a))
+        case (Tanh, List(a))     => Some(math.tanh(a))
+        case (Acos, List(a))     => Some(math.acos(a))
+        case (Asin, List(a))     => Some(math.asin(a))
+        case (Atan2, List(a, b)) => Some(math.atan2(a, b))
+        case (Atan, List(a))     => Some(math.atan(a))
+        case (Log1p, List(a))    => Some(math.log1p(a))
+        case (Log, List(a))      => Some(math.log(a))
+        case (Sin, List(a))      => Some(math.sin(a))
+        case (Sqrt, List(a))     => Some(math.sqrt(a))
+        case (Tan, List(a))      => Some(math.tan(a))
+        case _                   => None // Acosh, Asinh, Atanh not supported
+      r.map(v => TLit(EMath(v)))
+
+  private def foldCOp(cop: COp, lit: LiteralExpr): Option[Term] =
     import COp.*
     (cop, lit) match
-      // to math
       case (ToMath, EMath(n))     => Some(TLit(EMath(n)))
       case (ToMath, ENumber(d))   => Some(TLit(EMath(BigDecimal(d))))
       case (ToMath, EBigInt(n))   => Some(TLit(EMath(BigDecimal(n))))
       case (ToMath, ECodeUnit(c)) => Some(TLit(EMath(BigDecimal(c.toInt))))
-      // to number
       case (ToNumber, EMath(n))   => Some(TLit(ENumber(n.toDouble)))
       case (ToNumber, ENumber(d)) => Some(TLit(ENumber(d)))
       case (ToNumber, EInfinity(pos)) =>
-        Some(
-          TLit(
-            ENumber(
-              if (pos) Double.PositiveInfinity else Double.NegativeInfinity,
-            ),
-          ),
-        )
+        val v = if (pos) Double.PositiveInfinity else Double.NegativeInfinity
+        Some(TLit(ENumber(v)))
       case (ToApproxNumber, EMath(n)) => Some(TLit(ENumber(n.toDouble)))
-      // to bigint
-      case (ToBigInt, EMath(n))   => Some(TLit(EBigInt(n.toBigInt)))
-      case (ToBigInt, EBigInt(n)) => Some(TLit(EBigInt(n)))
-      // to code unit
-      case (ToCodeUnit, EMath(n)) => Some(TLit(ECodeUnit(n.toChar)))
-      // to string
-      case (ToStr(_), EStr(s)) => Some(TLit(EStr(s)))
+      case (ToBigInt, EMath(n))       => Some(TLit(EBigInt(n.toBigInt)))
+      case (ToBigInt, EBigInt(n))     => Some(TLit(EBigInt(n)))
+      case (ToCodeUnit, EMath(n))     => Some(TLit(ECodeUnit(n.toChar)))
+      case (ToStr(_), EStr(s))        => Some(TLit(EStr(s)))
       case (ToStr(None), EMath(n)) =>
         Some(TLit(EStr(if (n.isWhole) n.toBigInt.toString else n.toString)))
       case (ToStr(None), EBigInt(n)) => Some(TLit(EStr(n.toString)))

@@ -8,7 +8,7 @@ type Path = List[Node]
 object PathEnumerator:
   def apply(func: Func, target: Branch): LazyList[Path] =
     if (hasYet(target)) LazyList()
-    else
+    else {
       // whitelist of nodes that can reach the target branch (for pruning)
       val whitelist = func.reachingTo(target)
 
@@ -19,7 +19,7 @@ object PathEnumerator:
           val elseOpt = b.elseNode.filter(whitelist)
           thenOpt.toList ++ elseOpt.toList
         case b: Block => b.next.toList
-        case c: Call  => c.next.toList
+        case c: Call  => c.next.toList // TODO: support inter-procedural
 
       def walk(cur: Node, path: Path, visited: Set[Int]): LazyList[Path] =
         if (cur.id == target.id) LazyList(path)
@@ -32,6 +32,7 @@ object PathEnumerator:
           } yield result
 
       walk(func.entry, List(func.entry), Set(func.entry.id)).sortBy(_.length)
+    }
 
   private def hasYet(node: Node): Boolean = node match
     case b: Block  => b.insts.exists(YetCollector(_).nonEmpty)

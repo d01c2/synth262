@@ -28,18 +28,23 @@ case object Solve extends Phase[CFG, String] {
 
     conds
       .map { cond =>
-        solve(func, branch, cond).headOption match
+        solve(cfg, func, branch, cond).headOption match
           case Some(js) => s"[solve] $cond: $js"
           case None     => s"[solve] $cond: no solution"
       }
       .mkString("\n")
 
   /** path enumeration -> symbolic interpretation -> solving -> JS */
-  def solve(func: Func, branch: Branch, cond: Cond): LazyList[String] =
+  def solve(
+    cfg: CFG,
+    func: Func,
+    branch: Branch,
+    cond: Cond,
+  ): LazyList[String] =
     val paths = PathEnumerator(func, branch)
     val params = entryParams(func)
     val goals = LazyList.from(paths).flatMap { path =>
-      SymbolicInterpreter(func, path, cond)
+      SymbolicInterpreter(cfg, func, path, cond)
     }
     goals.flatMap { goal =>
       Solver.solve(goal, params).flatMap { witness =>

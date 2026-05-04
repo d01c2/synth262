@@ -86,7 +86,7 @@ class BuiltinBranchTest extends ESMetaTest {
           val cond = Cond(b, true)
 
           val candidates =
-            try { Solve.solve(f, b, cond) }
+            try { Solve.solve(cfg, f, b, cond) }
             catch { case _: NotImplementedError | _: MatchError => Nil }
 
           // try each candidate until one verifies
@@ -124,7 +124,9 @@ class BuiltinBranchTest extends ESMetaTest {
                   val cond0 = Cond(b, true)
                   val paths0 = PathEnumerator(f, b)
                   val goals0 =
-                    paths0.flatMap(p => SymbolicInterpreter(f, p, cond0)).toList
+                    paths0
+                      .flatMap(p => SymbolicInterpreter(cfg, f, p, cond0))
+                      .toList
                   for ((g, i) <- goals0.zipWithIndex) {
                     val rw = Solver.rewriteApps(g)
                     println(s"         goal[$i]: ${rw.mkString(" /\\ ")}")
@@ -142,7 +144,9 @@ class BuiltinBranchTest extends ESMetaTest {
               } else {
                 val goals =
                   try {
-                    paths.flatMap(p => SymbolicInterpreter(f, p, cond)).toList
+                    paths
+                      .flatMap(p => SymbolicInterpreter(cfg, f, p, cond))
+                      .toList
                   } catch { case _: NotImplementedError | _: MatchError => Nil }
                 if (goals.isEmpty) missingTransfer += 1
                 else if (
@@ -201,14 +205,6 @@ class BuiltinBranchTest extends ESMetaTest {
       println(s"  Failed:   $verifyFailed")
       if (verifyTotal > 0)
         println(f"  Precision: ${verified * 100.0 / verifyTotal}%.1f%%")
-
-      // diagnostic: print which expressions caused failures
-      val fe = SymbolicInterpreter.failedExprs.toList.sortBy(-_._2)
-      if (fe.nonEmpty) {
-        println(s"\n  Missing transfer breakdown (${fe.map(_._2).sum} hits):")
-        for ((key, cnt) <- fe)
-          println(f"    $cnt%4d  $key")
-      }
 
       assert(solved > 0)
       assert(verified > 0)
