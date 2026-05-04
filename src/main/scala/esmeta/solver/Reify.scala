@@ -16,14 +16,16 @@ case class Reify(formulas: List[Formula], entryParams: List[String]) {
   def witness: Option[Witness] =
     if (hasUninterpretableApp(formulas)) None
     else {
-      // normalize equation order
       val normalized = formulas.map(normalizeEq)
-      // filter relevant formulas for each param and build witness
-      val pairs = entryParams.map { param =>
+      // params that must be absent (not passed) per __args__ constraints
+      val omitted = normalized.collect {
+        case FNot(FExists(TVar("__args__"), field)) => field
+      }.toSet
+      val activeParams = entryParams.filterNot(omitted)
+      val pairs = activeParams.map { param =>
         val relevants = normalized.filter(_.freeVars.contains(param))
         buildExpr(param, relevants).map(param -> _)
       }
-      // all params must succeed for a valid witness
       if (pairs.forall(_.isDefined)) Some(pairs.flatten.toMap)
       else None
     }
@@ -74,6 +76,25 @@ case class Reify(formulas: List[Formula], entryParams: List[String]) {
           if !fieldToRecordTy.contains(field) =>
         consumed += f; (field, false)
     }.toMap
+
+    // typed property constraints — only when the base is an object literal
+    // that can have properties merged into it
+    val objLiteralBase = defaultFor(narrowedTy).exists(_.startsWith("{"))
+    val propsTyped =
+      if (objLiteralBase) fs.collect {
+        case f @ FEq(TTypeOf(TApp("Get", List(_, TLit(EStr(key))))), TType(ty))
+            if !(ty <= AbruptT) && !(ty <= NormalT) =>
+          consumed += f; (key, ty)
+      }.toMap
+      else Map.empty[String, ValueTy]
+    if (objLiteralBase) for (f <- fs) f match
+      case f @ FNot(FEq(TApp("Get", List(_, TLit(EStr(_)))), TLit(_))) =>
+        consumed += f
+      case f @ FNot(
+            FEq(TTypeOf(TApp("Get", List(_, TLit(EStr(_))))), TType(_)),
+          ) =>
+        consumed += f
+      case _ => ()
 
     // object config from IsExtensible/GetPrototypeOf
     val extensible = fs.collectFirst {
@@ -129,7 +150,7 @@ case class Reify(formulas: List[Formula], entryParams: List[String]) {
         def valid(v: BigDecimal): Boolean =
           !excSet.contains(v) &&
           loStrict.forall(_ < v) && hiStrict.forall(v < _) &&
-          loIncl.forall(_ <= v) && hiIncl.forall(v >= _)
+          loIncl.forall(_ <= v) && hiIncl.forall(v <= _)
         // effective bounds for picking
         val effLo = List(loStrict, loIncl).flatten match
           case Nil => None
@@ -158,7 +179,7 @@ case class Reify(formulas: List[Formula], entryParams: List[String]) {
     val unconsumed = fs.filterNot(consumed)
 
     val hasProps = propsValue.nonEmpty || propsAbrupt.nonEmpty ||
-      propsExist.exists(_._2)
+      propsTyped.nonEmpty || propsExist.exists(_._2)
     val hasObjConstraints =
       hasProps || extensible.isDefined || prototype.isDefined
 
@@ -170,6 +191,7 @@ case class Reify(formulas: List[Formula], entryParams: List[String]) {
         narrowedTy,
         propsValue,
         propsAbrupt,
+        propsTyped,
         propsExist,
         extensible,
         prototype,
@@ -177,7 +199,7 @@ case class Reify(formulas: List[Formula], entryParams: List[String]) {
     else if (hasInterval) intervalPick.flatMap(n => litToJs(EMath(n)))
     else if (hasTyConstraint || excluded.nonEmpty)
       if (narrowedTy <= ObjectT)
-        buildObject(narrowedTy, Map(), Set(), Map(), None, None)
+        buildObject(narrowedTy, Map(), Set(), Map(), Map(), None, None)
       else defaultFor(narrowedTy, excluded.toSet)
     else Some("undefined")
 
@@ -186,6 +208,7 @@ case class Reify(formulas: List[Formula], entryParams: List[String]) {
     ty: ValueTy,
     propsValue: Map[String, LiteralExpr],
     propsAbrupt: Set[String],
+    propsTyped: Map[String, ValueTy],
     propsExist: Map[String, Boolean],
     extensible: Option[Boolean],
     prototype: Option[LiteralExpr],
@@ -195,13 +218,26 @@ case class Reify(formulas: List[Formula], entryParams: List[String]) {
       litToJs(lit).foreach(jsLit => entries += s"$key: $jsLit")
     for (key <- propsAbrupt)
       entries += s"get $key() { throw 0; }"
+    for ((key, propTy) <- propsTyped)
+      if (!propsValue.contains(key) && !propsAbrupt.contains(key))
+        defaultFor(propTy).foreach(jsVal => entries += s"$key: $jsVal")
     for ((key, exists) <- propsExist)
-      if (exists && !propsValue.contains(key) && !propsAbrupt.contains(key))
+      if (
+        exists && !propsValue.contains(key) && !propsAbrupt.contains(key)
+        && !propsTyped.contains(key)
+      )
         entries += s"$key: 0"
 
     val propList = entries.result()
     val objLiteral =
-      if (propList.isEmpty) base else s"{${propList.mkString(", ")}}"
+      if (propList.isEmpty) base
+      else
+        val baseProps =
+          if (base.startsWith("{") && base.endsWith("}"))
+            val inner = base.drop(1).dropRight(1).trim
+            if (inner.isEmpty) Nil else List(inner)
+          else Nil
+        s"{${(baseProps ++ propList).mkString(", ")}}"
 
     (extensible, prototype) match
       case (Some(false), _)   => s"Object.preventExtensions($objLiteral)"
@@ -310,7 +346,8 @@ object Reify {
   private val specificDefaults: List[(ValueTy, String)] = List(
     RecordT("TypedArray") -> "new Int8Array()",
     RecordT("ArrayIteratorInstance") -> "[][Symbol.iterator]()",
-    RecordT("RegExp") -> "/(?:)/",
+    RecordT("RegExp") -> "{[Symbol.match]: true}",
+    RecordT("BuiltinFunctionObject") -> "Array.isArray",
     RecordT("BooleanObject") -> "Object(true)",
     RecordT("NumberObject") -> "Object(0)",
     RecordT("BigIntObject") -> "Object(0n)",
@@ -352,12 +389,27 @@ object Reify {
     excluded: Set[LiteralExpr] = Set(),
   ): Option[String] =
     val excJs = excluded.flatMap(litToJs)
-    // exact match (specific first), then compatible abstract types
+    // 1. exact match
     defaults
       .collectFirst {
-        case (ct, js) if ty <= ct && !excJs(js) => js
+        case (ct, js) if (ty <= ct) && (ct <= ty) && !excJs(js) => js
       }
       .orElse {
+        // 2. specific intersection for narrow object types
+        if (ty <= ObjectT && !(ObjectT <= ty))
+          specificDefaults.collectFirst {
+            case (ct, js) if !(ty && ct).isBottom && !excJs(js) => js
+          }
+        else None
+      }
+      .orElse {
+        // 3. abstract subtype match
+        abstractDefaults.collectFirst {
+          case (ct, js) if ty <= ct && !excJs(js) => js
+        }
+      }
+      .orElse {
+        // 4. abstract intersection match
         abstractDefaults.collectFirst {
           case (ct, js) if !(ty && ct).isBottom && !excJs(js) => js
         }
@@ -430,6 +482,9 @@ object Reify {
       val newTarget = w.getOrElse("NewTarget", "undefined")
       val args = params
         .filterNot(p => p == "this" || p == "NewTarget")
+        .reverse
+        .dropWhile(!w.contains(_))
+        .reverse
         .map(p => w.getOrElse(p, "undefined"))
       h.path match
         case BuiltinPath.YetPath(_) => None

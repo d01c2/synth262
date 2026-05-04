@@ -12,16 +12,43 @@ object Solver:
   def solve(goal: Goal, entryParams: List[String]): Option[Witness] =
     val entrySet = entryParams.toSet
     val eliminated = eliminate(rewriteApps(goal), entrySet)
-    simplify(eliminated).flatMap(Reify(_, entryParams).witness)
+    val refined = rewriteApps(eliminated)
+    simplify(refined).flatMap(Reify(_, entryParams).witness)
 
   // Rewrite known AO calls into equivalent type constraints
   // FIXME: Manual modeling
   def rewriteApps(fs: Goal): Goal =
-    val rewritten = fs.map(flatten).flatMap(rewriteFormula).map(unfoldTerms)
+    val rewritten = fs
+      .map(flatten)
+      .map(stripCompletionWrappers)
+      .flatMap(rewriteFormula)
+      .map(unfoldTerms)
     if (rewritten != fs) rewriteApps(rewritten) else rewritten
+
+  // strip Completion/Value wrappers without touching type-conversion AOs,
+  // so that formula-level rewrites (e.g. ToNumber) can pattern-match them
+  private def stripCompletionWrappers(f: Formula): Formula = f match
+    case FNot(inner)   => FNot(stripCompletionWrappers(inner))
+    case FEq(l, r)     => FEq(stripCompletion(l), stripCompletion(r))
+    case FLt(l, r)     => FLt(stripCompletion(l), stripCompletion(r))
+    case FExists(b, k) => FExists(stripCompletion(b), k)
+  private def stripCompletion(t: Term): Term = t match
+    case TApp("Completion", List(x)) => stripCompletion(x)
+    case TField(inner, "Value")      => stripCompletion(inner)
+    case TField(base, k)             => TField(stripCompletion(base), k)
+    case TApp(op, args)              => TApp(op, args.map(stripCompletion))
+    case TTypeOf(inner)              => TTypeOf(stripCompletion(inner))
+    case _                           => t
 
   // term-level normalization applied to formulas
   private def unfoldTerms(f: Formula): Formula = f match
+    // .Type = enum → typeof = Normal/Abrupt (completion type discriminator)
+    case FEq(TField(base, "Type"), TLit(EEnum(e))) =>
+      val ty = if (e == "normal") NormalT else AbruptT
+      FEq(TTypeOf(unfoldTermSafe(base)), TType(ty))
+    case FEq(TLit(EEnum(e)), TField(base, "Type")) =>
+      val ty = if (e == "normal") NormalT else AbruptT
+      FEq(TTypeOf(unfoldTermSafe(base)), TType(ty))
     case FNot(inner)   => FNot(unfoldTerms(inner))
     case FEq(l, r)     => FEq(unfoldTerm(l), unfoldTerm(r))
     case FLt(l, r)     => FLt(unfoldTerm(l), unfoldTerm(r))
@@ -173,6 +200,24 @@ object Solver:
         ) if ty <= AbruptT =>
       List(FEq(TTypeOf(x), TType(ObjectT)), FExists(x, slot))
 
+    // === ToNumber value-comparison: add Number type constraint ===
+    case FEq(TApp("ToNumber", List(x)), v @ (_: TVar | _: TLit)) =>
+      List(FEq(x, v), FEq(TTypeOf(x), TType(NumberT)))
+    case FEq(v @ (_: TVar | _: TLit), TApp("ToNumber", List(x))) =>
+      List(FEq(x, v), FEq(TTypeOf(x), TType(NumberT)))
+    case FLt(TApp("ToNumber", List(x)), v @ (_: TVar | _: TLit)) =>
+      List(FLt(x, v), FEq(TTypeOf(x), TType(NumberT)))
+    case FLt(v @ (_: TVar | _: TLit), TApp("ToNumber", List(x))) =>
+      List(FLt(v, x), FEq(TTypeOf(x), TType(NumberT)))
+    case FNot(FEq(TApp("ToNumber", List(x)), v @ (_: TVar | _: TLit))) =>
+      List(FNot(FEq(x, v)), FEq(TTypeOf(x), TType(NumberT)))
+    case FNot(FEq(v @ (_: TVar | _: TLit), TApp("ToNumber", List(x)))) =>
+      List(FNot(FEq(x, v)), FEq(TTypeOf(x), TType(NumberT)))
+    case FNot(FLt(TApp("ToNumber", List(x)), v @ (_: TVar | _: TLit))) =>
+      List(FNot(FLt(x, v)), FEq(TTypeOf(x), TType(NumberT)))
+    case FNot(FLt(v @ (_: TVar | _: TLit), TApp("ToNumber", List(x)))) =>
+      List(FNot(FLt(v, x)), FEq(TTypeOf(x), TType(NumberT)))
+
     // === General FNot unwrapping ===
     case FNot(inner) =>
       rewriteFormula(inner) match
@@ -284,14 +329,23 @@ object Solver:
       case FEq(t, TLit(v)) => t -> v
       case FEq(TLit(v), t) => t -> v
     }.toMap
-    // contradiction: two different literals asserted equal, or
-    // negation of a tautology (NOT (x == x))
+    val termToType: Map[Term, ValueTy] = flat.collect {
+      case FEq(TTypeOf(t), TType(ty)) => t -> ty
+    }.toMap
+    // contradiction: two different literals asserted equal,
+    // negation of a tautology, or literal incompatible with type constraint
     val hasContradiction = flat.exists {
       case FEq(TLit(a), TLit(b))     => a != b
       case FEq(t, TLit(v))           => termToLit.get(t).exists(_ != v)
       case FEq(TLit(v), t)           => termToLit.get(t).exists(_ != v)
       case FNot(FEq(l, r)) if l == r => true
       case _                         => false
+    } || termToLit.exists { (t, lit) =>
+      termToType
+        .get(t)
+        .exists(ty =>
+          !(ty <= NormalT) && !(ty <= AbruptT) && (litType(lit) && ty).isBottom,
+        )
     }
     if (hasContradiction) None
     else
@@ -305,3 +359,12 @@ object Solver:
           true
         case _ => false
       })
+
+  private def litType(lit: LiteralExpr): ValueTy = lit match
+    case _: EMath | _: ENumber | _: EInfinity => NumberT
+    case _: EStr                              => StrT
+    case _: EBool                             => BoolT
+    case _: ENull                             => NullT
+    case _: EUndef                            => UndefT
+    case _: EBigInt                           => BigIntT
+    case _                                    => AnyT
