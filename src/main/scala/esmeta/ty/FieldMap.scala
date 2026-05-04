@@ -49,8 +49,14 @@ case class FieldMap(map: Map[String, Binding])
         } yield field -> binding).toMap,
       )
 
-  /** TODO prune type */
-  def --(that: => FieldMap): FieldMap = this
+  /** prune type */
+  def --(that: => FieldMap): FieldMap = FieldMap(
+    (for {
+      field <- (this.fields ++ that.fields)
+      binding = this(field) -- that(field)
+      if !binding.isTop
+    } yield field -> binding).toMap,
+  )
 
   /** field accessor */
   def apply(field: String): Binding = map.getOrElse(field, Binding.Top)

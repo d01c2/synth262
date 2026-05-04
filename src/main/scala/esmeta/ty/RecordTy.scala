@@ -86,10 +86,17 @@ enum RecordTy extends TyElem with Lattice[RecordTy] {
     case (Bot, _) | (_, Top) => Bot
     case (Top, _) | (_, Bot) => this
     case (Elem(lmap), Elem(rmap)) =>
-      Elem(lmap.filter { (l, lfm) =>
-        !rmap.exists { (r, rfm) =>
-          isStrictSubTy(l, r) || (l == r && lfm <= rfm)
-        }
+      Elem(lmap.flatMap { (l, lfm) =>
+        if (
+          rmap.exists { (r, rfm) =>
+            isStrictSubTy(l, r) || (l == r && lfm <= rfm)
+          }
+        )
+          None
+        else
+          rmap.find((r, _) => l == r) match
+            case Some((_, rfm)) => Some(l -> (lfm -- rfm))
+            case None           => Some(l -> lfm)
       })
 
   /** get key type */
