@@ -2,13 +2,13 @@ package esmeta.solver
 
 import esmeta.ir.*
 import esmeta.ty.*
-import Formula.*, Term.*
+import Formula.*, SymExpr.*
 
 type Goal = List[Formula]
-type Witness = Map[String, String]
+type Witness = Map[SymId, String]
 
 object Solver:
-  def solve(goal: Goal, entryParams: List[String]): Option[Witness] =
+  def solve(goal: Goal, entryParams: List[SymId]): Option[Witness] =
     simplify(rewriteApps(goal)).flatMap(Reify(_, entryParams).witness)
 
   def rewriteApps(fs: Goal): Goal =
@@ -23,108 +23,111 @@ object Solver:
 
   private def rewriteFormula(f: Formula): List[Formula] = f match
     // IsCallable(x) == true/false
-    case FEq(TApp("IsCallable", List(x)), TLit(EBool(b))) =>
-      val eq = FEq(TTypeOf(x), TType(FunctionT))
+    case FEq(App("IsCallable", List(x)), Lit(EBool(b))) =>
+      val eq = FEq(TypeOf(x), SType(FunctionT))
       List(if (b) eq else FNot(eq))
     // IsConstructor(x) == true/false
-    case FEq(TApp("IsConstructor", List(x)), TLit(EBool(b))) =>
-      val eq = FEq(TTypeOf(x), TType(ConstructorT))
+    case FEq(App("IsConstructor", List(x)), Lit(EBool(b))) =>
+      val eq = FEq(TypeOf(x), SType(ConstructorT))
       List(if (b) eq else FNot(eq))
     // IsRegExp(x) == true/false
-    case FEq(TApp("IsRegExp", List(x)), TLit(EBool(true))) =>
-      List(FEq(TTypeOf(x), TType(ObjectT)), FExists(x, "RegExpMatcher"))
-    case FEq(TApp("IsRegExp", List(x)), TLit(EBool(false))) =>
+    case FEq(App("IsRegExp", List(x)), Lit(EBool(true))) =>
+      List(
+        FEq(TypeOf(x), SType(ObjectT)),
+        FExists(x, Lit(EStr("RegExpMatcher"))),
+      )
+    case FEq(App("IsRegExp", List(x)), Lit(EBool(false))) =>
       List()
     // typeof IsRegExp: Normal (Get(@@match) rarely throws)
-    case FEq(TTypeOf(TApp("IsRegExp", _)), TType(ty)) if ty <= NormalT =>
+    case FEq(TypeOf(App("IsRegExp", _)), SType(ty)) if ty <= NormalT =>
       List()
     // typeof ToObject(x): throws on Undef|Null
-    case FEq(TTypeOf(TApp("ToObject", List(x))), TType(ty)) if ty <= AbruptT =>
-      List(FEq(TTypeOf(x), TType(UndefT || NullT)))
-    case FEq(TTypeOf(TApp("ToObject", List(x))), TType(ty)) if ty <= NormalT =>
-      List(FNot(FEq(TTypeOf(x), TType(UndefT || NullT))))
+    case FEq(TypeOf(App("ToObject", List(x))), SType(ty)) if ty <= AbruptT =>
+      List(FEq(TypeOf(x), SType(UndefT || NullT)))
+    case FEq(TypeOf(App("ToObject", List(x))), SType(ty)) if ty <= NormalT =>
+      List(FNot(FEq(TypeOf(x), SType(UndefT || NullT))))
     // typeof ToNumber(x): throws on Symbol|BigInt
-    case FEq(TTypeOf(TApp("ToNumber", List(x))), TType(ty)) if ty <= AbruptT =>
-      List(FEq(TTypeOf(x), TType(SymbolT || BigIntT)))
-    case FEq(TTypeOf(TApp("ToNumber", List(x))), TType(ty)) if ty <= NormalT =>
-      List(FNot(FEq(TTypeOf(x), TType(SymbolT || BigIntT))))
+    case FEq(TypeOf(App("ToNumber", List(x))), SType(ty)) if ty <= AbruptT =>
+      List(FEq(TypeOf(x), SType(SymbolT || BigIntT)))
+    case FEq(TypeOf(App("ToNumber", List(x))), SType(ty)) if ty <= NormalT =>
+      List(FNot(FEq(TypeOf(x), SType(SymbolT || BigIntT))))
     // typeof ToString(x): throws on Symbol
-    case FEq(TTypeOf(TApp("ToString", List(x))), TType(ty)) if ty <= AbruptT =>
-      List(FEq(TTypeOf(x), TType(SymbolT)))
-    case FEq(TTypeOf(TApp("ToString", List(x))), TType(ty)) if ty <= NormalT =>
-      List(FNot(FEq(TTypeOf(x), TType(SymbolT))))
+    case FEq(TypeOf(App("ToString", List(x))), SType(ty)) if ty <= AbruptT =>
+      List(FEq(TypeOf(x), SType(SymbolT)))
+    case FEq(TypeOf(App("ToString", List(x))), SType(ty)) if ty <= NormalT =>
+      List(FNot(FEq(TypeOf(x), SType(SymbolT))))
     // typeof RequireObjectCoercible(x): throws on Undef|Null
-    case FEq(TTypeOf(TApp("RequireObjectCoercible", List(x))), TType(ty))
+    case FEq(TypeOf(App("RequireObjectCoercible", List(x))), SType(ty))
         if ty <= AbruptT =>
-      List(FEq(TTypeOf(x), TType(UndefT || NullT)))
-    case FEq(TTypeOf(TApp("RequireObjectCoercible", List(x))), TType(ty))
+      List(FEq(TypeOf(x), SType(UndefT || NullT)))
+    case FEq(TypeOf(App("RequireObjectCoercible", List(x))), SType(ty))
         if ty <= NormalT =>
-      List(FNot(FEq(TTypeOf(x), TType(UndefT || NullT))))
-    case FEq(TTypeOf(TApp("RequireObjectCoercible", List(x))), TType(ty)) =>
-      List(FEq(TTypeOf(x), TType(ty)))
+      List(FNot(FEq(TypeOf(x), SType(UndefT || NullT))))
+    case FEq(TypeOf(App("RequireObjectCoercible", List(x))), SType(ty)) =>
+      List(FEq(TypeOf(x), SType(ty)))
     // typeof RequireInternalSlot(x, slot): throws if not Object or missing slot
     case FEq(
-          TTypeOf(TApp("RequireInternalSlot", List(x, TLit(EStr(slot))))),
-          TType(ty),
+          TypeOf(App("RequireInternalSlot", List(x, Lit(EStr(slot))))),
+          SType(ty),
         ) if ty <= NormalT =>
-      List(FEq(TTypeOf(x), TType(ObjectT)), FExists(x, slot))
+      List(FEq(TypeOf(x), SType(ObjectT)), FExists(x, Lit(EStr(slot))))
     case FEq(
-          TTypeOf(TApp("RequireInternalSlot", List(x, TLit(EStr(slot))))),
-          TType(ty),
+          TypeOf(App("RequireInternalSlot", List(x, Lit(EStr(slot))))),
+          SType(ty),
         ) if ty <= AbruptT =>
-      List(FNot(FEq(TTypeOf(x), TType(ObjectT))))
+      List(FNot(FEq(TypeOf(x), SType(ObjectT))))
     // typeof OrdinaryCreateFromConstructor: always succeeds
-    case FEq(TTypeOf(TApp("OrdinaryCreateFromConstructor", _)), TType(ty))
+    case FEq(TypeOf(App("OrdinaryCreateFromConstructor", _)), SType(ty))
         if ty <= NormalT =>
       List()
     // ToIntegerOrInfinity delegates to ToNumber
-    case FEq(TTypeOf(TApp("ToIntegerOrInfinity", List(x))), TType(ty))
+    case FEq(TypeOf(App("ToIntegerOrInfinity", List(x))), SType(ty))
         if ty <= AbruptT || ty <= NormalT =>
-      List(FEq(TTypeOf(TApp("ToNumber", List(x))), TType(ty)))
+      List(FEq(TypeOf(App("ToNumber", List(x))), SType(ty)))
     // ToLength delegates to ToIntegerOrInfinity
-    case FEq(TTypeOf(TApp("ToLength", List(x))), TType(ty))
+    case FEq(TypeOf(App("ToLength", List(x))), SType(ty))
         if ty <= AbruptT || ty <= NormalT =>
-      List(FEq(TTypeOf(TApp("ToIntegerOrInfinity", List(x))), TType(ty)))
+      List(FEq(TypeOf(App("ToIntegerOrInfinity", List(x))), SType(ty)))
     // ToIndex delegates to ToIntegerOrInfinity
-    case FEq(TTypeOf(TApp("ToIndex", List(x))), TType(ty))
+    case FEq(TypeOf(App("ToIndex", List(x))), SType(ty))
         if ty <= AbruptT || ty <= NormalT =>
-      List(FEq(TTypeOf(TApp("ToIntegerOrInfinity", List(x))), TType(ty)))
+      List(FEq(TypeOf(App("ToIntegerOrInfinity", List(x))), SType(ty)))
     // ValidateTypedArray delegates to RequireInternalSlot
-    case FEq(TTypeOf(TApp("ValidateTypedArray", List(x, _))), TType(ty))
+    case FEq(TypeOf(App("ValidateTypedArray", List(x, _))), SType(ty))
         if ty <= AbruptT || ty <= NormalT =>
       List(
         FEq(
-          TTypeOf(
-            TApp("RequireInternalSlot", List(x, TLit(EStr("TypedArrayName")))),
+          TypeOf(
+            App("RequireInternalSlot", List(x, Lit(EStr("TypedArrayName")))),
           ),
-          TType(ty),
+          SType(ty),
         ),
       )
     // !(typeof RequireInternalSlot(x, slot) = Abrupt) → Normal case
     case FNot(
           FEq(
-            TTypeOf(TApp("RequireInternalSlot", List(x, TLit(EStr(slot))))),
-            TType(ty),
+            TypeOf(App("RequireInternalSlot", List(x, Lit(EStr(slot))))),
+            SType(ty),
           ),
         ) if ty <= AbruptT =>
-      List(FEq(TTypeOf(x), TType(ObjectT)), FExists(x, slot))
+      List(FEq(TypeOf(x), SType(ObjectT)), FExists(x, Lit(EStr(slot))))
     // ToNumber value-comparison: unwrap and add Number type constraint
-    case FEq(TApp("ToNumber", List(x)), v @ (_: TVar | _: TLit)) =>
-      List(FEq(x, v), FEq(TTypeOf(x), TType(NumberT)))
-    case FEq(v @ (_: TVar | _: TLit), TApp("ToNumber", List(x))) =>
-      List(FEq(x, v), FEq(TTypeOf(x), TType(NumberT)))
-    case FLt(TApp("ToNumber", List(x)), v @ (_: TVar | _: TLit)) =>
-      List(FLt(x, v), FEq(TTypeOf(x), TType(NumberT)))
-    case FLt(v @ (_: TVar | _: TLit), TApp("ToNumber", List(x))) =>
-      List(FLt(v, x), FEq(TTypeOf(x), TType(NumberT)))
-    case FNot(FEq(TApp("ToNumber", List(x)), v @ (_: TVar | _: TLit))) =>
-      List(FNot(FEq(x, v)), FEq(TTypeOf(x), TType(NumberT)))
-    case FNot(FEq(v @ (_: TVar | _: TLit), TApp("ToNumber", List(x)))) =>
-      List(FNot(FEq(x, v)), FEq(TTypeOf(x), TType(NumberT)))
-    case FNot(FLt(TApp("ToNumber", List(x)), v @ (_: TVar | _: TLit))) =>
-      List(FNot(FLt(x, v)), FEq(TTypeOf(x), TType(NumberT)))
-    case FNot(FLt(v @ (_: TVar | _: TLit), TApp("ToNumber", List(x)))) =>
-      List(FNot(FLt(v, x)), FEq(TTypeOf(x), TType(NumberT)))
+    case FEq(App("ToNumber", List(x)), v @ (_: Sym | _: Lit)) =>
+      List(FEq(x, v), FEq(TypeOf(x), SType(NumberT)))
+    case FEq(v @ (_: Sym | _: Lit), App("ToNumber", List(x))) =>
+      List(FEq(x, v), FEq(TypeOf(x), SType(NumberT)))
+    case FLt(App("ToNumber", List(x)), v @ (_: Sym | _: Lit)) =>
+      List(FLt(x, v), FEq(TypeOf(x), SType(NumberT)))
+    case FLt(v @ (_: Sym | _: Lit), App("ToNumber", List(x))) =>
+      List(FLt(v, x), FEq(TypeOf(x), SType(NumberT)))
+    case FNot(FEq(App("ToNumber", List(x)), v @ (_: Sym | _: Lit))) =>
+      List(FNot(FEq(x, v)), FEq(TypeOf(x), SType(NumberT)))
+    case FNot(FEq(v @ (_: Sym | _: Lit), App("ToNumber", List(x)))) =>
+      List(FNot(FEq(x, v)), FEq(TypeOf(x), SType(NumberT)))
+    case FNot(FLt(App("ToNumber", List(x)), v @ (_: Sym | _: Lit))) =>
+      List(FNot(FLt(x, v)), FEq(TypeOf(x), SType(NumberT)))
+    case FNot(FLt(v @ (_: Sym | _: Lit), App("ToNumber", List(x)))) =>
+      List(FNot(FLt(v, x)), FEq(TypeOf(x), SType(NumberT)))
     // General FNot: recurse into inner
     case FNot(inner) =>
       rewriteFormula(inner) match
@@ -132,105 +135,105 @@ object Solver:
         case _                     => List(f)
     case _ => List(f)
 
-  // --- Term-level normalization ---
+  // --- expression-level normalization ---
 
   private def stripCompletionWrappers(f: Formula): Formula = f match
     case FNot(inner)   => FNot(stripCompletionWrappers(inner))
     case FEq(l, r)     => FEq(stripCompletion(l), stripCompletion(r))
     case FLt(l, r)     => FLt(stripCompletion(l), stripCompletion(r))
     case FExists(b, k) => FExists(stripCompletion(b), k)
-  private def stripCompletion(t: Term): Term = t match
-    case TApp("Completion", List(x)) => stripCompletion(x)
-    case TField(inner, "Value")      => stripCompletion(inner)
-    case TField(base, k)             => TField(stripCompletion(base), k)
-    case TApp(op, args)              => TApp(op, args.map(stripCompletion))
-    case TTypeOf(inner)              => TTypeOf(stripCompletion(inner))
-    case _                           => t
+  private def stripCompletion(t: SymExpr): SymExpr = t match
+    case App("Completion", List(x))      => stripCompletion(x)
+    case Proj(inner, Lit(EStr("Value"))) => stripCompletion(inner)
+    case Proj(base, k)                   => Proj(stripCompletion(base), k)
+    case App(op, args)                   => App(op, args.map(stripCompletion))
+    case TypeOf(inner)                   => TypeOf(stripCompletion(inner))
+    case _                               => t
 
   private def unfoldTerms(f: Formula): Formula = f match
-    case FEq(TField(base, "Type"), TLit(EEnum(e))) =>
+    case FEq(Proj(base, Lit(EStr("Type"))), Lit(EEnum(e))) =>
       val ty = if (e == "normal") NormalT else AbruptT
-      FEq(TTypeOf(unfoldTermSafe(base)), TType(ty))
-    case FEq(TLit(EEnum(e)), TField(base, "Type")) =>
+      FEq(TypeOf(unfoldSafe(base)), SType(ty))
+    case FEq(Lit(EEnum(e)), Proj(base, Lit(EStr("Type")))) =>
       val ty = if (e == "normal") NormalT else AbruptT
-      FEq(TTypeOf(unfoldTermSafe(base)), TType(ty))
+      FEq(TypeOf(unfoldSafe(base)), SType(ty))
     case FNot(inner)   => FNot(unfoldTerms(inner))
-    case FEq(l, r)     => FEq(unfoldTerm(l), unfoldTerm(r))
-    case FLt(l, r)     => FLt(unfoldTerm(l), unfoldTerm(r))
-    case FExists(b, k) => FExists(unfoldTerm(b), k)
+    case FEq(l, r)     => FEq(unfold(l), unfold(r))
+    case FLt(l, r)     => FLt(unfold(l), unfold(r))
+    case FExists(b, k) => FExists(unfold(b), k)
 
-  private def unfoldTerm(t: Term): Term = t match
-    case TApp("Completion", List(x)) => unfoldTerm(x)
-    case TField(inner, "Value")      => unfoldTerm(inner)
-    case TApp("LengthOfArrayLike", List(x)) =>
-      TField(unfoldTerm(x), "length")
-    case TApp("GetMethod", List(v, TLit(EStr(p)))) =>
-      TField(unfoldTerm(v), p)
-    case TApp("GetMethod", List(v, TField(_, p))) =>
-      TField(unfoldTerm(v), p)
-    case TApp("ToNumber", List(x))               => unfoldTerm(x)
-    case TApp("ToString", List(x))               => unfoldTerm(x)
-    case TApp("ToObject", List(x))               => unfoldTerm(x)
-    case TApp("RequireObjectCoercible", List(x)) => unfoldTerm(x)
-    case TApp("ToPropertyKey", List(x))          => unfoldTerm(x)
-    case TApp("ToIntegerOrInfinity", List(x)) =>
-      TApp("ToNumber", List(unfoldTerm(x)))
-    case TApp("ToLength", List(x)) =>
-      TApp("ToIntegerOrInfinity", List(unfoldTerm(x)))
-    case TApp("ToIndex", List(x)) =>
-      TApp("ToIntegerOrInfinity", List(unfoldTerm(x)))
-    case TTypeOf(inner)  => TTypeOf(unfoldTermSafe(inner))
-    case TField(base, k) => TField(unfoldTerm(base), k)
-    case TApp(op, args)  => TApp(op, args.map(unfoldTerm))
-    case TList(elems)    => TList(elems.map(unfoldTerm))
-    case _               => t
+  private def unfold(t: SymExpr): SymExpr = t match
+    case App("Completion", List(x))      => unfold(x)
+    case Proj(inner, Lit(EStr("Value"))) => unfold(inner)
+    case App("LengthOfArrayLike", List(x)) =>
+      Proj(unfold(x), Lit(EStr("length")))
+    case App("GetMethod", List(v, Lit(EStr(p)))) =>
+      Proj(unfold(v), Lit(EStr(p)))
+    case App("GetMethod", List(v, Proj(_, p))) =>
+      Proj(unfold(v), p)
+    case App("ToNumber", List(x))               => unfold(x)
+    case App("ToString", List(x))               => unfold(x)
+    case App("ToObject", List(x))               => unfold(x)
+    case App("RequireObjectCoercible", List(x)) => unfold(x)
+    case App("ToPropertyKey", List(x))          => unfold(x)
+    case App("ToIntegerOrInfinity", List(x)) =>
+      App("ToNumber", List(unfold(x)))
+    case App("ToLength", List(x)) =>
+      App("ToIntegerOrInfinity", List(unfold(x)))
+    case App("ToIndex", List(x)) =>
+      App("ToIntegerOrInfinity", List(unfold(x)))
+    case TypeOf(inner) => TypeOf(unfoldSafe(inner))
+    case Proj(base, k) => Proj(unfold(base), k)
+    case App(op, args) => App(op, args.map(unfold))
+    case SList(elems)  => SList(elems.map(unfold))
+    case _             => t
 
-  private def unfoldTermSafe(t: Term): Term = t match
-    case TApp("Completion", List(x)) => unfoldTermSafe(x)
-    case TField(inner, "Value")      => unfoldTermSafe(inner)
-    case TApp("LengthOfArrayLike", List(x)) =>
-      TField(unfoldTermSafe(x), "length")
-    case TField(base, k) => TField(unfoldTermSafe(base), k)
-    case TApp(op, args)  => TApp(op, args.map(unfoldTermSafe))
-    case TTypeOf(inner)  => TTypeOf(unfoldTermSafe(inner))
-    case _               => t
+  private def unfoldSafe(t: SymExpr): SymExpr = t match
+    case App("Completion", List(x))      => unfoldSafe(x)
+    case Proj(inner, Lit(EStr("Value"))) => unfoldSafe(inner)
+    case App("LengthOfArrayLike", List(x)) =>
+      Proj(unfoldSafe(x), Lit(EStr("length")))
+    case Proj(base, k) => Proj(unfoldSafe(base), k)
+    case App(op, args) => App(op, args.map(unfoldSafe))
+    case TypeOf(inner) => TypeOf(unfoldSafe(inner))
+    case _             => t
 
   // --- Simplification ---
 
   private def flatten(f: Formula): Formula = f match
     case FNot(FNot(inner)) => flatten(inner)
-    case FNot(FEq(TTypeOf(t), TType(ty))) if ty <= NormalT =>
-      FEq(TTypeOf(t), TType(AbruptT))
-    case FNot(FEq(TTypeOf(t), TType(ty))) if ty <= AbruptT =>
-      FEq(TTypeOf(t), TType(NormalT))
+    case FNot(FEq(TypeOf(t), SType(ty))) if ty <= NormalT =>
+      FEq(TypeOf(t), SType(AbruptT))
+    case FNot(FEq(TypeOf(t), SType(ty))) if ty <= AbruptT =>
+      FEq(TypeOf(t), SType(NormalT))
     case FNot(inner) => FNot(flatten(inner))
-    case FEq(TApp(UOp.Not, List(t)), TLit(EBool(b))) =>
-      flatten(FEq(t, TLit(EBool(!b))))
-    case FEq(TLit(EBool(b)), TApp(UOp.Not, List(t))) =>
-      flatten(FEq(t, TLit(EBool(!b))))
-    case FEq(TApp(BOp.Eq, List(l, r)), TLit(EBool(b))) =>
+    case FEq(App(UOp.Not, List(t)), Lit(EBool(b))) =>
+      flatten(FEq(t, Lit(EBool(!b))))
+    case FEq(Lit(EBool(b)), App(UOp.Not, List(t))) =>
+      flatten(FEq(t, Lit(EBool(!b))))
+    case FEq(App(BOp.Eq, List(l, r)), Lit(EBool(b))) =>
       if (b) FEq(l, r) else FNot(FEq(l, r))
-    case FEq(TLit(EBool(b)), TApp(BOp.Eq, List(l, r))) =>
+    case FEq(Lit(EBool(b)), App(BOp.Eq, List(l, r))) =>
       if (b) FEq(l, r) else FNot(FEq(l, r))
-    case FEq(TApp(BOp.Lt, List(l, r)), TLit(EBool(b))) =>
+    case FEq(App(BOp.Lt, List(l, r)), Lit(EBool(b))) =>
       if (b) FLt(l, r) else FNot(FLt(l, r))
-    case FEq(TLit(EBool(b)), TApp(BOp.Lt, List(l, r))) =>
+    case FEq(Lit(EBool(b)), App(BOp.Lt, List(l, r))) =>
       if (b) FLt(l, r) else FNot(FLt(l, r))
     case _ => f
 
   private def simplify(fs: List[Formula]): Option[List[Formula]] =
     val flat = fs.map(flatten)
-    val termToLit: Map[Term, LiteralExpr] = flat.collect {
-      case FEq(t, TLit(v)) => t -> v
-      case FEq(TLit(v), t) => t -> v
+    val termToLit: Map[SymExpr, LiteralExpr] = flat.collect {
+      case FEq(t, Lit(v)) => t -> v
+      case FEq(Lit(v), t) => t -> v
     }.toMap
-    val termToType: Map[Term, ValueTy] = flat.collect {
-      case FEq(TTypeOf(t), TType(ty)) => t -> ty
+    val termToType: Map[SymExpr, ValueTy] = flat.collect {
+      case FEq(TypeOf(t), SType(ty)) => t -> ty
     }.toMap
     val hasContradiction = flat.exists {
-      case FEq(TLit(a), TLit(b))     => a != b
-      case FEq(t, TLit(v))           => termToLit.get(t).exists(_ != v)
-      case FEq(TLit(v), t)           => termToLit.get(t).exists(_ != v)
+      case FEq(Lit(a), Lit(b))       => a != b
+      case FEq(t, Lit(v))            => termToLit.get(t).exists(_ != v)
+      case FEq(Lit(v), t)            => termToLit.get(t).exists(_ != v)
       case FNot(FEq(l, r)) if l == r => true
       case _                         => false
     } || termToLit.exists { (t, lit) =>
@@ -241,10 +244,10 @@ object Solver:
     if (hasContradiction) None
     else {
       Some(flat.filterNot {
-        case FEq(l, r) if l == r   => true
-        case FNot(FEq(t, TLit(v))) => termToLit.get(t).exists(_ != v)
-        case FNot(FEq(TLit(v), t)) => termToLit.get(t).exists(_ != v)
-        case FEq(TTypeOf(TApp(fname: String, _)), TType(ty))
+        case FEq(l, r) if l == r  => true
+        case FNot(FEq(t, Lit(v))) => termToLit.get(t).exists(_ != v)
+        case FNot(FEq(Lit(v), t)) => termToLit.get(t).exists(_ != v)
+        case FEq(TypeOf(App(fname: String, _)), SType(ty))
             if ty <= NormalT && Reify.isInternalMethod(fname) =>
           true
         case _ => false

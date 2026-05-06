@@ -2,13 +2,13 @@ package esmeta.phase
 
 import esmeta.*
 import esmeta.cfg.*
-import esmeta.es.util.Coverage
 import esmeta.es.util.Coverage.Cond
 import esmeta.ir.{Func => _, *}
 import esmeta.solver.*
 import esmeta.spec.{BuiltinHead, ParamKind}
 import esmeta.util.*
 import esmeta.util.BaseUtils.*
+import scala.collection.mutable.{Set => MSet, Queue}
 
 /** `solve` phase */
 case object Solve extends Phase[CFG, String] {
@@ -16,50 +16,69 @@ case object Solve extends Phase[CFG, String] {
   val help = "generates an ECMAScript program that covers a target branch"
 
   def apply(cfg: CFG, cmdConfig: CommandConfig, config: Config): String =
+    given CFG = cfg
     val id = config.branch.getOrElse(raise("solve: branch id is required"))
     val branch = cfg.nodeMap.get(id) match
       case Some(b: Branch) => b
       case _               => raise(s"solve: node $id is not a branch")
-
-    val func = cfg.funcOf(branch)
     val conds: List[Cond] = config.side match
       case Some(side) => List(Cond(branch, side))
       case None       => List(Cond(branch, true), Cond(branch, false))
 
+    val entries = findEntries(branch)
+
     conds
       .map { cond =>
-        solve(cfg, func, branch, cond).headOption match
+        LazyList.from(entries).flatMap(solve(_, branch, cond)).headOption match
           case Some(js) => s"[solve] $cond: $js"
           case None     => s"[solve] $cond: no solution"
       }
       .mkString("\n")
 
-  /** path enumeration -> symbolic interpretation -> solving -> JS */
+  private def findEntries(branch: Branch)(using cfg: CFG): List[Func] =
+    val func = cfg.funcOf(branch)
+    if (func.isBuiltin) List(func)
+    else {
+      val reached = MSet(func)
+      val queue = Queue(func)
+      while (queue.nonEmpty) {
+        for {
+          caller <- cfg.callerOf.getOrElse(queue.dequeue(), Set.empty)
+          if reached.add(caller)
+        } queue.enqueue(caller)
+      }
+      reached.filter(_.isBuiltin).toList
+    }
+
+  /** symbolic walk -> constraint solving -> JS reification */
   def solve(
-    cfg: CFG,
-    func: Func,
+    entry: Func,
     branch: Branch,
     cond: Cond,
-  ): LazyList[String] =
-    val paths = PathEnumerator(func, branch)
-    val params = entryParams(func)
-    val goals = LazyList.from(paths).flatMap { path =>
-      SymbolicInterpreter(cfg, func, path, cond)
-    }
-    goals.flatMap { goal =>
+  )(using CFG): LazyList[String] =
+    val params = paramIds(entry)
+    val goals = SymbolicInterpreter(entry, branch, cond)
+    LazyList.from(goals).flatMap { goal =>
       Solver.solve(goal, params).flatMap { witness =>
-        Reify.toJsCall(func, params, witness)
+        Reify.toJsCall(entry, params, witness)
       }
     }
 
-  def entryParams(func: Func): List[String] =
-    val irParams =
-      func.irFunc.params.map(_.lhs.name).filterNot(_ == ARGS_LIST_STR)
-    val builtinArgs = func.head.toList.collect {
-      case head: BuiltinHead =>
-        head.params.collect { case p if p.kind != ParamKind.Variadic => p.name }
-    }.flatten
-    (irParams ++ builtinArgs).distinct
+  def paramIds(func: Func): List[SymId] =
+    val irIds = func.irFunc.params.flatMap { p =>
+      p.lhs.name match
+        case "this"      => Some(SymId.This)
+        case "NewTarget" => Some(SymId.NewTarget)
+        case _           => None
+    }
+    val headIds = func.head match
+      case Some(h: BuiltinHead) =>
+        h.params
+          .collect { case p if p.kind != ParamKind.Variadic => p }
+          .zipWithIndex
+          .map((_, k) => SymId.Arg(k))
+      case _ => Nil
+    (irIds ++ headIds).distinct
 
   def defaultConfig: Config = Config()
   val options: List[PhaseOption[Config]] = List(

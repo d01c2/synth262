@@ -5,7 +5,7 @@ import esmeta.cfg.util.*
 import esmeta.error.*
 import esmeta.es.Initialize
 import esmeta.es.builtin.Intrinsics
-import esmeta.ir.Program
+import esmeta.ir.{Program, ICall, ISdoCall, EClo}
 import esmeta.parser.{ESParser, AstFrom}
 import esmeta.spec.{Spec, Grammar}
 import esmeta.state.Value
@@ -62,6 +62,20 @@ case class CFG(
     func <- funcs
     node <- func.nodes
   } yield node -> func).toMap
+
+  /** mapping from functions to their callers (reverse call graph) */
+  lazy val callerOf: Map[Func, Set[Func]] = (for {
+    caller <- funcs
+    call <- caller.nodes.collect { case c: Call => c }
+    callee <- call.callInst match
+      case ICall(_, EClo(fname, _), _)       => fnameMap.get(fname)
+      case ISdoCall(_, EClo(fname, _), _, _) => fnameMap.get(fname)
+      case _                                 => None
+  } yield (callee, caller))
+    .groupMap(_._1)(_._2)
+    .view
+    .mapValues(_.toSet)
+    .toMap
 
   lazy val depGraph = new DepGraph(this)
 
