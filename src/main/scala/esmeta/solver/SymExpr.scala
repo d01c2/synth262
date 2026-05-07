@@ -3,72 +3,72 @@ package esmeta.solver
 import esmeta.ir.*
 import esmeta.ty.ValueTy
 
-enum SymId:
+enum Sym:
   case This
-  case Arg(index: Int)
   case NewTarget
-  case Args
+  case ArgsList
+  case Arg(index: Int)
 
   override def toString: String = this match
-    case This      => "#ThisArg"
-    case Arg(k)    => s"#$k"
+    case This      => "#this"
     case NewTarget => "#NewTarget"
-    case Args      => "#Args"
+    case ArgsList  => "#ArgumentsList"
+    case Arg(k)    => s"#ArgumentsList[$k]"
 
 enum SymExpr:
-  case Sym(id: SymId)
-  case Lit(value: LiteralExpr)
-  case Proj(base: SymExpr, key: SymExpr)
-  case App(name: Op | String, args: List[SymExpr])
-  case SList(elems: List[SymExpr])
-  case SRecord(tname: String, fields: Map[String, SymExpr])
-  case SMap(entries: List[(SymExpr, SymExpr)])
-  case TypeOf(t: SymExpr)
-  case SType(ty: ValueTy)
+  case SESym(id: Sym)
+  case SELit(value: LiteralExpr)
+  case SEProj(base: SymExpr, key: SymExpr)
+  case SEApp(name: Op | String, args: List[SymExpr])
+  case SEList(elems: List[SymExpr])
+  case SERecord(tname: String, fields: Map[String, SymExpr])
+  case SEMap(entries: List[(SymExpr, SymExpr)])
+  case SETypeOf(t: SymExpr)
+  case SEType(ty: ValueTy)
 
-  def freeVars: Set[SymId] = this match
-    case Sym(id)        => Set(id)
-    case Lit(_)         => Set.empty
-    case Proj(base, k)  => base.freeVars ++ k.freeVars
-    case App(_, args)   => args.flatMap(_.freeVars).toSet
-    case SList(elems)   => elems.flatMap(_.freeVars).toSet
-    case SRecord(_, fs) => fs.values.flatMap(_.freeVars).toSet
-    case SMap(es)       => es.flatMap((k, v) => k.freeVars ++ v.freeVars).toSet
-    case TypeOf(t)      => t.freeVars
-    case SType(_)       => Set.empty
+  def freeVars: Set[Sym] = this match
+    case SESym(id)       => Set(id)
+    case SELit(_)        => Set.empty
+    case SEProj(base, k) => base.freeVars ++ k.freeVars
+    case SEApp(_, args)  => args.flatMap(_.freeVars).toSet
+    case SEList(elems)   => elems.flatMap(_.freeVars).toSet
+    case SERecord(_, fs) => fs.values.flatMap(_.freeVars).toSet
+    case SEMap(es)       => es.flatMap((k, v) => k.freeVars ++ v.freeVars).toSet
+    case SETypeOf(t)     => t.freeVars
+    case SEType(_)       => Set.empty
 
-  def occurs(id: SymId): Boolean = freeVars.contains(id)
+  def occurs(id: Sym): Boolean = freeVars.contains(id)
 
   override def toString: String = this match
-    case Sym(id)       => id.toString
-    case Lit(v)        => v.toString
-    case Proj(base, k) => s"$base.$k"
-    case App(n, args)  => s"$n(${args.mkString(", ")})"
-    case SList(elems)  => s"[${elems.mkString(", ")}]"
-    case SRecord(tn, fs) =>
+    case SESym(id)       => id.toString
+    case SELit(v)        => v.toString
+    case SEProj(base, k) => s"$base.$k"
+    case SEApp(n, args)  => s"$n(${args.mkString(", ")})"
+    case SEList(elems)   => s"[${elems.mkString(", ")}]"
+    case SERecord(tn, fs) =>
       s"$tn{${fs.map((k, v) => s"$k: $v").mkString(", ")}}"
-    case SMap(es)  => s"Map(${es.map((k, v) => s"$k -> $v").mkString(", ")})"
-    case TypeOf(t) => s"typeof($t)"
-    case SType(ty) => ty.toString
+    case SEMap(es)   => s"Map(${es.map((k, v) => s"$k -> $v").mkString(", ")})"
+    case SETypeOf(t) => s"typeof($t)"
+    case SEType(ty)  => ty.toString
 
   def rewrite(target: SymExpr, rep: SymExpr): SymExpr =
     if (this == target) rep
     else
       this match
-        case Sym(_) => this
-        case Lit(_) => this
-        case Proj(base, k) =>
-          Proj(
+        case SESym(_) => this
+        case SELit(_) => this
+        case SEProj(base, k) =>
+          SEProj(
             base.rewrite(target, rep),
             k.rewrite(target, rep),
           )
-        case App(op, args) => App(op, args.map(_.rewrite(target, rep)))
-        case SList(elems)  => SList(elems.map(_.rewrite(target, rep)))
-        case SRecord(tn, fs) =>
-          SRecord(tn, fs.map((k, v) => k -> v.rewrite(target, rep)))
-        case SMap(es) =>
-          SMap(es.map { (k, v) =>
+        case SEApp(op, args) => SEApp(op, args.map(_.rewrite(target, rep)))
+        case SEList(elems)   => SEList(elems.map(_.rewrite(target, rep)))
+        case SERecord(tn, fs) =>
+          SERecord(tn, fs.map((k, v) => k -> v.rewrite(target, rep)))
+        case SEMap(es) =>
+          SEMap(es.map { (k, v) =>
             (k.rewrite(target, rep), v.rewrite(target, rep))
           })
-        case TypeOf(t) => TypeOf(t.rewrite(target, rep))
-        case SType(_)  => this
+        case SETypeOf(t) => SETypeOf(t.rewrite(target, rep))
+        case SEType(_)   => this

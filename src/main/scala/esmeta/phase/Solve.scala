@@ -57,18 +57,18 @@ case object Solve extends Phase[CFG, String] {
     cond: Cond,
   )(using CFG): LazyList[String] =
     val params = paramIds(entry)
-    val goals = SymbolicInterpreter(entry, branch, cond)
-    LazyList.from(goals).flatMap { goal =>
+    val goals = SymbolicInterpreter(entry, cond)
+    goals.flatMap { goal =>
       Solver.solve(goal, params).flatMap { witness =>
         Reify.toJsCall(entry, params, witness)
       }
     }
 
-  def paramIds(func: Func): List[SymId] =
+  def paramIds(func: Func): List[Sym] =
     val irIds = func.irFunc.params.flatMap { p =>
       p.lhs.name match
-        case "this"      => Some(SymId.This)
-        case "NewTarget" => Some(SymId.NewTarget)
+        case "this"      => Some(Sym.This)
+        case "NewTarget" => Some(Sym.NewTarget)
         case _           => None
     }
     val headIds = func.head match
@@ -76,7 +76,7 @@ case object Solve extends Phase[CFG, String] {
         h.params
           .collect { case p if p.kind != ParamKind.Variadic => p }
           .zipWithIndex
-          .map((_, k) => SymId.Arg(k))
+          .map((_, k) => Sym.Arg(k))
       case _ => Nil
     (irIds ++ headIds).distinct
 

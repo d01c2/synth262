@@ -10,7 +10,7 @@ import scala.collection.mutable.{Set => MSet}
 import Formula.*, SymExpr.*
 
 /** reify simplified formulas into JS code for entry parameters */
-case class Reify(formulas: List[Formula], entryParams: List[SymId]) {
+case class Reify(formulas: List[Formula], entryParams: List[Sym]) {
   import Reify.*
 
   def witness: Option[Witness] =
@@ -19,13 +19,14 @@ case class Reify(formulas: List[Formula], entryParams: List[SymId]) {
       val normalized = formulas.map(normalizeEq)
       val omitted = normalized
         .collect {
-          case FNot(FExists(Sym(SymId.Args), Lit(EStr(idx)))) => idx.toIntOption
+          case FNot(FExists(SESym(Sym.ArgsList), SELit(EStr(idx)))) =>
+            idx.toIntOption
         }
         .flatten
         .toSet
       val activeParams = entryParams.filterNot {
-        case SymId.Arg(k) => omitted.contains(k)
-        case _            => false
+        case Sym.Arg(k) => omitted.contains(k)
+        case _          => false
       }
       val pairs = activeParams.map { param =>
         val relevants = normalized.filter(_.freeVars.contains(param))
@@ -35,25 +36,25 @@ case class Reify(formulas: List[Formula], entryParams: List[SymId]) {
       else None
     }
 
-  private def buildExpr(param: SymId, fs: List[Formula]): Option[String] =
+  private def buildExpr(param: Sym, fs: List[Formula]): Option[String] =
     val consumed = MSet[Formula]()
 
     // literal equality
     val litVal = fs.collectFirst {
-      case f @ FEq(Sym(_), Lit(lit)) => consumed += f; lit
+      case f @ FEq(SESym(_), SELit(lit)) => consumed += f; lit
     }
 
     // narrow type from type constraints and internal slot existence
     var ty = ESValueT
     for (f <- fs) f match
-      case f @ FEq(TypeOf(Sym(_)), SType(pos)) =>
+      case f @ FEq(SETypeOf(SESym(_)), SEType(pos)) =>
         consumed += f; ty = ty && pos
-      case f @ FNot(FEq(TypeOf(Sym(_)), SType(neg))) =>
+      case f @ FNot(FEq(SETypeOf(SESym(_)), SEType(neg))) =>
         consumed += f; ty = ty -- neg
-      case f @ FExists(Sym(_), Lit(EStr(field)))
+      case f @ FExists(SESym(_), SELit(EStr(field)))
           if fieldToRecordTy.contains(field) =>
         consumed += f; ty = ty && fieldToRecordTy(field)
-      case f @ FNot(FExists(Sym(_), Lit(EStr(field))))
+      case f @ FNot(FExists(SESym(_), SELit(EStr(field))))
           if fieldToRecordTy.contains(field) =>
         consumed += f; ty = ty -- fieldToRecordTy(field)
       case _ => ()
@@ -62,24 +63,26 @@ case class Reify(formulas: List[Formula], entryParams: List[SymId]) {
 
     // property constraints from Get/HasProperty
     val propsValue = fs.collect {
-      case f @ FEq(App("Get", List(_, Lit(EStr(key)))), Lit(lit)) =>
+      case f @ FEq(SEApp("Get", List(_, SELit(EStr(key)))), SELit(lit)) =>
         consumed += f; (key, lit)
     }.toMap
     val propsAbrupt = fs.collect {
-      case f @ FEq(TypeOf(App("Get", List(_, Lit(EStr(key))))), SType(ty))
-          if ty <= AbruptT =>
+      case f @ FEq(
+            SETypeOf(SEApp("Get", List(_, SELit(EStr(key))))),
+            SEType(ty),
+          ) if ty <= AbruptT =>
         consumed += f; key
     }.toSet
     val propsExist = fs.collect {
       case f @ FEq(
-            App("HasProperty", List(_, Lit(EStr(key)))),
-            Lit(EBool(exists)),
+            SEApp("HasProperty", List(_, SELit(EStr(key)))),
+            SELit(EBool(exists)),
           ) =>
         consumed += f; (key, exists)
-      case f @ FExists(Sym(_), Lit(EStr(field)))
+      case f @ FExists(SESym(_), SELit(EStr(field)))
           if !fieldToRecordTy.contains(field) =>
         consumed += f; (field, true)
-      case f @ FNot(FExists(Sym(_), Lit(EStr(field))))
+      case f @ FNot(FExists(SESym(_), SELit(EStr(field))))
           if !fieldToRecordTy.contains(field) =>
         consumed += f; (field, false)
     }.toMap
@@ -89,35 +92,37 @@ case class Reify(formulas: List[Formula], entryParams: List[SymId]) {
     val objLiteralBase = defaultFor(narrowedTy).exists(_.startsWith("{"))
     val propsTyped =
       if (objLiteralBase) fs.collect {
-        case f @ FEq(TypeOf(App("Get", List(_, Lit(EStr(key))))), SType(ty))
-            if !(ty <= AbruptT) && !(ty <= NormalT) =>
+        case f @ FEq(
+              SETypeOf(SEApp("Get", List(_, SELit(EStr(key))))),
+              SEType(ty),
+            ) if !(ty <= AbruptT) && !(ty <= NormalT) =>
           consumed += f; (key, ty)
       }.toMap
       else Map.empty[String, ValueTy]
     if (objLiteralBase) for (f <- fs) f match
-      case f @ FNot(FEq(App("Get", List(_, Lit(EStr(_)))), Lit(_))) =>
+      case f @ FNot(FEq(SEApp("Get", List(_, SELit(EStr(_)))), SELit(_))) =>
         consumed += f
       case f @ FNot(
-            FEq(TypeOf(App("Get", List(_, Lit(EStr(_))))), SType(_)),
+            FEq(SETypeOf(SEApp("Get", List(_, SELit(EStr(_))))), SEType(_)),
           ) =>
         consumed += f
       case _ => ()
 
     // object config from IsExtensible/GetPrototypeOf
     val extensible = fs.collectFirst {
-      case f @ FEq(App("IsExtensible", _), Lit(EBool(false))) =>
+      case f @ FEq(SEApp("IsExtensible", _), SELit(EBool(false))) =>
         consumed += f; false
-      case f @ FEq(App("IsExtensible", _), Lit(EBool(true))) =>
+      case f @ FEq(SEApp("IsExtensible", _), SELit(EBool(true))) =>
         consumed += f; true
     }
     val prototype = fs.collectFirst {
-      case f @ FEq(App("GetPrototypeOf", _), Lit(lit)) =>
+      case f @ FEq(SEApp("GetPrototypeOf", _), SELit(lit)) =>
         consumed += f; lit
     }
 
     // disequality constraints
     val excluded = fs.collect {
-      case f @ FNot(FEq(Sym(_), Lit(lit))) => consumed += f; lit
+      case f @ FNot(FEq(SESym(_), SELit(lit))) => consumed += f; lit
     }
 
     // interval bounds from FLt constraints
@@ -131,19 +136,19 @@ case class Reify(formulas: List[Formula], entryParams: List[SymId]) {
       case ENumber(d) if !d.isNaN && !d.isInfinite => Some(BigDecimal(d))
       case _                                       => None
     for (f <- fs) f match
-      case f @ FLt(Sym(_), Lit(lit)) => // x < k
+      case f @ FLt(SESym(_), SELit(lit)) => // x < k
         numVal(lit).foreach(k => {
           consumed += f; hiStrict = Some(hiStrict.fold(k)(_ min k))
         })
-      case f @ FLt(Lit(lit), Sym(_)) => // k < x
+      case f @ FLt(SELit(lit), SESym(_)) => // k < x
         numVal(lit).foreach(k => {
           consumed += f; loStrict = Some(loStrict.fold(k)(_ max k))
         })
-      case f @ FNot(FLt(Sym(_), Lit(lit))) => // x >= k
+      case f @ FNot(FLt(SESym(_), SELit(lit))) => // x >= k
         numVal(lit).foreach(k => {
           consumed += f; loIncl = Some(loIncl.fold(k)(_ max k))
         })
-      case f @ FNot(FLt(Lit(lit), Sym(_))) => // k >= x
+      case f @ FNot(FLt(SELit(lit), SESym(_))) => // k >= x
         numVal(lit).foreach(k => {
           consumed += f; hiIncl = Some(hiIncl.fold(k)(_ min k))
         })
@@ -259,36 +264,37 @@ case class Reify(formulas: List[Formula], entryParams: List[SymId]) {
   ): Option[String] =
     val target = trapFormulas
       .collectFirst {
-        case FEq(TypeOf(App(fname: String, _)), SType(_)) =>
+        case FEq(SETypeOf(SEApp(fname: String, _)), SEType(_)) =>
           proxyTarget(fname)
-        case FEq(App(fname: String, _), _)       => proxyTarget(fname)
-        case FNot(FEq(App(fname: String, _), _)) => proxyTarget(fname)
-        case FNot(FEq(TypeOf(App(fname: String, _)), SType(_))) =>
+        case FEq(SEApp(fname: String, _), _)       => proxyTarget(fname)
+        case FNot(FEq(SEApp(fname: String, _), _)) => proxyTarget(fname)
+        case FNot(FEq(SETypeOf(SEApp(fname: String, _)), SEType(_))) =>
           proxyTarget(fname)
       }
       .getOrElse("{}")
 
     val traps = List.newBuilder[(String, String)]
     for (formula <- trapFormulas) formula match
-      case FEq(TypeOf(App(fname: String, _)), SType(ty)) if ty <= AbruptT =>
+      case FEq(SETypeOf(SEApp(fname: String, _)), SEType(ty))
+          if ty <= AbruptT =>
         proxyTrapName.get(fname).foreach(trap => traps += trap -> "throw 0;")
-      case FEq(App(fname: String, _), Lit(lit)) =>
+      case FEq(SEApp(fname: String, _), SELit(lit)) =>
         for {
           jsLit <- litToJs(lit)
           trap <- proxyTrapName.get(fname)
         } traps += trap -> s"return $jsLit;"
-      case FNot(FEq(App(fname: String, _), Lit(lit))) =>
+      case FNot(FEq(SEApp(fname: String, _), SELit(lit))) =>
         for {
           jsVal <- defaultFor(ESValueT, Set(lit))
           trap <- proxyTrapName.get(fname)
         } traps += trap -> s"return $jsVal;"
-      case FEq(TypeOf(App(fname: String, _)), SType(ty))
+      case FEq(SETypeOf(SEApp(fname: String, _)), SEType(ty))
           if !(ty <= AbruptT) && !(ty <= NormalT) =>
         for {
           jsVal <- defaultFor(ty)
           trap <- proxyTrapName.get(fname)
         } traps += trap -> s"return $jsVal;"
-      case FNot(FEq(TypeOf(App(fname: String, _)), SType(ty)))
+      case FNot(FEq(SETypeOf(SEApp(fname: String, _)), SEType(ty)))
           if !(ty <= AbruptT) && !(ty <= NormalT) =>
         for {
           jsVal <- defaultFor(ESValueT -- ty)
@@ -438,20 +444,21 @@ object Reify {
 
   // normalize FEq so non-literal term is always on the left
   private def normalizeEq(f: Formula): Formula = f match
-    case FEq(l: Lit, r) if !r.isInstanceOf[Lit]       => FEq(r, l)
-    case FNot(FEq(l: Lit, r)) if !r.isInstanceOf[Lit] => FNot(FEq(r, l))
-    case _                                            => f
+    case FEq(l: SELit, r) if !r.isInstanceOf[SELit]       => FEq(r, l)
+    case FNot(FEq(l: SELit, r)) if !r.isInstanceOf[SELit] => FNot(FEq(r, l))
+    case _                                                => f
 
   def hasUninterpretableApp(fs: List[Formula]): Boolean =
     def fromExpr(t: SymExpr): Set[String] = t match
-      case App(fname: String, args) => Set(fname) ++ args.flatMap(fromExpr)
-      case App(_, args)             => args.flatMap(fromExpr).toSet
-      case Proj(base, _)            => fromExpr(base)
-      case SList(elems)             => elems.flatMap(fromExpr).toSet
-      case SRecord(_, fs)           => fs.values.flatMap(fromExpr).toSet
-      case SMap(es)  => es.flatMap((k, v) => fromExpr(k) ++ fromExpr(v)).toSet
-      case TypeOf(t) => fromExpr(t)
-      case _         => Set()
+      case SEApp(fname: String, args) => Set(fname) ++ args.flatMap(fromExpr)
+      case SEApp(_, args)             => args.flatMap(fromExpr).toSet
+      case SEProj(base, _)            => fromExpr(base)
+      case SEList(elems)              => elems.flatMap(fromExpr).toSet
+      case SERecord(_, fs)            => fs.values.flatMap(fromExpr).toSet
+      case SEMap(es) =>
+        es.flatMap((k, v) => fromExpr(k) ++ fromExpr(v)).toSet
+      case SETypeOf(t) => fromExpr(t)
+      case _           => Set()
     def fromFormula(f: Formula): Set[String] = f match
       case FNot(inner)   => fromFormula(inner)
       case FEq(l, r)     => fromExpr(l) ++ fromExpr(r)
@@ -461,14 +468,15 @@ object Reify {
 
   def outerAppNames(f: Formula): Set[String] =
     def fromExpr(t: SymExpr): Set[String] = t match
-      case App(fname: String, _) if !internalMethods(fname) => Set(fname)
-      case App(_, args)   => args.flatMap(fromExpr).toSet
-      case Proj(base, _)  => fromExpr(base)
-      case SList(elems)   => elems.flatMap(fromExpr).toSet
-      case SRecord(_, fs) => fs.values.flatMap(fromExpr).toSet
-      case SMap(es)  => es.flatMap((k, v) => fromExpr(k) ++ fromExpr(v)).toSet
-      case TypeOf(t) => fromExpr(t)
-      case _         => Set()
+      case SEApp(fname: String, _) if !internalMethods(fname) => Set(fname)
+      case SEApp(_, args)  => args.flatMap(fromExpr).toSet
+      case SEProj(base, _) => fromExpr(base)
+      case SEList(elems)   => elems.flatMap(fromExpr).toSet
+      case SERecord(_, fs) => fs.values.flatMap(fromExpr).toSet
+      case SEMap(es) =>
+        es.flatMap((k, v) => fromExpr(k) ++ fromExpr(v)).toSet
+      case SETypeOf(t) => fromExpr(t)
+      case _           => Set()
     f match
       case FNot(inner)   => outerAppNames(inner)
       case FEq(l, r)     => fromExpr(l) ++ fromExpr(r)
@@ -483,12 +491,12 @@ object Reify {
       .filter(_.nonEmpty)
 
   /** build a JS call that invokes the builtin with solved arguments */
-  def toJsCall(func: Func, params: List[SymId], w: Witness): Option[String] =
+  def toJsCall(func: Func, params: List[Sym], w: Witness): Option[String] =
     func.head.collect { case h: BuiltinHead => h }.flatMap { h =>
-      val thisVal = w.getOrElse(SymId.This, "undefined")
-      val newTarget = w.getOrElse(SymId.NewTarget, "undefined")
+      val thisVal = w.getOrElse(Sym.This, "undefined")
+      val newTarget = w.getOrElse(Sym.NewTarget, "undefined")
       val argIds = params
-        .collect { case id @ SymId.Arg(_) => id }
+        .collect { case id @ Sym.Arg(_) => id }
         .sortBy(_.index)
       val args = argIds.reverse
         .dropWhile(id => !w.contains(id))

@@ -75,6 +75,8 @@ class BuiltinBranchTest extends ESMetaTest {
       var verifyFailed = 0
       var timings = List[(String, Int, Long)]()
       val reasons = MMap[String, Int]()
+      var contradictionSamples = List[(String, Int, List[Formula])]()
+      var reifyFailedSamples = List[(String, Int, List[Formula])]()
 
       for ((f, b) <- targets) {
         val t0 = System.nanoTime()
@@ -117,18 +119,48 @@ class BuiltinBranchTest extends ESMetaTest {
             unsolved += 1
             val reason =
               try {
-                val goals = SymbolicInterpreter(f, b, cond)
+                val goals = SymbolicInterpreter(f, cond)
                 if (goals.isEmpty) "no-goals"
                 else {
                   val params = Solve.paramIds(f)
-                  val witnesses = goals.flatMap(Solver.solve(_, params))
-                  if (witnesses.isEmpty) "no-witness"
-                  else "no-reify"
+                  goals
+                    .map { goal =>
+                      val rewritten = Solver.rewriteApps(goal)
+                      Solver.simplify(rewritten) match
+                        case None =>
+                          if (contradictionSamples.size < 5)
+                            contradictionSamples :+= (f.name, b.id, rewritten)
+                          "contradiction"
+                        case Some(fs) =>
+                          if (Reify.hasUninterpretableApp(fs)) {
+                            val names = fs.flatMap(Reify.outerAppNames).toSet
+                            s"uninterp-app(${names.mkString(",")})"
+                          } else
+                            Reify(fs, params).witness match
+                              case None =>
+                                if (reifyFailedSamples.size < 5)
+                                  reifyFailedSamples :+= (f.name, b.id, fs)
+                                "reify-failed"
+                              case Some(w) =>
+                                Reify.toJsCall(f, params, w) match
+                                  case None    => "no-js-call"
+                                  case Some(_) => "unknown"
+                    }
+                    .groupBy(identity)
+                    .maxBy(_._2.size)
+                    ._1
                 }
               } catch {
-                case _: NotImplementedError => "not-impl"
-                case _: MatchError          => "match-error"
-                case _: Throwable           => "other-error"
+                case e: NotImplementedError =>
+                  val site = e.getStackTrace.headOption
+                    .map(_.getMethodName)
+                    .getOrElse("?")
+                  s"unimpl($site)"
+                case e: MatchError =>
+                  val msg = e.getMessage.take(60)
+                  s"missing-transfer($msg)"
+                case e: Throwable =>
+                  s"error(${e.getClass.getSimpleName})"
               }
             reasons(reason) = reasons.getOrElse(reason, 0) + 1
       }
@@ -154,8 +186,30 @@ class BuiltinBranchTest extends ESMetaTest {
 
       if (reasons.nonEmpty) {
         println(f"\n  Unsolved breakdown:")
+        var uninterpTotal = 0
+        val others = List.newBuilder[(String, Int)]
         for ((reason, count) <- reasons.toList.sortBy(-_._2))
-          println(f"    $reason%-15s $count")
+          if (reason.startsWith("uninterp-app("))
+            uninterpTotal += count
+          else others += (reason -> count)
+        if (uninterpTotal > 0)
+          others += ("uninterp-app" -> uninterpTotal)
+        for ((reason, count) <- others.result().sortBy(-_._2))
+          println(f"    $count%4d  $reason")
+      }
+
+      if (contradictionSamples.nonEmpty) {
+        println(f"\n  Contradiction samples:")
+        for ((name, bid, fs) <- contradictionSamples)
+          println(s"    $name Branch[$bid]:")
+          for (f <- fs) println(s"      $f")
+      }
+
+      if (reifyFailedSamples.nonEmpty) {
+        println(f"\n  Reify-failed samples:")
+        for ((name, bid, fs) <- reifyFailedSamples)
+          println(s"    $name Branch[$bid]:")
+          for (f <- fs) println(s"      $f")
       }
 
       assert(solved > 0)

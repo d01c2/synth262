@@ -6,7 +6,7 @@ enum Formula:
   case FLt(lhs: SymExpr, rhs: SymExpr)
   case FExists(base: SymExpr, field: SymExpr)
 
-  def freeVars: Set[SymId] = this match
+  def freeVars: Set[Sym] = this match
     case FNot(f)       => f.freeVars
     case FEq(l, r)     => l.freeVars ++ r.freeVars
     case FLt(l, r)     => l.freeVars ++ r.freeVars

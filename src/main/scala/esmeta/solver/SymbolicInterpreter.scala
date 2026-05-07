@@ -6,464 +6,360 @@ import esmeta.ir.{Func => _, *}
 import esmeta.spec.{BuiltinHead, ParamKind}
 import esmeta.state.*
 import esmeta.ty.ValueTy
+import scala.collection.mutable.{Set => MSet}
 import Formula.*, SymExpr.*
-import scala.collection.mutable.{Map => MMap, Set => MSet, Queue}
 
-class SymbolicInterpreter(
-  entryFunc: Func,
-  target: Branch,
-  cond: Cond,
-)(using cfg: CFG) {
+class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
   import SymbolicInterpreter.*
+  private val Cond(branch, side) = target
 
-  private var env = MMap[Local, SymExpr]()
+  private var env = Map[Local, SymExpr]()
   // TODO: symbolic heap
 
-  private var pendingReturn: Option[SymExpr] = None
-  private var curFunc: Func = entryFunc
+  private var argCounter = 0 // FIXME: parameter setting branch flip case
 
-  // pre-populate env with structured symbolic IDs for entry params
-  private val initEnv: Map[Local, SymExpr] = {
-    val irParams = entryFunc.irFunc.params.flatMap { p =>
-      p.lhs match
-        case n if n.name == "this"      => Some(n -> Sym(SymId.This))
-        case n if n.name == "NewTarget" => Some(n -> Sym(SymId.NewTarget))
-        case _                          => None
-    }
-    val headArgs = entryFunc.head match
-      case Some(h: BuiltinHead) =>
-        h.params
-          .collect { case p if p.kind != ParamKind.Variadic => p.name }
-          .zipWithIndex
-          .map((name, k) => Name(name) -> Sym(SymId.Arg(k)))
-      case _ => Nil
-    (irParams ++ headArgs :+ (Name(ARGS_STR) -> Sym(SymId.Args))).toMap
-  }
+  // backward reachable nodes from the target branch (for path pruning)
+  private val whitelist = entryFunc.reachingTo(branch)
 
-  // functions we step into during symbolic execution
-  private val targetFunc = cfg.funcOf.get(target)
-  private val inCalleeTarget = targetFunc.exists(_ != entryFunc)
-  private val stepInFuncs: Set[Func] =
-    if (!inCalleeTarget) Set.empty
+  lazy val result: LazyList[Goal] =
+    if (whitelist.isEmpty) LazyList()
     else {
-      val reached = MSet(targetFunc.get)
-      val queue = Queue(targetFunc.get)
-      while (queue.nonEmpty) {
+      var stack = List[(Cond, Goal, Map[Local, SymExpr])]()
+
+      // init symbolic environment from builtin entry parameters
+      env = entryFunc.irFunc.params.flatMap { param =>
+        val name = param.lhs
+        if (name == NAME_THIS) Some(name -> SESym(Sym.This))
+        else if (name == NAME_NEW_TARGET) Some(name -> SESym(Sym.NewTarget))
+        else if (name == NAME_ARGS_LIST) Some(name -> SESym(Sym.ArgsList))
+        else None
+      }.toMap
+
+      def pathConstraints: Goal = stack.reverseIterator.flatMap(_._2).toList
+
+      // try certain branch side and push constraints onto the stack
+      def tryBranch(
+        br: Branch,
+        side: Boolean,
+        feasible: Node => Boolean,
+      ): Option[Node] =
+        val savedEnv = env
+        val nextNode = if (side) br.thenNode else br.elseNode
+        val constraint =
+          if (br.isFiltered) Some(List()) // skip extraction for filtered
+          else getConstraint(br.cond, side)
         for {
-          caller <- cfg.callerOf.getOrElse(queue.dequeue(), Set.empty)
-          if caller.kind != FuncKind.InternalMeth &&
-          reached.add(caller)
-        } queue.enqueue(caller)
+          node <- nextNode.filter(feasible)
+          cs <- constraint
+        } yield { stack ::= (Cond(br, side), cs, savedEnv); node }
+
+      // cfg step with path pruning
+      def step(node: Node, visited: MSet[Int]): Option[Node] =
+        def feasible(n: Node) = whitelist(n) && !visited(n.id)
+        node match
+          case block: Block => eval(block); block.next.filter(feasible)
+          case b: Branch =>
+            eval(b.cond) match
+              case SELit(EBool(v)) =>
+                val nextNode = if (v) b.thenNode else b.elseNode
+                nextNode.filter(feasible)
+              case _ => // try true first and flip if not solvable
+                tryBranch(b, true, feasible)
+                  .orElse(tryBranch(b, false, feasible))
+          case call: Call =>
+            val ret = call.lhs
+            call.callInst match
+              case ICall(_, EClo(fname, _), args) =>
+                env += (ret -> SEApp(fname, args.map(eval)))
+              case ICall(_, ERef(Field(base, EStr(method))), args) =>
+                env += (ret -> SEApp(method, eval(base) :: args.map(eval)))
+              case ISdoCall(_, base, op, args) =>
+                env += (ret -> SEApp(op, eval(base) :: args.map(eval)))
+              case _ => env -= ret
+            call.next.filter(feasible)
+
+      // collect path constraints
+      def collectGoal(from: Node): Option[Goal] = {
+        var cur: Option[Node] = Some(from)
+        var found: Option[Goal] = None
+        try {
+          val visited = MSet[Int]()
+          for ((Cond(b, _), _, _) <- stack) visited += b.id
+          while (cur.isDefined && found.isEmpty) {
+            val node = cur.get
+            visited += node.id
+            node match
+              case b: Branch if b.id == branch.id =>
+                found = getConstraint(b.cond, side).map(pathConstraints ++ _)
+                cur = None
+              case _ => cur = step(node, visited)
+          }
+        } catch {
+          case _: NotImplementedError | _: MatchError => ()
+        }
+        found
       }
-      reached.toSet
-    }
 
-  // whitelist for pruning
-  private val whitelist =
-    if (!inCalleeTarget) entryFunc.reachingTo(target)
-    else {
-      val stepInCalls = entryFunc.nodes.flatMap {
-        case c: Call =>
-          c.callInst match
-            case ICall(_, EClo(fname, _), _)
-                if cfg.fnameMap.get(fname).exists(stepInFuncs.contains) =>
-              Some(c)
-            case _ => None
-        case _ => None
+      // pop the stack and try the else-side of the most recent then-branch
+      def backtrack(): Option[Node] = {
+        var found: Option[Node] = None
+        while (stack.nonEmpty && found.isEmpty) {
+          val (Cond(br, tried), _, savedEnv) = stack.head
+          stack = stack.tail
+          if (tried) {
+            env = savedEnv // restore env before trying the else-side
+            found = tryBranch(br, false, whitelist) // FIXME: visited?
+          }
+        }
+        found
       }
-      if (stepInCalls.isEmpty) Set.empty[Node]
-      else stepInCalls.flatMap(entryFunc.reachingTo)
+
+      def emit(from: Node): LazyList[Goal] =
+        def next(): LazyList[Goal] = backtrack() match
+          case Some(n) => emit(n)
+          case None    => LazyList()
+        collectGoal(from) match
+          case Some(goal) => goal #:: next()
+          case None       => next()
+
+      emit(entryFunc.entry)
     }
-  private val calleeWhitelist =
-    if (inCalleeTarget) targetFunc.get.reachingTo(target)
-    else Set.empty[Node]
-
-  // --- worklist types ---
-
-  private case class CallFrame(
-    func: Func,
-    env: Map[Local, SymExpr],
-    retId: Local,
-    returnTo: Option[Node],
-    visited: Set[Int],
-  )
-
-  private case class SymState(
-    node: Node,
-    cs: Goal,
-    env: Map[Local, SymExpr],
-    func: Func,
-    stack: List[CallFrame],
-    visited: Set[Int],
-  )
-
-  // --- results ---
-
-  private val results = List.newBuilder[Goal]
-
-  lazy val result: List[Goal] =
-    if (whitelist.isEmpty && inCalleeTarget) Nil
-    else {
-      val init =
-        SymState(
-          entryFunc.entry,
-          List(),
-          initEnv,
-          entryFunc,
-          List(),
-          Set(entryFunc.entry.id),
-        )
-      val wl = Queue(init)
-      while (wl.nonEmpty) process(wl.dequeue(), wl)
-      results.result()
-    }
-
-  // --- worklist processing ---
-
-  private def process(st: SymState, wl: Queue[SymState]): Unit =
-    env = MMap.from(st.env)
-    curFunc = st.func
-    pendingReturn = None
-
-    def snapshot = env.toMap
-
-    def enqueue(
-      node: Node,
-      cs: Goal,
-      func: Func = curFunc,
-      stack: List[CallFrame] = st.stack,
-      visited: Set[Int] = st.visited,
-    ): Unit =
-      if (!visited(node.id) && reachable(node))
-        wl.enqueue(SymState(node, cs, snapshot, func, stack, visited + node.id))
-
-    def returnToCaller(cs: Goal): Unit =
-      st.stack match
-        case CallFrame(f, callerEnv, retId, returnTo, callerVisited) :: rest =>
-          val rv = pendingReturn
-          env = MMap.from(callerEnv)
-          rv.foreach(v => env(retId) = v)
-          curFunc = f
-          returnTo.foreach(n => enqueue(n, cs, f, rest, callerVisited))
-        case Nil => ()
-
-    st.node match
-      case block: Block =>
-        eval(block)
-        if (pendingReturn.isDefined) returnToCaller(st.cs)
-        else
-          block.next match
-            case Some(n) => enqueue(n, st.cs)
-            case None    => returnToCaller(st.cs)
-
-      case branch: Branch if branch.id == target.id =>
-        for (c <- getConstraints(branch.cond, cond.cond))
-          results += (st.cs ++ c)
-
-      case branch: Branch if branch.isFiltered =>
-        for (n <- branch.thenNode.toList ++ branch.elseNode.toList)
-          enqueue(n, st.cs)
-
-      case branch: Branch =>
-        eval(branch.cond) match
-          case Lit(EBool(knownSide)) =>
-            val nexts = if (knownSide) branch.thenNode else branch.elseNode
-            nexts.foreach(n => enqueue(n, st.cs))
-          case _ =>
-            for {
-              n <- branch.thenNode
-              c <- getConstraints(branch.cond, true)
-            } enqueue(n, st.cs ++ c)
-            for {
-              n <- branch.elseNode
-              c <- getConstraints(branch.cond, false)
-            } enqueue(n, st.cs ++ c)
-
-      case call: Call =>
-        val ret = call.lhs
-        call.callInst match
-          case ICall(_, EClo(fname, _), args) =>
-            cfg.fnameMap.get(fname) match
-              case Some(callee)
-                  if stepInFuncs.contains(callee) &&
-                  callee != curFunc &&
-                  !st.stack.exists(_.func == callee) =>
-                val argVals = args.map(eval)
-                val frame =
-                  CallFrame(curFunc, snapshot, ret, call.next, st.visited)
-                val calleeEnv = MMap[Local, SymExpr]()
-                for ((p, a) <- callee.irFunc.params.zip(argVals))
-                  calleeEnv(p.lhs) = a
-                wl.enqueue(
-                  SymState(
-                    callee.entry,
-                    st.cs,
-                    calleeEnv.toMap,
-                    callee,
-                    frame :: st.stack,
-                    Set(callee.entry.id),
-                  ),
-                )
-              case _ =>
-                env(ret) = App(fname, args.map(eval))
-                call.next.foreach(n => enqueue(n, st.cs))
-          case ICall(_, ERef(Field(base, EStr(method))), args) =>
-            env(ret) = App(method, eval(base) :: args.map(eval))
-            call.next.foreach(n => enqueue(n, st.cs))
-          case ISdoCall(_, base, op, args) =>
-            env(ret) = App(op, eval(base) :: args.map(eval))
-            call.next.foreach(n => enqueue(n, st.cs))
-          case _ =>
-            env.remove(ret)
-            call.next.foreach(n => enqueue(n, st.cs))
 
   // --- block/instruction evaluation ---
 
-  private def eval(block: Block): Unit =
-    for (inst <- block.insts if pendingReturn.isEmpty) eval(inst)
-
-  private def isBuiltinPrefix(inst: NormalInst): Boolean =
-    (curFunc == entryFunc) && (inst match
-      case ILet(lhs, _) if lhs == Name(ARGS_STR)         => true
-      case IPop(Name(_), ERef(Name("ArgumentsList")), _) => true
-      case IExpand(base, _) if base == Name(ARGS_STR)    => true
-      case _                                             => false
-    )
+  private def eval(block: Block): Unit = for (inst <- block.insts) eval(inst)
 
   private def eval(inst: NormalInst): Unit = inst match
-    case inst if isBuiltinPrefix(inst) => ()
-    case ILet(lhs, expr) =>
-      env(lhs) = eval(expr)
-    case IAssign(x: Local, expr) =>
-      env(x) = eval(expr)
+    case ILet(lhs, expr)         => env += (lhs -> eval(expr))
+    case IAssign(x: Local, expr) => env += (x -> eval(expr))
     case IAssign(Field(x: Local, EStr(key)), expr) =>
       val t = eval(expr)
       env.get(x) match
-        case Some(SRecord(tn, fs)) => env(x) = SRecord(tn, fs + (key -> t))
-        case _                     => ()
+        case Some(SERecord(tn, fs)) =>
+          env += (x -> SERecord(tn, fs + (key -> t)))
+        case _ => ()
     case _: IAssign => () // global or dynamic-key assign
     case IExpand(base: Local, expr) =>
       eval(expr) match
-        case Lit(EStr(field)) =>
+        case SELit(EStr(field)) =>
           env.get(base) match
-            case Some(SRecord(tn, fs)) if !fs.contains(field) =>
-              env(base) = SRecord(tn, fs + (field -> Lit(EUndef())))
+            case Some(SERecord(tn, fs)) if !fs.contains(field) =>
+              env += (base -> SERecord(tn, fs + (field -> SELit(EUndef()))))
             case _ => ()
         case _ => ()
     case _: IExpand => () // non-local or dynamic-key expand
     case IDelete(base: Local, expr) =>
       val t = eval(expr)
       env.get(base) match
-        case Some(SMap(es)) => env(base) = SMap(es.filterNot(_._1 == t))
-        case _              => ()
+        case Some(SEMap(es)) => env += (base -> SEMap(es.filterNot(_._1 == t)))
+        case _               => ()
     case _: IDelete => () // non-local or dynamic-key delete
     case IPush(elem, ERef(x: Local), front) =>
       val t = eval(elem)
       env.get(x) match
-        case Some(SList(es)) =>
-          env(x) = if (front) SList(t :: es) else SList(es :+ t)
+        case Some(SEList(es)) =>
+          env += (x -> (if (front) SEList(t :: es) else SEList(es :+ t)))
         case _ => ()
-    case _: IPush             => () // non-local list
-    case IPop(x: Local, _, _) => env.remove(x)
-    case IReturn(expr) =>
-      pendingReturn = Some(eval(expr))
-    case _ => ()
+    case _: IPush => () // non-local list
+    case IPop(lhs, ERef(x: Local), _) =>
+      env.get(x) match
+        case Some(SESym(Sym.ArgsList)) =>
+          env += (lhs -> SESym(Sym.Arg(argCounter)))
+          argCounter += 1
+        case Some(SEList(es)) if es.nonEmpty =>
+          env += (lhs -> es.head)
+          env += (x -> SEList(es.tail))
+        case _ => env -= lhs
+    case _: IPop => env -= inst.asInstanceOf[IPop].lhs
+    case _       => ()
 
   // --- expression evaluation ---
 
   private def eval(expr: Expr): SymExpr = expr match
-    case _: EParse | _: EGrammarSymbol | _: ESourceText => ??? // syntactic part
+    case _: EParse | _: EGrammarSymbol | _: ESourceText => ??? // syntactic
     case _: EYet => ??? // not implemented
     case EContains(list, elem) =>
-      simplify(App("[ir:contains]", List(eval(list), eval(elem))))
+      simplify(SEApp("[ir:contains]", List(eval(list), eval(elem))))
     case ESubstring(base, from, to) =>
       val args = List(eval(base), eval(from)) ++ to.map(eval)
-      simplify(App("[ir:substring]", args))
+      simplify(SEApp("[ir:substring]", args))
     case ETrim(base, isStarting) =>
       val op = if (isStarting) "[ir:trim-start]" else "[ir:trim-end]"
-      simplify(App(op, List(eval(base))))
+      simplify(SEApp(op, List(eval(base))))
     case ERef(ref) => eval(ref)
     case EUnary(op, e) =>
-      simplify(App(op, List(eval(e))))
+      simplify(SEApp(op, List(eval(e))))
     case EBinary(op, lhs, rhs) =>
-      simplify(App(op, List(eval(lhs), eval(rhs))))
+      simplify(SEApp(op, List(eval(lhs), eval(rhs))))
     case EVariadic(op, exprs) =>
-      simplify(App(op, exprs.map(eval)))
+      simplify(SEApp(op, exprs.map(eval)))
     case EMathOp(mop, args) =>
-      simplify(App(mop, args.map(eval)))
+      simplify(SEApp(mop, args.map(eval)))
     case EConvert(cop, e) =>
-      simplify(App(cop, List(eval(e))))
+      simplify(SEApp(cop, List(eval(e))))
     case EExists(ref) =>
       ref match
         case Field(base, EStr(field)) =>
           eval(base) match
-            case SRecord(_, fs) => Lit(EBool(fs.contains(field)))
-            case SMap(es) =>
-              val k = Lit(EStr(field))
-              Lit(EBool(es.exists(_._1 == k)))
-            case t => App("[ir:exists]", List(t, Lit(EStr(field))))
-        case _ => Lit(EBool(true))
-    case ETypeOf(e)     => TypeOf(eval(e))
+            case SERecord(_, fs) => SELit(EBool(fs.contains(field)))
+            case SEMap(es) =>
+              val k = SELit(EStr(field))
+              SELit(EBool(es.exists(_._1 == k)))
+            case t => SEApp("[ir:exists]", List(t, SELit(EStr(field))))
+        case _ => SELit(EBool(true))
+    case ETypeOf(e)     => SETypeOf(eval(e))
     case _: EInstanceOf => ??? // syntactic part
     case ETypeCheck(e, ty) =>
-      simplify(App(BOp.Eq, List(TypeOf(eval(e)), SType(ty.toValue))))
+      simplify(SEApp(BOp.Eq, List(SETypeOf(eval(e)), SEType(ty.toValue))))
     case ESizeOf(e) =>
       eval(e) match
-        case SList(elems) => Lit(EMath(BigDecimal(elems.size)))
-        case t            => App("[ir:sizeof]", List(t))
+        case SEList(elems) => SELit(EMath(BigDecimal(elems.size)))
+        case t             => SEApp("[ir:sizeof]", List(t))
     case _: EClo                     => ??? // opaque closure
     case _: ECont                    => ??? // opaque continuation
     case _: EDebug                   => ??? // debug
     case _: ERandom                  => ??? // non-deterministic
     case _: ESyntactic | _: ELexical => ??? // syntactic part
     case ERecord(tname, pairs) =>
-      SRecord(tname, pairs.map((k, e) => k -> eval(e)).toMap)
-    case EMap(_, pairs) => SMap(pairs.map((k, v) => (eval(k), eval(v))))
-    case EList(exprs)   => SList(exprs.map(eval))
+      SERecord(tname, pairs.map((k, e) => k -> eval(e)).toMap)
+    case EMap(_, pairs) => SEMap(pairs.map((k, v) => (eval(k), eval(v))))
+    case EList(exprs)   => SEList(exprs.map(eval))
     case ECopy(obj)     => eval(obj)
     case EKeys(map, _) =>
       eval(map) match
-        case SRecord(_, fs) => SList(fs.keys.map(k => Lit(EStr(k))).toList)
-        case SMap(es)       => SList(es.map(_._1))
-        case t              => App("[ir:keys]", List(t))
-    case literal: LiteralExpr => Lit(literal)
+        case SERecord(_, fs) => SEList(fs.keys.map(k => SELit(EStr(k))).toList)
+        case SEMap(es)       => SEList(es.map(_._1))
+        case t               => SEApp("[ir:keys]", List(t))
+    case literal: LiteralExpr => SELit(literal)
 
   private def eval(ref: Ref): SymExpr = ref match
-    case x: Local => env.getOrElse(x, Lit(EUndef()))
+    case x: Local => env.getOrElse(x, SELit(EUndef()))
     case Global(name) =>
       val ty = ValueTy.fromTypeOf(name)
-      if (!ty.isBottom) SType(ty) else App(name, Nil)
+      if (!ty.isBottom) SEType(ty) else SEApp(name, List())
     case Field(base, EStr(name)) =>
       eval(base) match
-        case SRecord(_, fs) if fs.contains(name) => fs(name)
-        case SMap(es) =>
-          val k = Lit(EStr(name))
-          es.collectFirst { case (`k`, v) => v }
-            .getOrElse(Proj(SMap(es), Lit(EStr(name))))
-        case t => Proj(t, Lit(EStr(name)))
+        case SERecord(_, fs) if fs.contains(name) => fs(name)
+        case SEMap(es) =>
+          es.collectFirst {
+            case (SELit(EStr(`name`)), v) => v
+          }.getOrElse(SEProj(SEMap(es), SELit(EStr(name))))
+        case t => SEProj(t, SELit(EStr(name)))
     case f @ Field(base, idx) =>
       (eval(base), eval(idx)) match
-        case (SList(es), Lit(EMath(n)))
+        case (SEList(es), SELit(EMath(n)))
             if n.isValidInt && es.indices.contains(n.toInt) =>
           es(n.toInt)
-        case (SMap(es), k) =>
+        case (SEMap(es), k) =>
           es.collectFirst { case (`k`, v) => v }
-            .getOrElse(Proj(SMap(es), k))
-        case (b, k) => Proj(b, k)
+            .getOrElse(SEProj(SEMap(es), k))
+        case (b, k) => SEProj(b, k)
 
-  private def getConstraints(expr: Expr, pos: Boolean): List[Goal] = expr match
-    case EUnary(UOp.Not, inner) => getConstraints(inner, !pos)
-    case ETypeCheck(base, ty) =>
-      val f = FEq(TypeOf(eval(base)), SType(ty.toValue))
-      List(List(if (pos) f else FNot(f)))
-    case EBinary(BOp.Eq | BOp.Equal, lhs, rhs) =>
-      (lhs, rhs) match
-        case (_, EBool(b)) => getConstraints(lhs, if (pos) b else !b)
-        case (EBool(b), _) => getConstraints(rhs, if (pos) b else !b)
-        case _ =>
-          val f = FEq(eval(lhs), eval(rhs))
-          List(List(if (pos) f else FNot(f)))
-    case EBinary(BOp.Lt, lhs, rhs) =>
-      val f = FLt(eval(lhs), eval(rhs))
-      List(List(if (pos) f else FNot(f)))
-    case EBinary(BOp.And, lhs, rhs) if pos =>
-      for {
-        l <- getConstraints(lhs, true)
-        r <- getConstraints(rhs, true)
-      } yield l ++ r
-    case EBinary(BOp.Or, lhs, rhs) if !pos =>
-      for {
-        l <- getConstraints(lhs, false)
-        r <- getConstraints(rhs, false)
-      } yield l ++ r
-    case EBinary(BOp.And, lhs, rhs) =>
-      getConstraints(lhs, false) ++ getConstraints(rhs, false)
-    case EBinary(BOp.Or, lhs, rhs) =>
-      getConstraints(lhs, true) ++ getConstraints(rhs, true)
-    case EExists(Field(base, EStr(field))) =>
-      eval(base) match
-        case SRecord(_, fs) if fs.contains(field) =>
-          if (pos) List(List()) else Nil
-        case t =>
-          val f = FExists(t, Lit(EStr(field)))
-          List(List(if (pos) f else FNot(f)))
-    case EContains(list, elem) =>
-      (eval(list), eval(elem)) match
-        case (SList(elems), t) =>
-          if (pos) elems.map(e => List(FEq(t, e)))
-          else List(elems.map(e => FNot(FEq(t, e))))
-        case (Lit(EStr(s)), Lit(EStr(sub))) =>
-          val result = s.contains(sub)
-          if (result == pos) List(List()) else Nil
-        case (l, r) =>
-          val f = FEq(App("[ir:contains]", List(l, r)), Lit(EBool(true)))
-          List(List(if (pos) f else FNot(f)))
-    case ERef(ref) => List(List(FEq(eval(ref), Lit(EBool(pos)))))
-    case _: EYet   => Nil
-    case _         => ???
+  // --- constraint extraction ---
+
+  private def getConstraint(expr: Expr, pos: Boolean): Option[Goal] =
+    expr match
+      case EUnary(UOp.Not, inner) => getConstraint(inner, !pos)
+      case ETypeCheck(base, ty) =>
+        val f = FEq(SETypeOf(eval(base)), SEType(ty.toValue))
+        Some(List(if (pos) f else FNot(f)))
+      case EBinary(BOp.Eq | BOp.Equal, lhs, rhs) =>
+        (lhs, rhs) match
+          case (_, EBool(b)) => getConstraint(lhs, if (pos) b else !b)
+          case (EBool(b), _) => getConstraint(rhs, if (pos) b else !b)
+          case _ =>
+            val f = FEq(eval(lhs), eval(rhs))
+            Some(List(if (pos) f else FNot(f)))
+      case EBinary(BOp.Lt, lhs, rhs) =>
+        val f = FLt(eval(lhs), eval(rhs))
+        Some(List(if (pos) f else FNot(f)))
+      case EBinary(BOp.And, lhs, rhs) if pos =>
+        for {
+          l <- getConstraint(lhs, true)
+          r <- getConstraint(rhs, true)
+        } yield l ++ r
+      case EBinary(BOp.Or, lhs, rhs) if !pos =>
+        for {
+          l <- getConstraint(lhs, false)
+          r <- getConstraint(rhs, false)
+        } yield l ++ r
+      case EBinary(BOp.And, lhs, rhs) =>
+        getConstraint(lhs, false).orElse(getConstraint(rhs, false))
+      case EBinary(BOp.Or, lhs, rhs) =>
+        getConstraint(lhs, true).orElse(getConstraint(rhs, true))
+      case EExists(Field(base, EStr(field))) =>
+        eval(base) match
+          case SERecord(_, fs) if fs.contains(field) =>
+            if (pos) Some(List()) else None
+          case t =>
+            val f = FExists(t, SELit(EStr(field)))
+            Some(List(if (pos) f else FNot(f)))
+      case EContains(list, elem) =>
+        (eval(list), eval(elem)) match
+          case (SEList(elems), t) =>
+            if (pos) elems.headOption.map(e => List(FEq(t, e)))
+            else Some(elems.map(e => FNot(FEq(t, e))))
+          case (SELit(EStr(s)), SELit(EStr(sub))) =>
+            if (s.contains(sub) == pos) Some(List()) else None
+          case (l, r) =>
+            val f = FEq(SEApp("[ir:contains]", List(l, r)), SELit(EBool(true)))
+            Some(List(if (pos) f else FNot(f)))
+      case ERef(ref) => Some(List(FEq(eval(ref), SELit(EBool(pos)))))
+      case _: EYet   => None
+      case _         => ???
 
   // constant folding for literals
   private def simplify(t: SymExpr): SymExpr = t match
-    case App(op: UOp, List(Lit(lit))) =>
+    case SEApp(op: UOp, List(SELit(lit))) =>
       foldUOp(op, lit).getOrElse(t)
-    case App(op: BOp, List(Lit(l), Lit(r))) =>
+    case SEApp(op: BOp, List(SELit(l), SELit(r))) =>
       foldBOp(op, l, r).getOrElse(t)
-    case App(op: VOp, args) =>
+    case SEApp(op: VOp, args) =>
       foldVOp(op, args).getOrElse(t)
-    case App(op: MOp, args) =>
+    case SEApp(op: MOp, args) =>
       foldMOp(op, args).getOrElse(t)
-    case App(op: COp, List(Lit(lit))) =>
+    case SEApp(op: COp, List(SELit(lit))) =>
       foldCOp(op, lit).getOrElse(t)
-    case App(_: COp, List(arg)) => arg
-    case App("[ir:contains]", List(SList(es), t)) =>
-      Lit(EBool(es.contains(t)))
-    case App("[ir:contains]", List(Lit(EStr(s)), Lit(EStr(sub)))) =>
-      Lit(EBool(s.contains(sub)))
-    case App(
+    case SEApp(_: COp, List(arg)) => arg
+    case SEApp("[ir:contains]", List(SEList(es), t)) =>
+      SELit(EBool(es.contains(t)))
+    case SEApp("[ir:contains]", List(SELit(EStr(s)), SELit(EStr(sub)))) =>
+      SELit(EBool(s.contains(sub)))
+    case SEApp(
           "[ir:substring]",
-          List(Lit(EStr(s)), Lit(EMath(f)), Lit(EMath(to))),
+          List(SELit(EStr(s)), SELit(EMath(f)), SELit(EMath(to))),
         ) =>
       val end = if (s.length < to.toInt) s.length else to.toInt
-      Lit(EStr(s.substring(f.toInt, end)))
-    case App("[ir:substring]", List(Lit(EStr(s)), Lit(EMath(f)))) =>
-      Lit(EStr(s.substring(f.toInt)))
-    case App("[ir:trim-start]", List(Lit(EStr(s)))) =>
-      Lit(EStr(trimString(s, true, cfg.esParser)))
-    case App("[ir:trim-end]", List(Lit(EStr(s)))) =>
-      Lit(EStr(trimString(s, false, cfg.esParser)))
+      SELit(EStr(s.substring(f.toInt, end)))
+    case SEApp("[ir:substring]", List(SELit(EStr(s)), SELit(EMath(f)))) =>
+      SELit(EStr(s.substring(f.toInt)))
+    case SEApp("[ir:trim-start]", List(SELit(EStr(s)))) =>
+      SELit(EStr(trimString(s, true, cfg.esParser)))
+    case SEApp("[ir:trim-end]", List(SELit(EStr(s)))) =>
+      SELit(EStr(trimString(s, false, cfg.esParser)))
     case _ => t
-
-  private def reachable(node: Node): Boolean =
-    if (curFunc == entryFunc) whitelist(node)
-    else if (inCalleeTarget && targetFunc.contains(curFunc))
-      calleeWhitelist(node)
-    else true
 }
 
 object SymbolicInterpreter {
 
-  def apply(
-    entryFunc: Func,
-    target: Branch,
-    cond: Cond,
-  )(using CFG): List[Goal] =
-    new SymbolicInterpreter(entryFunc, target, cond).result
+  def apply(entryFunc: Func, target: Cond)(using CFG): LazyList[Goal] =
+    new SymbolicInterpreter(entryFunc, target).result
 
   private def foldUOp(op: UOp, lit: LiteralExpr): Option[SymExpr] =
     import UOp.*
     (op, lit) match
-      case (Abs, EMath(n)) => Some(Lit(EMath(n.abs)))
+      case (Abs, EMath(n)) => Some(SELit(EMath(n.abs)))
       case (Floor, EMath(n)) =>
         val f = if (n.isWhole) n else n - (n % 1) - (if (n < 0) 1 else 0)
-        Some(Lit(EMath(f)))
-      case (Neg, ENumber(n))     => Some(Lit(ENumber(-n)))
-      case (Neg, EMath(n))       => Some(Lit(EMath(-n)))
-      case (Neg, EInfinity(pos)) => Some(Lit(EInfinity(!pos)))
-      case (Neg, EBigInt(n))     => Some(Lit(EBigInt(-n)))
-      case (Not, EBool(b))       => Some(Lit(EBool(!b)))
-      case (BNot, EMath(n))      => Some(Lit(EMath(~n.toInt)))
-      case (BNot, ENumber(n))    => Some(Lit(ENumber(~n.toInt)))
-      case (BNot, EBigInt(n))    => Some(Lit(EBigInt(~n)))
+        Some(SELit(EMath(f)))
+      case (Neg, ENumber(n))     => Some(SELit(ENumber(-n)))
+      case (Neg, EMath(n))       => Some(SELit(EMath(-n)))
+      case (Neg, EInfinity(pos)) => Some(SELit(EInfinity(!pos)))
+      case (Neg, EBigInt(n))     => Some(SELit(EBigInt(-n)))
+      case (Not, EBool(b))       => Some(SELit(EBool(!b)))
+      case (BNot, EMath(n))      => Some(SELit(EMath(~n.toInt)))
+      case (BNot, ENumber(n))    => Some(SELit(ENumber(~n.toInt)))
+      case (BNot, EBigInt(n))    => Some(SELit(EBigInt(~n)))
       case _                     => None
 
   private def foldBOp(
@@ -473,90 +369,91 @@ object SymbolicInterpreter {
   ): Option[SymExpr] =
     import BOp.*
     (op, l, r) match
-      case (Add, ENumber(a), ENumber(b)) => Some(Lit(ENumber(a + b)))
-      case (Sub, ENumber(a), ENumber(b)) => Some(Lit(ENumber(a - b)))
-      case (Mul, ENumber(a), ENumber(b)) => Some(Lit(ENumber(a * b)))
-      case (Pow, ENumber(a), ENumber(b)) => Some(Lit(ENumber(math.pow(a, b))))
-      case (Div, ENumber(a), ENumber(b)) => Some(Lit(ENumber(a / b)))
-      case (Mod, ENumber(a), ENumber(b)) => Some(Lit(ENumber(a % b)))
-      case (Lt, ENumber(a), ENumber(b))  => Some(Lit(EBool(a < b)))
-      case (Add, EMath(a), EMath(b))     => Some(Lit(EMath(a + b)))
-      case (Sub, EMath(a), EMath(b))     => Some(Lit(EMath(a - b)))
-      case (Mul, EMath(a), EMath(b))     => Some(Lit(EMath(a * b)))
+      case (Add, ENumber(a), ENumber(b)) => Some(SELit(ENumber(a + b)))
+      case (Sub, ENumber(a), ENumber(b)) => Some(SELit(ENumber(a - b)))
+      case (Mul, ENumber(a), ENumber(b)) => Some(SELit(ENumber(a * b)))
+      case (Pow, ENumber(a), ENumber(b)) => Some(SELit(ENumber(math.pow(a, b))))
+      case (Div, ENumber(a), ENumber(b)) => Some(SELit(ENumber(a / b)))
+      case (Mod, ENumber(a), ENumber(b)) => Some(SELit(ENumber(a % b)))
+      case (Lt, ENumber(a), ENumber(b))  => Some(SELit(EBool(a < b)))
+      case (Add, EMath(a), EMath(b))     => Some(SELit(EMath(a + b)))
+      case (Sub, EMath(a), EMath(b))     => Some(SELit(EMath(a - b)))
+      case (Mul, EMath(a), EMath(b))     => Some(SELit(EMath(a * b)))
       case (Mod, EMath(a), EMath(b)) if b != BigDecimal(0) =>
-        Some(Lit(EMath(a % b)))
+        Some(SELit(EMath(a % b)))
       case (Pow, EMath(a), EMath(b)) if b.isValidInt && b >= 0 =>
-        Some(Lit(EMath(a.pow(b.toInt))))
+        Some(SELit(EMath(a.pow(b.toInt))))
       case (BAnd, EMath(a), EMath(b)) =>
-        Some(Lit(EMath(BigDecimal(a.toBigInt & b.toBigInt))))
+        Some(SELit(EMath(BigDecimal(a.toBigInt & b.toBigInt))))
       case (BOr, EMath(a), EMath(b)) =>
-        Some(Lit(EMath(BigDecimal(a.toBigInt | b.toBigInt))))
+        Some(SELit(EMath(BigDecimal(a.toBigInt | b.toBigInt))))
       case (BXOr, EMath(a), EMath(b)) =>
-        Some(Lit(EMath(BigDecimal(a.toBigInt ^ b.toBigInt))))
+        Some(SELit(EMath(BigDecimal(a.toBigInt ^ b.toBigInt))))
       case (LShift, EMath(a), EMath(b)) =>
-        Some(Lit(EMath(BigDecimal(a.toBigInt << b.toInt))))
+        Some(SELit(EMath(BigDecimal(a.toBigInt << b.toInt))))
       case (RShift, EMath(a), EMath(b)) =>
-        Some(Lit(EMath(BigDecimal(a.toBigInt >> b.toInt))))
-      case (Lt, EMath(a), EMath(b))         => Some(Lit(EBool(a < b)))
-      case (Add, EInfinity(true), EMath(_)) => Some(Lit(EInfinity(true)))
-      case (Add, EMath(_), EInfinity(true)) => Some(Lit(EInfinity(true)))
+        Some(SELit(EMath(BigDecimal(a.toBigInt >> b.toInt))))
+      case (Lt, EMath(a), EMath(b))         => Some(SELit(EBool(a < b)))
+      case (Add, EInfinity(true), EMath(_)) => Some(SELit(EInfinity(true)))
+      case (Add, EMath(_), EInfinity(true)) => Some(SELit(EInfinity(true)))
       case (Add, EInfinity(true), EInfinity(true)) =>
-        Some(Lit(EInfinity(true)))
-      case (Add, EInfinity(false), EMath(_)) => Some(Lit(EInfinity(false)))
-      case (Add, EMath(_), EInfinity(false)) => Some(Lit(EInfinity(false)))
+        Some(SELit(EInfinity(true)))
+      case (Add, EInfinity(false), EMath(_)) => Some(SELit(EInfinity(false)))
+      case (Add, EMath(_), EInfinity(false)) => Some(SELit(EInfinity(false)))
       case (Add, EInfinity(false), EInfinity(false)) =>
-        Some(Lit(EInfinity(false)))
-      case (Sub, EInfinity(true), EMath(_)) => Some(Lit(EInfinity(true)))
+        Some(SELit(EInfinity(false)))
+      case (Sub, EInfinity(true), EMath(_)) => Some(SELit(EInfinity(true)))
       case (Sub, EInfinity(true), EInfinity(false)) =>
-        Some(Lit(EInfinity(true)))
-      case (Sub, EMath(_), EInfinity(true))  => Some(Lit(EInfinity(false)))
-      case (Sub, EInfinity(false), EMath(_)) => Some(Lit(EInfinity(false)))
+        Some(SELit(EInfinity(true)))
+      case (Sub, EMath(_), EInfinity(true))  => Some(SELit(EInfinity(false)))
+      case (Sub, EInfinity(false), EMath(_)) => Some(SELit(EInfinity(false)))
       case (Sub, EInfinity(false), EInfinity(true)) =>
-        Some(Lit(EInfinity(false)))
-      case (Sub, EMath(_), EInfinity(false)) => Some(Lit(EInfinity(true)))
-      case (Eq, a, b)                        => Some(Lit(EBool(a == b)))
+        Some(SELit(EInfinity(false)))
+      case (Sub, EMath(_), EInfinity(false)) => Some(SELit(EInfinity(true)))
+      case (Eq, a, b)                        => Some(SELit(EBool(a == b)))
       case _                                 => None
 
   private def foldVOp(op: VOp, terms: List[SymExpr]): Option[SymExpr] =
     import VOp.*
     op match
       case Min =>
-        if (terms.contains(Lit(EInfinity(false)))) Some(Lit(EInfinity(false)))
+        if (terms.contains(SELit(EInfinity(false))))
+          Some(SELit(EInfinity(false)))
         else {
-          val filtered = terms.filter(_ != Lit(EInfinity(true)))
-          if (filtered.isEmpty) Some(Lit(EInfinity(true)))
+          val filtered = terms.filter(_ != SELit(EInfinity(true)))
+          if (filtered.isEmpty) Some(SELit(EInfinity(true)))
           else {
-            val nums = filtered.collect { case Lit(EMath(n)) => n }
-            if (nums.size == filtered.size) Some(Lit(EMath(nums.min)))
+            val nums = filtered.collect { case SELit(EMath(n)) => n }
+            if (nums.size == filtered.size) Some(SELit(EMath(nums.min)))
             else None
           }
         }
       case Max =>
-        if (terms.contains(Lit(EInfinity(true)))) Some(Lit(EInfinity(true)))
+        if (terms.contains(SELit(EInfinity(true)))) Some(SELit(EInfinity(true)))
         else {
-          val filtered = terms.filter(_ != Lit(EInfinity(false)))
-          if (filtered.isEmpty) Some(Lit(EInfinity(false)))
+          val filtered = terms.filter(_ != SELit(EInfinity(false)))
+          if (filtered.isEmpty) Some(SELit(EInfinity(false)))
           else {
-            val nums = filtered.collect { case Lit(EMath(n)) => n }
-            if (nums.size == filtered.size) Some(Lit(EMath(nums.max)))
+            val nums = filtered.collect { case SELit(EMath(n)) => n }
+            if (nums.size == filtered.size) Some(SELit(EMath(nums.max)))
             else None
           }
         }
       case Concat =>
         val strs = terms.collect {
-          case Lit(EStr(s))      => s
-          case Lit(ECodeUnit(c)) => c.toString
+          case SELit(EStr(s))      => s
+          case SELit(ECodeUnit(c)) => c.toString
         }
-        if (strs.size == terms.size) Some(Lit(EStr(strs.mkString)))
+        if (strs.size == terms.size) Some(SELit(EStr(strs.mkString)))
         else {
-          val lists = terms.collect { case SList(es) => es }
-          if (lists.size == terms.size) Some(SList(lists.flatten))
+          val lists = terms.collect { case SEList(es) => es }
+          if (lists.size == terms.size) Some(SEList(lists.flatten))
           else None
         }
 
   private def foldMOp(mop: MOp, terms: List[SymExpr]): Option[SymExpr] =
     import MOp.*
-    val nums = terms.collect { case Lit(EMath(n)) => n.toDouble }
+    val nums = terms.collect { case SELit(EMath(n)) => n.toDouble }
     if (nums.size != terms.size) None
     else
       val r: Option[Double] = (mop, nums) match
@@ -579,35 +476,35 @@ object SymbolicInterpreter {
         case (Sqrt, List(a))     => Some(math.sqrt(a))
         case (Tan, List(a))      => Some(math.tan(a))
         case _                   => None // Acosh, Asinh, Atanh not supported
-      r.map(v => Lit(EMath(v)))
+      r.map(v => SELit(EMath(v)))
 
   private def foldCOp(cop: COp, lit: LiteralExpr): Option[SymExpr] =
     import COp.*
     (cop, lit) match
-      case (ToMath, EMath(n))     => Some(Lit(EMath(n)))
-      case (ToMath, ENumber(d))   => Some(Lit(EMath(BigDecimal(d))))
-      case (ToMath, EBigInt(n))   => Some(Lit(EMath(BigDecimal(n))))
-      case (ToMath, ECodeUnit(c)) => Some(Lit(EMath(BigDecimal(c.toInt))))
-      case (ToNumber, EMath(n))   => Some(Lit(ENumber(n.toDouble)))
-      case (ToNumber, ENumber(d)) => Some(Lit(ENumber(d)))
+      case (ToMath, EMath(n))     => Some(SELit(EMath(n)))
+      case (ToMath, ENumber(d))   => Some(SELit(EMath(BigDecimal(d))))
+      case (ToMath, EBigInt(n))   => Some(SELit(EMath(BigDecimal(n))))
+      case (ToMath, ECodeUnit(c)) => Some(SELit(EMath(BigDecimal(c.toInt))))
+      case (ToNumber, EMath(n))   => Some(SELit(ENumber(n.toDouble)))
+      case (ToNumber, ENumber(d)) => Some(SELit(ENumber(d)))
       case (ToNumber, EInfinity(pos)) =>
         val v = if (pos) Double.PositiveInfinity else Double.NegativeInfinity
-        Some(Lit(ENumber(v)))
-      case (ToApproxNumber, EMath(n)) => Some(Lit(ENumber(n.toDouble)))
-      case (ToBigInt, EMath(n))       => Some(Lit(EBigInt(n.toBigInt)))
-      case (ToBigInt, EBigInt(n))     => Some(Lit(EBigInt(n)))
-      case (ToCodeUnit, EMath(n))     => Some(Lit(ECodeUnit(n.toChar)))
-      case (ToStr(_), EStr(s))        => Some(Lit(EStr(s)))
+        Some(SELit(ENumber(v)))
+      case (ToApproxNumber, EMath(n)) => Some(SELit(ENumber(n.toDouble)))
+      case (ToBigInt, EMath(n))       => Some(SELit(EBigInt(n.toBigInt)))
+      case (ToBigInt, EBigInt(n))     => Some(SELit(EBigInt(n)))
+      case (ToCodeUnit, EMath(n))     => Some(SELit(ECodeUnit(n.toChar)))
+      case (ToStr(_), EStr(s))        => Some(SELit(EStr(s)))
       case (ToStr(None), EMath(n)) =>
-        Some(Lit(EStr(if (n.isWhole) n.toBigInt.toString else n.toString)))
-      case (ToStr(None), EBigInt(n)) => Some(Lit(EStr(n.toString)))
+        Some(SELit(EStr(if (n.isWhole) n.toBigInt.toString else n.toString)))
+      case (ToStr(None), EBigInt(n)) => Some(SELit(EStr(n.toString)))
       case (ToStr(None), ENumber(d)) =>
-        if (d.isNaN) Some(Lit(EStr("NaN")))
-        else if (d.isPosInfinity) Some(Lit(EStr("Infinity")))
-        else if (d.isNegInfinity) Some(Lit(EStr("-Infinity")))
-        else Some(Lit(EStr(d.toString)))
+        if (d.isNaN) Some(SELit(EStr("NaN")))
+        else if (d.isPosInfinity) Some(SELit(EStr("Infinity")))
+        else if (d.isNegInfinity) Some(SELit(EStr("-Infinity")))
+        else Some(SELit(EStr(d.toString)))
       case (ToStr(None), EInfinity(pos)) =>
-        Some(Lit(EStr(if (pos) "Infinity" else "-Infinity")))
-      case (ToStr(None), EBool(b)) => Some(Lit(EStr(b.toString)))
+        Some(SELit(EStr(if (pos) "Infinity" else "-Infinity")))
+      case (ToStr(None), EBool(b)) => Some(SELit(EStr(b.toString)))
       case _                       => None
 }
