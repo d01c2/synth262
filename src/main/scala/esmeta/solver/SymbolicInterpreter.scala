@@ -6,7 +6,7 @@ import esmeta.ir.{Func => _, *}
 import esmeta.spec.{BuiltinHead, ParamKind}
 import esmeta.state.*
 import esmeta.ty.ValueTy
-import scala.collection.mutable.{Set => MSet}
+
 import Formula.*, SymExpr.*
 
 class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
@@ -19,7 +19,7 @@ class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
   private var argCounter = 0 // FIXME: parameter setting branch flip case
 
   // backward reachable nodes from the target branch (for path pruning)
-  private val whitelist = entryFunc.reachingTo(branch)
+  private lazy val whitelist = entryFunc.reachingTo(branch)
 
   lazy val result: LazyList[Goal] =
     if (whitelist.isEmpty) LazyList()
@@ -35,7 +35,8 @@ class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
         else None
       }.toMap
 
-      def pathConstraints: Goal = stack.reverseIterator.flatMap(_._2).toList
+      // path constraint
+      def pc: Goal = stack.reverseIterator.flatMap(_._2).toList
 
       // try certain branch side and push constraints onto the stack
       def tryBranch(
@@ -53,9 +54,12 @@ class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
           cs <- constraint
         } yield { stack ::= (Cond(br, side), cs, savedEnv); node }
 
+      def feasible(n: Node) =
+        whitelist.contains(n) && // reachable to target
+        !stack.exists(_._1.branch.id == n.id) // no re-entry into loops
+
       // cfg step with path pruning
-      def step(node: Node, visited: MSet[Int]): Option[Node] =
-        def feasible(n: Node) = whitelist(n) && !visited(n.id)
+      def step(node: Node): Option[Node] =
         node match
           case block: Block => eval(block); block.next.filter(feasible)
           case b: Branch =>
@@ -83,16 +87,13 @@ class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
         var cur: Option[Node] = Some(from)
         var found: Option[Goal] = None
         try {
-          val visited = MSet[Int]()
-          for ((Cond(b, _), _, _) <- stack) visited += b.id
           while (cur.isDefined && found.isEmpty) {
             val node = cur.get
-            visited += node.id
             node match
               case b: Branch if b.id == branch.id =>
-                found = getConstraint(b.cond, side).map(pathConstraints ++ _)
+                found = getConstraint(b.cond, side).map(pc ++ _)
                 cur = None
-              case _ => cur = step(node, visited)
+              case _ => cur = step(node)
           }
         } catch {
           case _: NotImplementedError | _: MatchError => ()
@@ -107,8 +108,8 @@ class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
           val (Cond(br, tried), _, savedEnv) = stack.head
           stack = stack.tail
           if (tried) {
-            env = savedEnv // restore env before trying the else-side
-            found = tryBranch(br, false, whitelist) // FIXME: visited?
+            env = savedEnv
+            found = tryBranch(br, false, feasible)
           }
         }
         found
