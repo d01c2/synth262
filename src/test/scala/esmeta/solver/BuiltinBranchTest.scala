@@ -115,6 +115,28 @@ class BuiltinBranchTest extends ESMetaTest {
                 println(
                   s"         js: ${candidates.head}",
                 )
+                // dump constraint pipeline for case study
+                val params = Solve.paramIds(f)
+                val goals = SymbolicInterpreter(f, cond)
+                for ((goal, gi) <- goals.zipWithIndex) {
+                  println(s"         --- goal[$gi] raw ---")
+                  for (c <- goal) println(s"           $c")
+                  val rewritten = Solver.rewriteApps(goal)
+                  println(s"         --- goal[$gi] rewritten ---")
+                  for (c <- rewritten) println(s"           $c")
+                  Solver.simplify(rewritten) match
+                    case None =>
+                      println(s"         --- goal[$gi] CONTRADICTION ---")
+                    case Some(simplified) =>
+                      println(s"         --- goal[$gi] simplified ---")
+                      for (c <- simplified) println(s"           $c")
+                      val w = Reify(simplified, params).witness
+                      println(s"         --- goal[$gi] witness: $w ---")
+                      w.foreach { wit =>
+                        val js = Reify.toJsCall(f, params, wit)
+                        println(s"         --- goal[$gi] toJsCall: $js ---")
+                      }
+                }
           case None =>
             unsolved += 1
             val reason =
