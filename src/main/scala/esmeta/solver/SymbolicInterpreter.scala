@@ -6,34 +6,75 @@ import esmeta.ir.{Func => _, *}
 import esmeta.spec.{BuiltinHead, ParamKind}
 import esmeta.state.*
 import esmeta.ty.ValueTy
-
-import Formula.*, SymExpr.*
+import scala.collection.mutable.{Map => MMap, Set => MSet, Queue}
 
 class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
-  import SymbolicInterpreter.*
+  import SymbolicInterpreter.*, Formula.*, SymExpr.*
   private val Cond(branch, side) = target
 
   private var env = Map[Local, SymExpr]()
   // TODO: symbolic heap
+  private var callCtxt: Option[CallContext] = None
 
-  private var argCounter = 0 // FIXME: parameter setting branch flip case
+  private val targetFunc: Func = cfg.funcOf(branch)
+  private val interProc: Boolean = targetFunc != entryFunc
 
-  // backward reachable nodes from the target branch (for path pruning)
-  private lazy val whitelist = entryFunc.reachingTo(branch)
+  private lazy val stepInFuncs: Set[Func] =
+    if (!interProc) Set()
+    else {
+      val reached = MSet(targetFunc)
+      val queue = Queue(targetFunc)
+      while (queue.nonEmpty)
+        for {
+          caller <- cfg.callerOf.getOrElse(queue.dequeue(), Set())
+          if caller != entryFunc && reached.add(caller)
+        } queue.enqueue(caller)
+      reached.toSet
+    }
+
+  // backward reachable nodes for path pruning (per-function)
+  private val whitelistCache = MMap[Func, Set[Node]]()
+  private def whitelist(func: Func): Set[Node] =
+    whitelistCache.getOrElseUpdate(
+      func,
+      if (func == targetFunc) func.reachingTo(branch)
+      else {
+        val callTargets = func.nodes.flatMap {
+          case c: Call =>
+            c.callInst match
+              case ICall(_, EClo(fn, _), _)
+                  if cfg.fnameMap
+                    .get(fn)
+                    .exists(f => stepInFuncs.contains(f) || f == targetFunc) =>
+                Some(c)
+              case _ => None
+          case _ => None
+        }
+        if (callTargets.isEmpty) Set.empty[Node]
+        else callTargets.flatMap(func.reachingTo)
+      },
+    )
 
   lazy val result: LazyList[Goal] =
-    if (whitelist.isEmpty) LazyList()
+    if (whitelist(targetFunc).isEmpty) LazyList()
     else {
-      var stack = List[(Cond, Goal, Map[Local, SymExpr])]()
+      var stack = List[(Cond, Goal, State)]()
 
       // init symbolic environment from builtin entry parameters
+      val argCount = entryFunc.head match
+        case Some(h: BuiltinHead) =>
+          h.params.count { _.kind != ParamKind.Variadic }
+        case _ => 0
       env = entryFunc.irFunc.params.flatMap { param =>
         val name = param.lhs
         if (name == NAME_THIS) Some(name -> SESym(Sym.This))
         else if (name == NAME_NEW_TARGET) Some(name -> SESym(Sym.NewTarget))
-        else if (name == NAME_ARGS_LIST) Some(name -> SESym(Sym.ArgsList))
+        else if (name == NAME_ARGS_LIST)
+          val argsList = (0 until argCount).map(k => SESym(Sym.Arg(k))).toList
+          Some(name -> SEList(argsList))
         else None
       }.toMap
+      callCtxt = None
 
       // path constraint
       def pc: Goal = stack.reverseIterator.flatMap(_._2).toList
@@ -44,7 +85,6 @@ class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
         side: Boolean,
         feasible: Node => Boolean,
       ): Option[Node] =
-        val savedEnv = env
         val nextNode = if (side) br.thenNode else br.elseNode
         val constraint =
           if (br.isFiltered) Some(List()) // skip extraction for filtered
@@ -52,35 +92,65 @@ class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
         for {
           node <- nextNode.filter(feasible)
           cs <- constraint
-        } yield { stack ::= (Cond(br, side), cs, savedEnv); node }
+        } yield {
+          stack ::= (Cond(br, side), cs, State(env, callCtxt))
+          node
+        }
 
-      def feasible(n: Node) =
-        whitelist.contains(n) && // reachable to target
-        !stack.exists(_._1.branch.id == n.id) // no re-entry into loops
+      def feasible(func: Func)(n: Node): Boolean =
+        whitelist(func).contains(n) &&
+        !stack.exists(_._1.branch.id == n.id)
+
+      def canStepIn(callee: Func, cur: Func): Boolean =
+        interProc && stepInFuncs.contains(callee) &&
+        callee != cur &&
+        !stack.exists((cond, _, _) => cfg.funcOf(cond.branch) == callee)
 
       // cfg step with path pruning
       def step(node: Node): Option[Node] =
+        val func = cfg.funcOf(node)
+        val feas = feasible(func)
         node match
-          case block: Block => eval(block); block.next.filter(feasible)
+          case block: Block =>
+            eval(block) match
+              case Some(retVal) =>
+                callCtxt match
+                  case Some(CallContext(callSite, callerEnv, caller)) =>
+                    env = callerEnv + (callSite.lhs -> retVal)
+                    callCtxt = caller
+                    callSite.next.filter(feasible(cfg.funcOf(callSite)))
+                  case None => None
+              case None => block.next.filter(feas)
           case b: Branch =>
             eval(b.cond) match
               case SELit(EBool(v)) =>
                 val nextNode = if (v) b.thenNode else b.elseNode
-                nextNode.filter(feasible)
-              case _ => // try true first and flip if not solvable
-                tryBranch(b, true, feasible)
-                  .orElse(tryBranch(b, false, feasible))
+                nextNode.filter(feas)
+              case _ =>
+                tryBranch(b, true, feas).orElse(tryBranch(b, false, feas))
           case call: Call =>
             val ret = call.lhs
             call.callInst match
               case ICall(_, EClo(fname, _), args) =>
-                env += (ret -> SEApp(fname, args.map(eval)))
+                cfg.fnameMap.get(fname) match
+                  case Some(callee) if canStepIn(callee, func) =>
+                    val argVals = args.map(eval)
+                    callCtxt = Some(CallContext(call, env, callCtxt))
+                    env = callee.irFunc.params
+                      .zip(argVals)
+                      .map((p, a) => p.lhs -> a)
+                      .toMap
+                    Some(callee.entry).filter(feasible(callee))
+                  case _ =>
+                    env += (ret -> SEApp(fname, args.map(eval)))
+                    call.next.filter(feas)
               case ICall(_, ERef(Field(base, EStr(method))), args) =>
                 env += (ret -> SEApp(method, eval(base) :: args.map(eval)))
+                call.next.filter(feas)
               case ISdoCall(_, base, op, args) =>
                 env += (ret -> SEApp(op, eval(base) :: args.map(eval)))
-              case _ => env -= ret
-            call.next.filter(feasible)
+                call.next.filter(feas)
+              case _ => env -= ret; call.next.filter(feas)
 
       // collect path constraints
       def collectGoal(from: Node): Option[Goal] = {
@@ -105,30 +175,37 @@ class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
       def backtrack(): Option[Node] = {
         var found: Option[Node] = None
         while (stack.nonEmpty && found.isEmpty) {
-          val (Cond(br, tried), _, savedEnv) = stack.head
+          val (Cond(br, tried), _, savedSt) = stack.head
           stack = stack.tail
           if (tried) {
-            env = savedEnv
-            found = tryBranch(br, false, feasible)
+            env = savedSt.env
+            callCtxt = savedSt.callCtxt
+            found = tryBranch(br, false, feasible(cfg.funcOf(br)))
           }
         }
         found
       }
 
-      def emit(from: Node): LazyList[Goal] =
-        def next(): LazyList[Goal] = backtrack() match
-          case Some(n) => emit(n)
-          case None    => LazyList()
-        collectGoal(from) match
-          case Some(goal) => goal #:: next()
-          case None       => next()
-
-      emit(entryFunc.entry)
+      var cur: Option[Node] = Some(entryFunc.entry)
+      def advance(): Option[Goal] =
+        while (cur.isDefined) {
+          collectGoal(cur.get) match
+            case Some(goal) => cur = backtrack(); return Some(goal)
+            case None       => cur = backtrack()
+        }
+        None
+      LazyList.unfold(())(_ => advance().map((_, ())))
     }
 
   // --- block/instruction evaluation ---
 
-  private def eval(block: Block): Unit = for (inst <- block.insts) eval(inst)
+  private def eval(block: Block): Option[SymExpr] =
+    var retVal: Option[SymExpr] = None
+    for (inst <- block.insts if retVal.isEmpty)
+      inst match
+        case IReturn(expr) => retVal = Some(eval(expr))
+        case other         => eval(other)
+    retVal
 
   private def eval(inst: NormalInst): Unit = inst match
     case ILet(lhs, expr)         => env += (lhs -> eval(expr))
@@ -164,15 +241,12 @@ class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
     case _: IPush => () // non-local list
     case IPop(lhs, ERef(x: Local), _) =>
       env.get(x) match
-        case Some(SESym(Sym.ArgsList)) =>
-          env += (lhs -> SESym(Sym.Arg(argCounter)))
-          argCounter += 1
         case Some(SEList(es)) if es.nonEmpty =>
           env += (lhs -> es.head)
           env += (x -> SEList(es.tail))
         case _ => env -= lhs
-    case _: IPop => env -= inst.asInstanceOf[IPop].lhs
-    case _       => ()
+    case IPop(lhs, _, _) => env -= lhs
+    case _               => ()
 
   // --- expression evaluation ---
 
@@ -246,7 +320,7 @@ class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
             case (SELit(EStr(`name`)), v) => v
           }.getOrElse(SEProj(SEMap(es), SELit(EStr(name))))
         case t => SEProj(t, SELit(EStr(name)))
-    case f @ Field(base, idx) =>
+    case Field(base, idx) =>
       (eval(base), eval(idx)) match
         case (SEList(es), SELit(EMath(n)))
             if n.isValidInt && es.indices.contains(n.toInt) =>
@@ -342,6 +416,15 @@ class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
 }
 
 object SymbolicInterpreter {
+  import SymExpr.*
+
+  case class CallContext(
+    callSite: Call,
+    callerEnv: Map[Local, SymExpr],
+    caller: Option[CallContext],
+  )
+
+  case class State(env: Map[Local, SymExpr], callCtxt: Option[CallContext])
 
   def apply(entryFunc: Func, target: Cond)(using CFG): LazyList[Goal] =
     new SymbolicInterpreter(entryFunc, target).result
