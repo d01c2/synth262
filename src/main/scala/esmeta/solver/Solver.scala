@@ -241,12 +241,24 @@ object Solver:
       case FEq(t, SELit(v))          => termToLit.get(t).exists(_ != v)
       case FEq(SELit(v), t)          => termToLit.get(t).exists(_ != v)
       case FNot(FEq(l, r)) if l == r => true
+      case FNot(FEq(t, SELit(v)))    => termToLit.get(t).exists(_ == v)
+      case FNot(FEq(SELit(v), t))    => termToLit.get(t).exists(_ == v)
+      case FLt(l, r) if l == r       => true
       case _                         => false
     } || termToLit.exists { (t, lit) =>
       termToType.get(t).exists { ty =>
         !(ty <= NormalT) && !(ty <= AbruptT) && (litType(lit) && ty).isBottom
       }
-    }
+    } || flat
+      .collect {
+        case FEq(SETypeOf(t), SEType(ty))
+            if !(ty <= NormalT) && !(ty <= AbruptT) =>
+          (t, ty)
+      }
+      .groupMap(_._1)(_._2)
+      .exists { (_, tys) =>
+        tys.size > 1 && tys.reduce(_ && _).isBottom
+      }
     if (hasContradiction) None
     else {
       Some(flat.filterNot {
@@ -267,4 +279,5 @@ object Solver:
     case _: ENull                             => NullT
     case _: EUndef                            => UndefT
     case _: EBigInt                           => BigIntT
+    case _: ECodeUnit                         => CodeUnitT
     case _                                    => AnyT

@@ -61,18 +61,24 @@ case class Reify(formulas: List[Formula], entryParams: List[Sym]) {
     val narrowedTy = ty
     val hasTyConstraint = narrowedTy != ESValueT
 
+    // typed/abrupt property constraints — only when the base is an object
+    // literal that can have properties merged into it
+    val objLiteralBase = defaultFor(narrowedTy).exists(_.startsWith("{"))
+
     // property constraints from Get/HasProperty
     val propsValue = fs.collect {
       case f @ FEq(SEApp("Get", List(_, SELit(EStr(key)))), SELit(lit)) =>
         consumed += f; (key, lit)
     }.toMap
-    val propsAbrupt = fs.collect {
-      case f @ FEq(
-            SETypeOf(SEApp("Get", List(_, SELit(EStr(key))))),
-            SEType(ty),
-          ) if ty <= AbruptT =>
-        consumed += f; key
-    }.toSet
+    val propsAbrupt =
+      if (objLiteralBase) fs.collect {
+        case f @ FEq(
+              SETypeOf(SEApp("Get", List(_, SELit(EStr(key))))),
+              SEType(ty),
+            ) if ty <= AbruptT =>
+          consumed += f; key
+      }.toSet
+      else Set.empty[String]
     val propsExist = fs.collect {
       case f @ FEq(
             SEApp("HasProperty", List(_, SELit(EStr(key)))),
@@ -86,10 +92,6 @@ case class Reify(formulas: List[Formula], entryParams: List[Sym]) {
           if !fieldToRecordTy.contains(field) =>
         consumed += f; (field, false)
     }.toMap
-
-    // typed property constraints — only when the base is an object literal
-    // that can have properties merged into it
-    val objLiteralBase = defaultFor(narrowedTy).exists(_.startsWith("{"))
     val propsTyped =
       if (objLiteralBase) fs.collect {
         case f @ FEq(
@@ -197,7 +199,16 @@ case class Reify(formulas: List[Formula], entryParams: List[Sym]) {
 
     if (litVal.isDefined) litVal.flatMap(litToJs)
     else if (hasTyConstraint && narrowedTy.isBottom) None
-    else if (unconsumed.nonEmpty) buildProxy(narrowedTy, unconsumed)
+    else if (unconsumed.nonEmpty)
+      val extraTraps = List.newBuilder[Formula]
+      val p = SESym(param)
+      extensible.foreach(b =>
+        extraTraps += FEq(SEApp("IsExtensible", List(p)), SELit(EBool(b))),
+      )
+      prototype.foreach(lit =>
+        extraTraps += FEq(SEApp("GetPrototypeOf", List(p)), SELit(lit)),
+      )
+      buildProxy(narrowedTy, unconsumed ++ extraTraps.result())
     else if (hasObjConstraints)
       buildObject(
         narrowedTy,
@@ -252,6 +263,8 @@ case class Reify(formulas: List[Formula], entryParams: List[Sym]) {
         s"{${(baseProps ++ propList).mkString(", ")}}"
 
     (extensible, prototype) match
+      case (Some(false), Some(ENull())) =>
+        s"Object.preventExtensions(Object.create(null))"
       case (Some(false), _)   => s"Object.preventExtensions($objLiteral)"
       case (_, Some(ENull())) => "Object.create(null)"
       case _                  => objLiteral
@@ -262,7 +275,7 @@ case class Reify(formulas: List[Formula], entryParams: List[Sym]) {
     ty: ValueTy,
     trapFormulas: List[Formula],
   ): Option[String] =
-    val target = trapFormulas
+    val rawTarget = trapFormulas
       .collectFirst {
         case FEq(SETypeOf(SEApp(fname: String, _)), SEType(_)) =>
           proxyTarget(fname)
@@ -272,6 +285,10 @@ case class Reify(formulas: List[Formula], entryParams: List[Sym]) {
           proxyTarget(fname)
       }
       .getOrElse("{}")
+    val target =
+      if (rawTarget == "{}" && ty <= ConstructorT) "function(){}"
+      else if (rawTarget == "{}" && ty <= FunctionT) "() => {}"
+      else rawTarget
 
     val traps = List.newBuilder[(String, String)]
     for (formula <- trapFormulas) formula match
@@ -305,9 +322,16 @@ case class Reify(formulas: List[Formula], entryParams: List[Sym]) {
     val trapList = traps.result()
     if (trapList.isEmpty) return None
 
+    val needsNonExtensible = trapList.exists { (name, body) =>
+      name == "preventExtensions" ||
+      (name == "isExtensible" && body != "return true;")
+    }
+    val finalTarget =
+      if (needsNonExtensible) s"Object.preventExtensions($target)"
+      else target
     val trapStr =
       trapList.map((name, body) => s"$name() { $body }").mkString(", ")
-    Some(s"new Proxy($target, { $trapStr })")
+    Some(s"new Proxy($finalTarget, { $trapStr })")
 }
 
 object Reify {
@@ -339,7 +363,14 @@ object Reify {
 
   private def litToJs(lit: LiteralExpr): Option[String] = lit match
     case EBool(b) => Some(b.toString)
-    case EStr(s)  => Some(s"\"$s\"")
+    case EStr(s) =>
+      val escaped = s
+        .replace("\\", "\\\\")
+        .replace("\"", "\\\"")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+      Some(s"\"$escaped\"")
     case EMath(n) =>
       Some(if (n.isWhole) n.toBigInt.toString else n.toString)
     case ENumber(d) =>
@@ -347,6 +378,7 @@ object Reify {
       else if (d.isPosInfinity) Some("Infinity")
       else if (d.isNegInfinity) Some("-Infinity")
       else if (isNegZero(d)) Some("-0")
+      else if (d == d.toLong && !d.isInfinite) Some(d.toLong.toString)
       else Some(d.toString)
     case EBigInt(n)     => Some(s"${n}n")
     case EInfinity(pos) => Some(if (pos) "Infinity" else "-Infinity")
@@ -378,6 +410,9 @@ object Reify {
     RecordT("AsyncGenerator") -> "(async function*(){})()",
     RecordT("WeakRef") -> "new WeakRef({})",
     RecordT("FinalizationRegistry") -> "new FinalizationRegistry(() => {})",
+    RecordT("ProxyExoticObject") -> "new Proxy({}, {})",
+    RecordT("BoundFunctionExoticObject") -> "(function(){}).bind()",
+    RecordT("Array") -> "[]",
   )
 
   // abstract types (primitives + general object categories)
@@ -426,6 +461,14 @@ object Reify {
         abstractDefaults.collectFirst {
           case (ct, js) if !(ty && ct).isBottom && !excJs(js) => js
         }
+      }
+      .orElse {
+        // 5. fallback for excluded primitive defaults
+        if (ty <= NumberT)
+          List("1", "-1", "0.5", "2", "100").find(!excJs(_))
+        else if (ty <= StrT)
+          List("\"a\"", "\"test\"").find(!excJs(_))
+        else None
       }
 
   // reverse index: field name -> union of record types that have it
@@ -514,6 +557,11 @@ object Reify {
           if (newTarget != "undefined")
             val nt =
               if (newTarget == "function(){}") s"class extends $name {}"
+              else if (newTarget.startsWith("new Proxy({},"))
+                newTarget.replaceFirst(
+                  raw"new Proxy\(\{},",
+                  "new Proxy(function(){},",
+                )
               else newTarget
             Some(
               s"Reflect.construct($name, [${args.mkString(", ")}], $nt)",
