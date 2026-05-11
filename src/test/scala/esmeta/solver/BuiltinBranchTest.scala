@@ -121,7 +121,7 @@ class BuiltinBranchTest extends ESMetaTest {
                 for ((goal, gi) <- goals.zipWithIndex) {
                   println(s"         --- goal[$gi] raw ---")
                   for (c <- goal) println(s"           $c")
-                  val rewritten = Solver.rewriteApps(goal)
+                  val rewritten = Solver.rewrite(goal)
                   println(s"         --- goal[$gi] rewritten ---")
                   for (c <- rewritten) println(s"           $c")
                   Solver.simplify(rewritten) match
@@ -147,7 +147,7 @@ class BuiltinBranchTest extends ESMetaTest {
                   val params = Solve.paramIds(f)
                   goals
                     .map { goal =>
-                      val rewritten = Solver.rewriteApps(goal)
+                      val rewritten = Solver.rewrite(goal)
                       Solver.simplify(rewritten) match
                         case None =>
                           if (contradictionSamples.size < 5)
