@@ -6,21 +6,19 @@ import esmeta.ir.{Func => _, *}
 import esmeta.spec.{BuiltinHead, ParamKind}
 import esmeta.state.*
 import esmeta.ty.ValueTy
-import scala.collection.mutable.{Map => MMap, Set => MSet, Queue}
+import scala.collection.mutable.{Set => MSet, Queue}
 
 class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
   import SymbolicInterpreter.*, Formula.*, SymExpr.*
   private val Cond(branch, side) = target
+  private val targetFunc = cfg.funcOf(branch)
 
   private var env = Map[Local, SymExpr]()
   // TODO: symbolic heap
   private var callCtxt: Option[CallContext] = None
 
-  private val targetFunc: Func = cfg.funcOf(branch)
-  private val interProc: Boolean = targetFunc != entryFunc
-
   private lazy val stepInFuncs: Set[Func] =
-    if (!interProc) Set()
+    if (targetFunc == entryFunc) Set()
     else {
       val reached = MSet(targetFunc)
       val queue = Queue(targetFunc)
@@ -32,59 +30,52 @@ class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
       reached.toSet
     }
 
-  // backward reachable nodes for path pruning (per-function)
-  private val whitelistCache = MMap[Func, Set[Node]]()
-  private def whitelist(func: Func): Set[Node] =
-    whitelistCache.getOrElseUpdate(
-      func,
-      if (func == targetFunc) func.reachingTo(branch)
-      else {
-        val callTargets = func.nodes.flatMap {
-          case c: Call =>
-            c.callInst match
-              case ICall(_, EClo(fn, _), _)
-                  if cfg.fnameMap
-                    .get(fn)
-                    .exists(f => stepInFuncs.contains(f) || f == targetFunc) =>
-                Some(c)
-              case _ => None
-          case _ => None
-        }
-        if (callTargets.isEmpty) Set.empty[Node]
-        else callTargets.flatMap(func.reachingTo)
-      },
-    )
+  // backward reachable nodes for path pruning
+  private lazy val whitelist: Map[Func, Set[Node]] = (for {
+    func <- stepInFuncs + entryFunc
+  } yield func -> (
+    if (func == targetFunc) func.reachingTo(branch) // direct reachables
+    else {
+      // reachables to call sites that can reach the target
+      val callTargets = for {
+        callTarget <- func.nodes.collect { case c: Call => c }
+        calleeName <- callTarget.callInst match
+          case ICall(_, EClo(fn, _), _) => Some(fn)
+          case _                        => None
+        callee <- cfg.fnameMap.get(calleeName)
+        if stepInFuncs.contains(callee)
+      } yield callTarget
+      callTargets.flatMap(func.reachingTo)
+    }
+  ) ).toMap.withDefaultValue(Set())
 
   lazy val result: LazyList[Goal] =
-    if (whitelist(targetFunc).isEmpty) LazyList()
+    if (whitelist(entryFunc).isEmpty) LazyList()
     else {
       var stack = List[(Cond, Goal, State)]()
 
-      // init symbolic environment from builtin entry parameters
-      val argCount = entryFunc.head match
+      // env, call context initialization
+      env = entryFunc.head match
         case Some(h: BuiltinHead) =>
-          h.params.count { _.kind != ParamKind.Variadic }
-        case _ => 0
-      env = entryFunc.irFunc.params.flatMap { param =>
-        val name = param.lhs
-        if (name == NAME_THIS) Some(name -> SESym(Sym.This))
-        else if (name == NAME_NEW_TARGET) Some(name -> SESym(Sym.NewTarget))
-        else if (name == NAME_ARGS_LIST)
-          val argsList = (0 until argCount).map(k => SESym(Sym.Arg(k))).toList
-          Some(name -> SEList(argsList))
-        else None
-      }.toMap
+          val args = h.params.zipWithIndex.collect {
+            case (p, i) if (p.kind != ParamKind.Variadic) => SESym(Sym.Arg(i))
+          }
+          Map(
+            NAME_THIS -> SESym(Sym.This),
+            NAME_NEW_TARGET -> SESym(Sym.NewTarget),
+            NAME_ARGS_LIST -> SEList(args),
+          )
+        case _ =>
+          entryFunc.irFunc.params.zipWithIndex.map { (p, i) =>
+            p.lhs -> SESym(Sym.Arg(i))
+          }.toMap
       callCtxt = None
 
       // path constraint
       def pc: Goal = stack.reverseIterator.flatMap(_._2).toList
 
       // try certain branch side and push constraints onto the stack
-      def tryBranch(
-        br: Branch,
-        side: Boolean,
-        feasible: Node => Boolean,
-      ): Option[Node] =
+      def tryBranch(br: Branch, side: Boolean): Option[Node] =
         val nextNode = if (side) br.thenNode else br.elseNode
         val constraint =
           if (br.isFiltered) Some(List()) // skip extraction for filtered
@@ -97,19 +88,19 @@ class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
           node
         }
 
-      def feasible(func: Func)(n: Node): Boolean =
-        whitelist(func).contains(n) &&
-        !stack.exists(_._1.branch.id == n.id)
+      def feasible(n: Node): Boolean =
+        whitelist(cfg.funcOf(n)).contains(n) && // prune unreachable nodes
+        !stack.exists(_._1.branch.id == n.id) // prune cycles in the same branch
 
       def canStepIn(callee: Func, cur: Func): Boolean =
-        interProc && stepInFuncs.contains(callee) &&
-        callee != cur &&
-        !stack.exists((cond, _, _) => cfg.funcOf(cond.branch) == callee)
+        stepInFuncs.contains(callee) &&
+        !(stack.map {
+          case (Cond(branch, _), _, _) => cfg.funcOf(branch)
+        }.toSet + cur).contains(callee) // prune cycles in call graph
 
       // cfg step with path pruning
       def step(node: Node): Option[Node] =
         val func = cfg.funcOf(node)
-        val feas = feasible(func)
         node match
           case block: Block =>
             eval(block) match
@@ -118,16 +109,15 @@ class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
                   case Some(CallContext(callSite, callerEnv, caller)) =>
                     env = callerEnv + (callSite.lhs -> retVal)
                     callCtxt = caller
-                    callSite.next.filter(feasible(cfg.funcOf(callSite)))
+                    callSite.next.filter(feasible)
                   case None => None
-              case None => block.next.filter(feas)
+              case None => block.next.filter(feasible)
           case b: Branch =>
             eval(b.cond) match
               case SELit(EBool(v)) =>
                 val nextNode = if (v) b.thenNode else b.elseNode
-                nextNode.filter(feas)
-              case _ =>
-                tryBranch(b, true, feas).orElse(tryBranch(b, false, feas))
+                nextNode.filter(feasible)
+              case _ => tryBranch(b, true).orElse(tryBranch(b, false))
           case call: Call =>
             val ret = call.lhs
             call.callInst match
@@ -140,61 +130,52 @@ class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
                       .zip(argVals)
                       .map((p, a) => p.lhs -> a)
                       .toMap
-                    Some(callee.entry).filter(feasible(callee))
+                    Some(callee.entry).filter(feasible)
                   case _ =>
                     env += (ret -> SEApp(fname, args.map(eval)))
-                    call.next.filter(feas)
+                    call.next.filter(feasible)
               case ICall(_, ERef(Field(base, EStr(method))), args) =>
                 env += (ret -> SEApp(method, eval(base) :: args.map(eval)))
-                call.next.filter(feas)
+                call.next.filter(feasible)
               case ISdoCall(_, base, op, args) =>
                 env += (ret -> SEApp(op, eval(base) :: args.map(eval)))
-                call.next.filter(feas)
-              case _ => env -= ret; call.next.filter(feas)
+                call.next.filter(feasible)
+              case _ => env -= ret; call.next.filter(feasible)
 
       // collect path constraints
-      def collectGoal(from: Node): Option[Goal] = {
-        var cur: Option[Node] = Some(from)
-        var found: Option[Goal] = None
+      def collectGoal(node: Node): Option[Goal] =
         try {
-          while (cur.isDefined && found.isEmpty) {
-            val node = cur.get
-            node match
-              case b: Branch if b.id == branch.id =>
-                found = getConstraint(b.cond, side).map(pc ++ _)
-                cur = None
-              case _ => cur = step(node)
-          }
-        } catch {
-          case _: NotImplementedError | _: MatchError => ()
-        }
-        found
-      }
+          node match
+            case b: Branch if b.id == branch.id =>
+              getConstraint(b.cond, side).map(pc ++ _)
+            case _ => step(node).flatMap(collectGoal)
+        } catch { case _: NotImplementedError => None }
 
       // pop the stack and try the else-side of the most recent then-branch
-      def backtrack(): Option[Node] = {
-        var found: Option[Node] = None
-        while (stack.nonEmpty && found.isEmpty) {
+      def backtrack(): Option[Node] =
+        if (stack.isEmpty) None
+        else {
           val (Cond(br, tried), _, savedSt) = stack.head
           stack = stack.tail
-          if (tried) {
+          if (!tried) backtrack()
+          else {
             env = savedSt.env
             callCtxt = savedSt.callCtxt
-            found = tryBranch(br, false, feasible(cfg.funcOf(br)))
+            tryBranch(br, false).orElse(backtrack())
           }
         }
-        found
-      }
 
       var cur: Option[Node] = Some(entryFunc.entry)
-      def advance(): Option[Goal] =
-        while (cur.isDefined) {
-          collectGoal(cur.get) match
-            case Some(goal) => cur = backtrack(); return Some(goal)
-            case None       => cur = backtrack()
-        }
-        None
-      LazyList.unfold(())(_ => advance().map((_, ())))
+      def nextGoal(): Option[Goal] = cur match
+        case None => None
+        case Some(node) =>
+          collectGoal(node) match
+            case Some(goal) => cur = backtrack(); Some(goal)
+            case None       => cur = backtrack(); nextGoal()
+      def goals: LazyList[Goal] = nextGoal() match
+        case Some(goal) => goal #:: goals
+        case None       => LazyList()
+      goals
     }
 
   // --- block/instruction evaluation ---
