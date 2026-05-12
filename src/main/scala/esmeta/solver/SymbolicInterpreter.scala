@@ -476,6 +476,7 @@ object SymbolicInterpreter {
         Some(SELit(EInfinity(false)))
       case (Sub, EMath(_), EInfinity(false)) => Some(SELit(EInfinity(true)))
       case (Eq, a, b)                        => Some(SELit(EBool(a == b)))
+      case (Equal, a, b)                     => Some(SELit(EBool(a == b)))
       case _                                 => None
 
   private def foldVOp(op: VOp, terms: List[SymExpr]): Option[SymExpr] =
