@@ -7,6 +7,9 @@ import esmeta.es.util.Coverage.Cond
 import esmeta.ir.{EBool, EClo, ICall}
 import esmeta.phase.Solve
 import scala.collection.mutable.{Map => MMap, Set => MSet, Queue}
+import scala.concurrent.{Future, Await, ExecutionContext}
+import scala.concurrent.duration.Duration
+import java.util.concurrent.Executors
 
 class BuiltinBranchTest extends ESMetaTest {
   val name = "builtinBranchTest"
@@ -47,111 +50,114 @@ class BuiltinBranchTest extends ESMetaTest {
     given CFG = cfg
     val cov = Coverage(cfg, timeLimit = Some(10))
 
+    val nThreads = Runtime.getRuntime.availableProcessors
+    val pool = Executors.newFixedThreadPool(nThreads)
+    given ExecutionContext = ExecutionContext.fromExecutor(pool)
+
     val allBuiltins = cfg.funcs.filter(_.isBuiltin).sortBy(_.name)
-    // probe each builtin: call with no args, exclude if unsupported or throws
-    val builtins = allBuiltins.filter { f =>
-      Reify.funcAccessExpr(f).exists { js =>
-        try { cov.run(js + ".call();").supported }
-        catch { case _: Throwable => false }
+    val builtins = {
+      val futures = allBuiltins.map { f =>
+        Future {
+          val ok = Reify.funcAccessExpr(f).exists { js =>
+            try { cov.run(js + ".call();").supported }
+            catch { case _: Throwable => false }
+          }
+          if (ok) Some(f) else None
+        }
       }
+      futures.flatMap(Await.result(_, Duration.Inf))
     }
     var verified = 0
 
     // collect unique (builtin, branch) pairs — each branch solved once
     val targets: List[(Func, Branch)] = {
+      val pairs = {
+        val futures = builtins.map { f =>
+          Future {
+            val reachable = reachableFuncs(List(f))
+            targetBranches(reachable).sortBy(_.id).map(f -> _)
+          }
+        }
+        futures.flatMap(Await.result(_, Duration.Inf))
+      }
       val seen = MSet[Int]()
       val buf = List.newBuilder[(Func, Branch)]
-      for (f <- builtins) {
-        val reachable = reachableFuncs(List(f))
-        for (b <- targetBranches(reachable).sortBy(_.id))
-          if (seen.add(b.id)) buf += (f -> b)
-      }
+      for ((f, b) <- pairs)
+        if (seen.add(b.id)) buf += (f -> b)
       buf.result()
     }
 
     check("builtin branches: solve and verify") {
-      var solved = 0
-      var unsolved = 0
-      var verifyFailed = 0
-      var timings = List[(String, Int, Long)]()
-      val reasons = MMap[String, Int]()
-      var contradictionSamples = List[(String, Int, List[Formula])]()
-      var reifyFailedSamples = List[(String, Int, List[Formula])]()
+      case class BranchResult(
+        fname: String,
+        bid: Int,
+        status: String,
+        js: Option[String],
+        elapsed: Long,
+        reason: String,
+        csample: Option[List[Formula]],
+        rsample: Option[List[Formula]],
+      )
 
-      for ((f, b) <- targets) {
-        val t0 = System.nanoTime()
-        val cond = Cond(b, true)
+      println(s"  Solving ${targets.size} branches with $nThreads threads...")
 
-        val candidates =
-          try { Solve.solve(f, b, cond) }
-          catch { case _: NotImplementedError | _: MatchError => Nil }
-
-        def tryVerify(js: String): Boolean =
-          try {
-            val interp = cov.run(js)
-            interp.touchedCondViews.keys.exists { cv =>
-              cv.cond.branch.id == b.id && cv.cond.cond == true
-            }
-          } catch { case _: Throwable => false }
-
-        candidates.headOption match
-          case Some(_) =>
-            solved += 1
-            val hit = candidates.find(tryVerify)
+      val results = {
+        val futures = targets.map { (f, b) =>
+          Future {
+            val t0 = System.nanoTime()
+            val cond = Cond(b, true)
+            val candidates =
+              try Solve.solve(f, b, cond).take(20).toList
+              catch case _: NotImplementedError | _: MatchError => Nil
             val elapsed = System.nanoTime() - t0
-            timings ::= (f.name, b.id, elapsed)
-            hit match
-              case Some(js) =>
-                verified += 1
-                println(
-                  f"  [OK] ${f.name} Branch[${b.id}]:T (${elapsed / 1000.0}%.0f us)",
-                )
-                println(s"       js: $js")
-              case None =>
-                verifyFailed += 1
-                println(
-                  f"  [MISS] ${f.name} Branch[${b.id}]:T (${elapsed / 1000.0}%.0f us)",
-                )
-                println(
-                  s"         js: ${candidates.head}",
-                )
-                // dump constraint pipeline for case study
-                val params = Solve.paramIds(f)
-                val goals = SymbolicInterpreter(f, cond)
-                for ((goal, gi) <- goals.zipWithIndex) {
-                  println(s"         --- goal[$gi] raw ---")
-                  for (c <- goal) println(s"           $c")
-                  val rewritten = Solver.rewrite(goal)
-                  println(s"         --- goal[$gi] rewritten ---")
-                  for (c <- rewritten) println(s"           $c")
-                  Solver.simplify(rewritten) match
-                    case None =>
-                      println(s"         --- goal[$gi] CONTRADICTION ---")
-                    case Some(simplified) =>
-                      println(s"         --- goal[$gi] simplified ---")
-                      for (c <- simplified) println(s"           $c")
-                      val w = Reify(simplified, params).witness
-                      println(s"         --- goal[$gi] witness: $w ---")
-                      w.foreach { wit =>
-                        val js = Reify.toJsCall(f, params, wit)
-                        println(s"         --- goal[$gi] toJsCall: $js ---")
-                      }
-                }
-          case None =>
-            unsolved += 1
-            val reason =
+
+            if (candidates.nonEmpty) {
+              val hit = candidates.find { js =>
+                try {
+                  val interp = cov.run(js)
+                  interp.touchedCondViews.keys.exists { cv =>
+                    cv.cond.branch.id == b.id && cv.cond.cond == true
+                  }
+                } catch { case _: Throwable => false }
+              }
+              hit match
+                case Some(js) =>
+                  BranchResult(
+                    f.name,
+                    b.id,
+                    "ok",
+                    Some(js),
+                    elapsed,
+                    "",
+                    None,
+                    None,
+                  )
+                case None =>
+                  BranchResult(
+                    f.name,
+                    b.id,
+                    "miss",
+                    Some(candidates.head),
+                    elapsed,
+                    "",
+                    None,
+                    None,
+                  )
+            } else {
+              var reason = "unknown"
+              var csample: Option[List[Formula]] = None
+              var rsample: Option[List[Formula]] = None
               try {
                 val goals = SymbolicInterpreter(f, cond)
-                if (goals.isEmpty) "no-goals"
+                if (goals.isEmpty) reason = "no-goals"
                 else {
                   val params = Solve.paramIds(f)
-                  goals
+                  reason = goals
                     .map { goal =>
                       val rewritten = Solver.rewrite(goal)
                       Solver.simplify(rewritten) match
                         case None =>
-                          if (contradictionSamples.size < 5)
-                            contradictionSamples :+= (f.name, b.id, rewritten)
+                          if (csample.isEmpty) csample = Some(rewritten)
                           "contradiction"
                         case Some(fs) =>
                           if (Reify.hasUninterpretableApp(fs)) {
@@ -160,8 +166,7 @@ class BuiltinBranchTest extends ESMetaTest {
                           } else
                             Reify(fs, params).witness match
                               case None =>
-                                if (reifyFailedSamples.size < 5)
-                                  reifyFailedSamples :+= (f.name, b.id, fs)
+                                if (rsample.isEmpty) rsample = Some(fs)
                                 "reify-failed"
                               case Some(w) =>
                                 Reify.toJsCall(f, params, w) match
@@ -177,15 +182,66 @@ class BuiltinBranchTest extends ESMetaTest {
                   val site = e.getStackTrace.headOption
                     .map(_.getMethodName)
                     .getOrElse("?")
-                  s"unimpl($site)"
+                  reason = s"unimpl($site)"
                 case e: MatchError =>
-                  val msg = e.getMessage.take(60)
-                  s"missing-transfer($msg)"
+                  reason = s"missing-transfer(${e.getMessage.take(60)})"
                 case e: Throwable =>
-                  s"error(${e.getClass.getSimpleName})"
+                  reason = s"error(${e.getClass.getSimpleName})"
               }
-            reasons(reason) = reasons.getOrElse(reason, 0) + 1
+              BranchResult(
+                f.name,
+                b.id,
+                "unsolved",
+                None,
+                elapsed,
+                reason,
+                csample,
+                rsample,
+              )
+            }
+          }
+        }
+        val res = futures.map(Await.result(_, Duration.Inf))
+        res
       }
+
+      // aggregate
+      var solved = 0
+      var unsolved = 0
+      var verifyFailed = 0
+      var timings = List[(String, Int, Long)]()
+      val reasons = MMap[String, Int]()
+      var contradictionSamples = List[(String, Int, List[Formula])]()
+      var reifyFailedSamples = List[(String, Int, List[Formula])]()
+
+      for (r <- results) r.status match
+        case "ok" =>
+          solved += 1; verified += 1
+          timings ::= (r.fname, r.bid, r.elapsed)
+          println(
+            f"  [OK] ${r.fname} Branch[${r.bid}]:T" +
+            f" (${r.elapsed / 1000.0}%.0f us)",
+          )
+          println(s"       js: ${r.js.get}")
+        case "miss" =>
+          solved += 1; verifyFailed += 1
+          timings ::= (r.fname, r.bid, r.elapsed)
+          println(
+            f"  [MISS] ${r.fname} Branch[${r.bid}]:T" +
+            f" (${r.elapsed / 1000.0}%.0f us)",
+          )
+          println(s"         js: ${r.js.get}")
+        case _ =>
+          unsolved += 1
+          reasons(r.reason) = reasons.getOrElse(r.reason, 0) + 1
+          r.csample.foreach { s =>
+            if (contradictionSamples.size < 5)
+              contradictionSamples :+= (r.fname, r.bid, s)
+          }
+          r.rsample.foreach { s =>
+            if (reifyFailedSamples.size < 5)
+              reifyFailedSamples :+= (r.fname, r.bid, s)
+          }
 
       // timing summary
       if (timings.nonEmpty) {
@@ -249,6 +305,7 @@ class BuiltinBranchTest extends ESMetaTest {
         f" (${verified * 100.0 / total}%.1f%%)",
       )
       assert(total > 0)
+      pool.shutdown()
     }
   }
 
