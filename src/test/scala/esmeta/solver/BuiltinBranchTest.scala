@@ -10,6 +10,7 @@ import scala.collection.mutable.{Map => MMap, Set => MSet, Queue}
 import scala.concurrent.{Future, Await, ExecutionContext}
 import scala.concurrent.duration.Duration
 import java.util.concurrent.Executors
+import java.io.PrintWriter
 
 class BuiltinBranchTest extends ESMetaTest {
   val name = "builtinBranchTest"
@@ -95,8 +96,10 @@ class BuiltinBranchTest extends ESMetaTest {
         js: Option[String],
         elapsed: Long,
         reason: String,
-        csample: Option[List[Formula]],
-        rsample: Option[List[Formula]],
+        rawGoal: Option[List[Formula]],
+        rewritten: Option[List[Formula]],
+        simplified: Option[List[Formula]],
+        blockingAOs: Set[String],
       )
 
       println(s"  Solving ${targets.size} branches with $nThreads threads...")
@@ -131,6 +134,8 @@ class BuiltinBranchTest extends ESMetaTest {
                     "",
                     None,
                     None,
+                    None,
+                    Set(),
                   )
                 case None =>
                   BranchResult(
@@ -142,31 +147,49 @@ class BuiltinBranchTest extends ESMetaTest {
                     "",
                     None,
                     None,
+                    None,
+                    Set(),
                   )
             } else {
               var reason = "unknown"
-              var csample: Option[List[Formula]] = None
-              var rsample: Option[List[Formula]] = None
+              var rawGoal: Option[List[Formula]] = None
+              var rewrittenGoal: Option[List[Formula]] = None
+              var simplifiedGoal: Option[List[Formula]] = None
+              var blockingAOs: Set[String] = Set()
               try {
                 val goals = SymbolicInterpreter(f, cond)
                 if (goals.isEmpty) reason = "no-goals"
                 else {
                   val params = Solve.paramIds(f)
-                  reason = goals
+                  val diagGoals = goals.take(5).toList
+                  reason = diagGoals
                     .map { goal =>
-                      val rewritten = Solver.rewrite(goal)
-                      Solver.simplify(rewritten) match
+                      val rw = Solver.rewrite(goal)
+                      Solver.simplify(rw) match
                         case None =>
-                          if (csample.isEmpty) csample = Some(rewritten)
+                          if (rawGoal.isEmpty) {
+                            rawGoal = Some(goal)
+                            rewrittenGoal = Some(rw)
+                          }
                           "contradiction"
                         case Some(fs) =>
                           if (Reify.hasUninterpretableApp(fs)) {
                             val names = fs.flatMap(Reify.outerAppNames).toSet
+                            if (rawGoal.isEmpty) {
+                              rawGoal = Some(goal)
+                              rewrittenGoal = Some(rw)
+                              simplifiedGoal = Some(fs)
+                              blockingAOs = names
+                            }
                             s"uninterp-app(${names.mkString(",")})"
                           } else
                             Reify(fs, params).witness match
                               case None =>
-                                if (rsample.isEmpty) rsample = Some(fs)
+                                if (rawGoal.isEmpty) {
+                                  rawGoal = Some(goal)
+                                  rewrittenGoal = Some(rw)
+                                  simplifiedGoal = Some(fs)
+                                }
                                 "reify-failed"
                               case Some(w) =>
                                 Reify.toJsCall(f, params, w) match
@@ -195,8 +218,10 @@ class BuiltinBranchTest extends ESMetaTest {
                 None,
                 elapsed,
                 reason,
-                csample,
-                rsample,
+                rawGoal,
+                rewrittenGoal,
+                simplifiedGoal,
+                blockingAOs,
               )
             }
           }
@@ -211,9 +236,6 @@ class BuiltinBranchTest extends ESMetaTest {
       var verifyFailed = 0
       var timings = List[(String, Int, Long)]()
       val reasons = MMap[String, Int]()
-      var contradictionSamples = List[(String, Int, List[Formula])]()
-      var reifyFailedSamples = List[(String, Int, List[Formula])]()
-
       for (r <- results) r.status match
         case "ok" =>
           solved += 1; verified += 1
@@ -234,14 +256,6 @@ class BuiltinBranchTest extends ESMetaTest {
         case _ =>
           unsolved += 1
           reasons(r.reason) = reasons.getOrElse(r.reason, 0) + 1
-          r.csample.foreach { s =>
-            if (contradictionSamples.size < 5)
-              contradictionSamples :+= (r.fname, r.bid, s)
-          }
-          r.rsample.foreach { s =>
-            if (reifyFailedSamples.size < 5)
-              reifyFailedSamples :+= (r.fname, r.bid, s)
-          }
 
       // timing summary
       if (timings.nonEmpty) {
@@ -265,30 +279,75 @@ class BuiltinBranchTest extends ESMetaTest {
       if (reasons.nonEmpty) {
         println(f"\n  Unsolved breakdown:")
         var uninterpTotal = 0
+        val aoFreq = MMap[String, Int]()
         val others = List.newBuilder[(String, Int)]
         for ((reason, count) <- reasons.toList.sortBy(-_._2))
-          if (reason.startsWith("uninterp-app("))
+          if (reason.startsWith("uninterp-app(")) {
             uninterpTotal += count
-          else others += (reason -> count)
+            val names = reason.stripPrefix("uninterp-app(").stripSuffix(")")
+            for (n <- names.split(","))
+              aoFreq(n.trim) = aoFreq.getOrElse(n.trim, 0) + count
+          } else others += (reason -> count)
         if (uninterpTotal > 0)
           others += ("uninterp-app" -> uninterpTotal)
         for ((reason, count) <- others.result().sortBy(-_._2))
           println(f"    $count%4d  $reason")
+        if (aoFreq.nonEmpty) {
+          println(f"\n  Blocking AO frequency (top 30):")
+          for ((name, count) <- aoFreq.toList.sortBy(-_._2).take(30))
+            println(f"    $count%4d  $name")
+        }
       }
 
-      if (contradictionSamples.nonEmpty) {
-        println(f"\n  Contradiction samples:")
-        for ((name, bid, fs) <- contradictionSamples)
-          println(s"    $name Branch[$bid]:")
-          for (f <- fs) println(s"      $f")
-      }
-
-      if (reifyFailedSamples.nonEmpty) {
-        println(f"\n  Reify-failed samples:")
-        for ((name, bid, fs) <- reifyFailedSamples)
-          println(s"    $name Branch[$bid]:")
-          for (f <- fs) println(s"      $f")
-      }
+      // dump full diagnostics to file
+      val dumpFile = new PrintWriter("solve-dump.log")
+      try {
+        // dump MISS cases
+        for (r <- results if r.status == "miss") {
+          dumpFile.println(s"=== ${r.fname} Branch[${r.bid}] === MISS")
+          dumpFile.println(s"  [js] ${r.js.get}")
+          // re-derive the formula for diagnostics
+          try {
+            val cond = Cond(
+              cfg.nodeMap(r.bid).asInstanceOf[Branch],
+              true,
+            )
+            val goals = SymbolicInterpreter(
+              cfg.funcs.find(_.name == r.fname).get,
+              cond,
+            )
+            goals.headOption.foreach { goal =>
+              val rw = Solver.rewrite(goal)
+              Solver.simplify(rw).foreach { fs =>
+                dumpFile.println("  [simplified]")
+                fs.foreach(f => dumpFile.println(s"    $f"))
+              }
+            }
+          } catch { case _: Throwable => () }
+          dumpFile.println()
+        }
+        dumpFile.println("=" * 60)
+        // dump unsolved cases
+        for (r <- results if r.status == "unsolved") {
+          dumpFile.println(s"=== ${r.fname} Branch[${r.bid}] === ${r.reason}")
+          r.rawGoal.foreach { fs =>
+            dumpFile.println("  [raw]")
+            fs.foreach(f => dumpFile.println(s"    $f"))
+          }
+          r.rewritten.foreach { fs =>
+            dumpFile.println("  [rewritten]")
+            fs.foreach(f => dumpFile.println(s"    $f"))
+          }
+          r.simplified.foreach { fs =>
+            dumpFile.println("  [simplified]")
+            fs.foreach(f => dumpFile.println(s"    $f"))
+          }
+          if (r.blockingAOs.nonEmpty)
+            dumpFile.println(s"  [blocking] ${r.blockingAOs.mkString(", ")}")
+          dumpFile.println()
+        }
+      } finally dumpFile.close()
+      println(s"\n  Full dump written to solve-dump.log")
 
       assert(solved > 0)
       assert(verified > 0)

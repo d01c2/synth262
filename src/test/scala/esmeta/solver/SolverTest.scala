@@ -9,11 +9,17 @@ class SolverTest extends ESMetaTest {
   val name = "solverTest"
   val category = "solver"
 
+  private def solveAndReify(
+    goal: Goal,
+    params: List[Sym],
+  ): Option[Witness] =
+    Solver.solve(goal).flatMap(Reify(_, params).witness)
+
   def init: Unit = {
     // --- literal equality ---
     check("literal equality: x == 0") {
       val goal = List(FEq(SESym(Arg(0)), SELit(EMath(0))))
-      val result = Solver.solve(goal, List(Arg(0)))
+      val result = solveAndReify(goal, List(Arg(0)))
       assert(result == Some(Map(Arg(0) -> "0")))
     }
 
@@ -22,39 +28,39 @@ class SolverTest extends ESMetaTest {
         FEq(SETypeOf(SESym(Arg(0))), SEType(NumberT)),
         FEq(SESym(Arg(0)), SELit(ENumber(Double.NaN))),
       )
-      val result = Solver.solve(goal, List(Arg(0)))
+      val result = solveAndReify(goal, List(Arg(0)))
       assert(result.get(Arg(0)) == "NaN")
     }
 
     check("literal equality: x == \"hello\"") {
       val goal = List(FEq(SESym(Arg(0)), SELit(EStr("hello"))))
-      val result = Solver.solve(goal, List(Arg(0)))
+      val result = solveAndReify(goal, List(Arg(0)))
       assert(result == Some(Map(Arg(0) -> "\"hello\"")))
     }
 
     // --- type narrowing ---
     check("type narrowing: x ∈ Object") {
       val goal = List(FEq(SETypeOf(SESym(Arg(0))), SEType(ObjectT)))
-      val result = Solver.solve(goal, List(Arg(0)))
+      val result = solveAndReify(goal, List(Arg(0)))
       assert(result.get(Arg(0)) == "{}")
     }
 
     check("type narrowing: x ∈ String") {
       val goal = List(FEq(SETypeOf(SESym(Arg(0))), SEType(StrT)))
-      val result = Solver.solve(goal, List(Arg(0)))
+      val result = solveAndReify(goal, List(Arg(0)))
       assert(result.get(Arg(0)) == "\"\"")
     }
 
     check("type narrowing: x ∈ Function") {
       val goal = List(FEq(SETypeOf(SESym(Arg(0))), SEType(FunctionT)))
-      val result = Solver.solve(goal, List(Arg(0)))
+      val result = solveAndReify(goal, List(Arg(0)))
       assert(result.get(Arg(0)) == "() => {}")
     }
 
     // --- type exclusion ---
     check("type exclusion: x ∉ Object") {
       val goal = List(FNot(FEq(SETypeOf(SESym(Arg(0))), SEType(ObjectT))))
-      val result = Solver.solve(goal, List(Arg(0)))
+      val result = solveAndReify(goal, List(Arg(0)))
       assert(result.isDefined)
       assert(result.get(Arg(0)) != "{}")
     }
@@ -62,14 +68,14 @@ class SolverTest extends ESMetaTest {
     // --- inequality ---
     check("inequality: x != null") {
       val goal = List(FNot(FEq(SESym(Arg(0)), SELit(ENull()))))
-      val result = Solver.solve(goal, List(Arg(0)))
+      val result = solveAndReify(goal, List(Arg(0)))
       assert(result.isDefined)
       assert(result.get(Arg(0)) != "null")
     }
 
     check("inequality: x != undefined") {
       val goal = List(FNot(FEq(SESym(Arg(0)), SELit(EUndef()))))
-      val result = Solver.solve(goal, List(Arg(0)))
+      val result = solveAndReify(goal, List(Arg(0)))
       assert(result.isDefined)
       assert(result.get(Arg(0)) != "undefined")
     }
@@ -83,7 +89,7 @@ class SolverTest extends ESMetaTest {
           SELit(EStr("foo")),
         ),
       )
-      val result = Solver.solve(goal, List(Arg(0)))
+      val result = solveAndReify(goal, List(Arg(0)))
       assert(result.isDefined)
       assert(result.get(Arg(0)).contains("name: \"foo\""))
     }
@@ -96,7 +102,7 @@ class SolverTest extends ESMetaTest {
           SEType(AbruptT),
         ),
       )
-      val result = Solver.solve(goal, List(Arg(0)))
+      val result = solveAndReify(goal, List(Arg(0)))
       assert(result.isDefined)
       assert(result.get(Arg(0)).contains("get value() { throw 0; }"))
     }
@@ -109,7 +115,7 @@ class SolverTest extends ESMetaTest {
           SELit(EBool(true)),
         ),
       )
-      val result = Solver.solve(goal, List(Arg(0)))
+      val result = solveAndReify(goal, List(Arg(0)))
       assert(result.isDefined)
       assert(result.get(Arg(0)).contains("foo"))
     }
@@ -120,7 +126,7 @@ class SolverTest extends ESMetaTest {
         FEq(SETypeOf(SESym(Arg(0))), SEType(ObjectT)),
         FEq(SEApp("IsExtensible", List(SESym(Arg(0)))), SELit(EBool(false))),
       )
-      val result = Solver.solve(goal, List(Arg(0)))
+      val result = solveAndReify(goal, List(Arg(0)))
       assert(result.isDefined)
       assert(result.get(Arg(0)).contains("Object.preventExtensions"))
     }
@@ -130,7 +136,7 @@ class SolverTest extends ESMetaTest {
         FEq(SETypeOf(SESym(Arg(0))), SEType(ObjectT)),
         FEq(SEApp("GetPrototypeOf", List(SESym(Arg(0)))), SELit(ENull())),
       )
-      val result = Solver.solve(goal, List(Arg(0)))
+      val result = solveAndReify(goal, List(Arg(0)))
       assert(result.isDefined)
       assert(result.get(Arg(0)).contains("Object.create(null)"))
     }
@@ -144,7 +150,7 @@ class SolverTest extends ESMetaTest {
           SELit(EBool(false)),
         ),
       )
-      val result = Solver.solve(goal, List(Arg(0)))
+      val result = solveAndReify(goal, List(Arg(0)))
       assert(result.isDefined)
       assert(result.get(Arg(0)).contains("new Proxy"))
     }
@@ -154,7 +160,7 @@ class SolverTest extends ESMetaTest {
         FEq(SETypeOf(SESym(Arg(0))), SEType(FunctionT)),
         FEq(SETypeOf(SEApp("Call", List(SESym(Arg(0))))), SEType(AbruptT)),
       )
-      val result = Solver.solve(goal, List(Arg(0)))
+      val result = solveAndReify(goal, List(Arg(0)))
       assert(result.isDefined)
       assert(result.get(Arg(0)).contains("new Proxy"))
     }
@@ -172,7 +178,7 @@ class SolverTest extends ESMetaTest {
           SEType(AbruptT),
         ),
       )
-      val result = Solver.solve(goal, List(Arg(0)))
+      val result = solveAndReify(goal, List(Arg(0)))
       assert(result.isDefined)
       val js = result.get(Arg(0))
       assert(js.contains("name: undefined"))
@@ -185,7 +191,7 @@ class SolverTest extends ESMetaTest {
         FEq(SESym(Arg(0)), SELit(EMath(0))),
         FEq(SESym(Arg(0)), SELit(EMath(1))),
       )
-      val result = Solver.solve(goal, List(Arg(0)))
+      val result = solveAndReify(goal, List(Arg(0)))
       assert(result.isEmpty)
     }
 
@@ -194,7 +200,7 @@ class SolverTest extends ESMetaTest {
         FEq(SESym(Arg(0)), SESym(Arg(0))),
         FNot(FEq(SESym(Arg(0)), SESym(Arg(0)))),
       )
-      val result = Solver.solve(goal, List(Arg(0)))
+      val result = solveAndReify(goal, List(Arg(0)))
       assert(result.isEmpty)
     }
 
@@ -209,7 +215,7 @@ class SolverTest extends ESMetaTest {
           ),
         ),
       )
-      val result = Solver.solve(goal, List(Arg(0)))
+      val result = solveAndReify(goal, List(Arg(0)))
       assert(result.isDefined)
       assert(result.get(Arg(0)).contains("get key() { throw 0; }"))
     }
@@ -220,7 +226,7 @@ class SolverTest extends ESMetaTest {
         FEq(SESym(Arg(0)), SELit(EMath(0))),
         FEq(SETypeOf(SESym(Arg(1))), SEType(ObjectT)),
       )
-      val result = Solver.solve(goal, List(Arg(0), Arg(1)))
+      val result = solveAndReify(goal, List(Arg(0), Arg(1)))
       assert(result.isDefined)
       assert(result.get(Arg(0)) == "0")
       assert(result.get(Arg(1)) == "{}")
@@ -235,7 +241,7 @@ class SolverTest extends ESMetaTest {
           SEType(NormalT),
         ),
       )
-      val result = Solver.solve(goal, List(Arg(0)))
+      val result = solveAndReify(goal, List(Arg(0)))
       assert(result.isDefined)
       assert(result.get(Arg(0)) == "{}")
     }

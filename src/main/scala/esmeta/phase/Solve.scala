@@ -59,8 +59,10 @@ case object Solve extends Phase[CFG, String] {
     val params = paramIds(entry)
     val goals = SymbolicInterpreter(entry, cond)
     goals.flatMap { goal =>
-      Solver.solve(goal, params).flatMap { witness =>
-        Reify.toJsCall(entry, params, witness)
+      Solver.solve(goal).flatMap { simplified =>
+        Reify(simplified, params).witness.flatMap { witness =>
+          Reify.toJsCall(entry, params, witness)
+        }
       }
     }
 

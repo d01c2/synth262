@@ -178,8 +178,6 @@ class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
       goals
     }
 
-  // --- block/instruction evaluation ---
-
   private def eval(block: Block): Option[SymExpr] =
     var retVal: Option[SymExpr] = None
     for (inst <- block.insts if retVal.isEmpty)
@@ -228,8 +226,6 @@ class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
         case _ => env -= lhs
     case IPop(lhs, _, _) => env -= lhs
     case _               => ()
-
-  // --- expression evaluation ---
 
   private def eval(expr: Expr): SymExpr = expr match
     case _: EParse | _: EGrammarSymbol | _: ESourceText => ??? // syntactic
@@ -310,8 +306,6 @@ class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
           es.collectFirst { case (`k`, v) => v }
             .getOrElse(SEProj(SEMap(es), k))
         case (b, k) => SEProj(b, k)
-
-  // --- constraint extraction ---
 
   private def getConstraint(expr: Expr, pos: Boolean): Option[Goal] =
     expr match
