@@ -202,33 +202,33 @@ object RewriteRules:
   private def rewriteValue(f: Formula): Formula = f match
     case FEq(SEProj(base, SELit(EStr("Type"))), SELit(EEnum(e))) =>
       val ty = if (e == "normal") NormalT else AbruptT
-      FEq(SETypeOf(reduceExpr(base, safe = true)), SEType(ty))
+      FEq(SETypeOf(reduceExpr(base)), SEType(ty))
     case FEq(SELit(EEnum(e)), SEProj(base, SELit(EStr("Type")))) =>
       val ty = if (e == "normal") NormalT else AbruptT
-      FEq(SETypeOf(reduceExpr(base, safe = true)), SEType(ty))
+      FEq(SETypeOf(reduceExpr(base)), SEType(ty))
     case FNot(inner)   => FNot(rewriteValue(inner))
     case FEq(l, r)     => FEq(reduceExpr(l), reduceExpr(r))
     case FLt(l, r)     => FLt(reduceExpr(l), reduceExpr(r))
     case FExists(b, k) => FExists(reduceExpr(b), k)
 
-  private def reduceExpr(t: SymExpr, safe: Boolean = false): SymExpr = t match
+  private def reduceExpr(t: SymExpr): SymExpr = t match
     case SEApp(name: String, List(x)) if safeIdentity.contains(name) =>
-      reduceExpr(x, safe)
+      reduceExpr(x)
     case SEApp("LengthOfArrayLike", List(x)) =>
-      SEApp("Get", List(reduceExpr(x, safe), SELit(EStr("length"))))
+      SEApp("Get", List(reduceExpr(x), SELit(EStr("length"))))
     case SEApp("GetMethod", List(v, SELit(EStr(p)))) =>
-      SEApp("Get", List(reduceExpr(v, safe), SELit(EStr(p))))
+      SEApp("Get", List(reduceExpr(v), SELit(EStr(p))))
     case SEApp("GetMethod", List(v, SEProj(_, p))) =>
-      SEApp("Get", List(reduceExpr(v, safe), p))
+      SEApp("Get", List(reduceExpr(v), p))
     case SEApp("__CLAMP__", List(x, _, _)) =>
-      reduceExpr(x, safe)
+      reduceExpr(x)
     case SEApp(name: String, List(x)) if unsafeIdentity.contains(name) =>
-      reduceExpr(x, safe)
+      reduceExpr(x)
     case SEApp(name: String, List(x)) if unsafeDeleg.contains(name) =>
-      SEApp(unsafeDeleg(name), List(reduceExpr(x, safe)))
-    case SETypeOf(inner) => SETypeOf(reduceExpr(inner, safe = true))
-    case SEProj(inner, SELit(EStr("Value"))) => reduceExpr(inner, safe)
-    case SEProj(base, k) => SEProj(reduceExpr(base, safe), k)
-    case SEApp(op, args) => SEApp(op, args.map(reduceExpr(_, safe)))
-    case SEList(elems)   => SEList(elems.map(reduceExpr(_, safe)))
+      SEApp(unsafeDeleg(name), List(reduceExpr(x)))
+    case SETypeOf(inner) => SETypeOf(reduceExpr(inner))
+    case SEProj(inner, SELit(EStr("Value"))) => reduceExpr(inner)
+    case SEProj(base, k) => SEProj(reduceExpr(base), k)
+    case SEApp(op, args) => SEApp(op, args.map(reduceExpr(_)))
+    case SEList(elems)   => SEList(elems.map(reduceExpr(_)))
     case _               => t
