@@ -96,8 +96,6 @@ class BuiltinBranchTest extends ESMetaTest {
         js: Option[String],
         elapsed: Long,
         reason: String,
-        rawGoal: Option[List[Formula]],
-        rewritten: Option[List[Formula]],
         simplified: Option[List[Formula]],
         blockingAOs: Set[String],
       )
@@ -133,8 +131,6 @@ class BuiltinBranchTest extends ESMetaTest {
                     elapsed,
                     "",
                     None,
-                    None,
-                    None,
                     Set(),
                   )
                 case None =>
@@ -146,59 +142,36 @@ class BuiltinBranchTest extends ESMetaTest {
                     elapsed,
                     "",
                     None,
-                    None,
-                    None,
                     Set(),
                   )
             } else {
               var reason = "unknown"
-              var rawGoal: Option[List[Formula]] = None
-              var rewrittenGoal: Option[List[Formula]] = None
               var simplifiedGoal: Option[List[Formula]] = None
               var blockingAOs: Set[String] = Set()
               try {
-                val goals = SymbolicInterpreter(f, cond)
-                if (goals.isEmpty) reason = "no-goals"
+                val interp = SymbolicInterpreter(f, cond, Solver.solve)
+                val goals = interp.result
+                if (goals.isEmpty)
+                  reason =
+                    if (interp.contradictionPruned)
+                      "contradiction"
+                    else "no-goals"
                 else {
                   val params = Solve.paramIds(f)
-                  val diagGoals = goals.take(5).toList
-                  reason = diagGoals
-                    .map { goal =>
-                      val rw = Solver.rewrite(goal)
-                      Solver.simplify(rw) match
-                        case None =>
-                          if (rawGoal.isEmpty) {
-                            rawGoal = Some(goal)
-                            rewrittenGoal = Some(rw)
-                          }
-                          "contradiction"
-                        case Some(fs) =>
-                          if (Reify.hasUninterpretableApp(fs)) {
-                            val names = fs.flatMap(Reify.outerAppNames).toSet
-                            if (rawGoal.isEmpty) {
-                              rawGoal = Some(goal)
-                              rewrittenGoal = Some(rw)
-                              simplifiedGoal = Some(fs)
-                              blockingAOs = names
-                            }
-                            s"uninterp-app(${names.mkString(",")})"
-                          } else
-                            Reify(fs, params).witness match
-                              case None =>
-                                if (rawGoal.isEmpty) {
-                                  rawGoal = Some(goal)
-                                  rewrittenGoal = Some(rw)
-                                  simplifiedGoal = Some(fs)
-                                }
-                                "reify-failed"
-                              case Some(w) =>
-                                Reify.toJsCall(f, params, w) match
-                                  case None    => "no-js-call"
-                                  case Some(_) => "unknown"
-                    }
-                    .groupBy(identity)
-                    .maxBy(_._2.size)
-                    ._1
+                  val fs = goals.head
+                  simplifiedGoal = Some(fs)
+                  if (Reify.hasUninterpretableApp(fs))
+                    val names = fs.flatMap(Reify.outerAppNames).toSet
+                    blockingAOs = names
+                    reason = s"uninterp-app(${names.mkString(",")})"
+                  else
+                    Reify(fs, params).witness match
+                      case None =>
+                        reason = "reify-failed"
+                      case Some(w) =>
+                        Reify.toJsCall(f, params, w) match
+                          case None    => reason = "no-js-call"
+                          case Some(_) => reason = "unknown"
                 }
               } catch {
                 case e: NotImplementedError =>
@@ -218,8 +191,6 @@ class BuiltinBranchTest extends ESMetaTest {
                 None,
                 elapsed,
                 reason,
-                rawGoal,
-                rewrittenGoal,
                 simplifiedGoal,
                 blockingAOs,
               )
@@ -315,13 +286,11 @@ class BuiltinBranchTest extends ESMetaTest {
             val goals = SymbolicInterpreter(
               cfg.funcs.find(_.name == r.fname).get,
               cond,
-            )
-            goals.headOption.foreach { goal =>
-              val rw = Solver.rewrite(goal)
-              Solver.simplify(rw).foreach { fs =>
-                dumpFile.println("  [simplified]")
-                fs.foreach(f => dumpFile.println(s"    $f"))
-              }
+              Solver.solve,
+            ).result
+            goals.headOption.foreach { fs =>
+              dumpFile.println("  [simplified]")
+              fs.foreach(f => dumpFile.println(s"    $f"))
             }
           } catch { case _: Throwable => () }
           dumpFile.println()
@@ -330,14 +299,6 @@ class BuiltinBranchTest extends ESMetaTest {
         // dump unsolved cases
         for (r <- results if r.status == "unsolved") {
           dumpFile.println(s"=== ${r.fname} Branch[${r.bid}] === ${r.reason}")
-          r.rawGoal.foreach { fs =>
-            dumpFile.println("  [raw]")
-            fs.foreach(f => dumpFile.println(s"    $f"))
-          }
-          r.rewritten.foreach { fs =>
-            dumpFile.println("  [rewritten]")
-            fs.foreach(f => dumpFile.println(s"    $f"))
-          }
           r.simplified.foreach { fs =>
             dumpFile.println("  [simplified]")
             fs.foreach(f => dumpFile.println(s"    $f"))

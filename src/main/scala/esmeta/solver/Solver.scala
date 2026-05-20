@@ -16,7 +16,7 @@ object Solver {
 
   def simplify(formulas: Goal): Option[Goal] =
     val norm = removeTautologies(formulas)
-    if (hasContradiction(norm)) None else Some(norm)
+    if (hasContradictionRaw(norm)) None else Some(norm)
 
   private def normalize(f: Formula): Formula =
     f match
@@ -44,7 +44,10 @@ object Solver {
       // otherwise, identity
       case _ => f
 
-  private def hasContradiction(fs: Goal): Boolean =
+  def hasContradiction(fs: Goal): Boolean =
+    hasContradictionRaw(removeTautologies(rewrite(fs)))
+
+  private def hasContradictionRaw(fs: Goal): Boolean =
     val litBindings: Map[SymExpr, LiteralExpr] =
       fs.collect {
         case FEq(t, SELit(v)) => t -> v

@@ -8,10 +8,15 @@ import esmeta.state.*
 import esmeta.ty.ValueTy
 import scala.collection.mutable.{Set => MSet, Queue}
 
-class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
+class SymbolicInterpreter(
+  entryFunc: Func,
+  target: Cond,
+  solveGoal: Goal => Option[Goal] = Some(_),
+)(using cfg: CFG) {
   import SymbolicInterpreter.*, Formula.*, SymExpr.*
   private val Cond(branch, side) = target
   private val targetFunc = cfg.funcOf(branch)
+  var contradictionPruned: Boolean = false // FIXME: for classification
 
   private var env = Map[Local, SymExpr]()
   // TODO: symbolic heap
@@ -80,13 +85,17 @@ class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
         val constraint =
           if (br.isFiltered) Some(List()) // skip extraction for filtered
           else getConstraint(br.cond, side)
-        for {
+        (for {
           node <- nextNode.filter(feasible)
           cs <- constraint
-        } yield {
-          stack ::= (Cond(br, side), cs, State(env, callCtxt))
-          node
-        }
+        } yield (node, cs)) match
+          case Some((node, cs)) if Solver.hasContradiction(pc ++ cs) =>
+            contradictionPruned = true; None
+          case Some((node, cs)) =>
+            stack ::= (Cond(br, side), cs, State(env, callCtxt))
+            propagateEnv(br.cond, side)
+            Some(node)
+          case None => None
 
       def feasible(n: Node): Boolean =
         whitelist(cfg.funcOf(n)).contains(n) && // prune unreachable nodes
@@ -170,13 +179,32 @@ class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
         case None => None
         case Some(node) =>
           collectGoal(node) match
-            case Some(goal) => cur = backtrack(); Some(goal)
-            case None       => cur = backtrack(); nextGoal()
+            case Some(goal) =>
+              solveGoal(goal) match
+                case Some(solved) =>
+                  cur = backtrack(); Some(solved)
+                case None =>
+                  contradictionPruned = true
+                  cur = backtrack(); nextGoal()
+            case None =>
+              cur = backtrack(); nextGoal()
       def goals: LazyList[Goal] = nextGoal() match
         case Some(goal) => goal #:: goals
         case None       => LazyList()
       goals
     }
+
+  private def propagateEnv(cond: Expr, side: Boolean): Unit =
+    cond match
+      case EBinary(BOp.Eq | BOp.Equal, ERef(x: Local), lit: LiteralExpr) =>
+        if (side) env += (x -> SELit(lit))
+      case EBinary(BOp.Eq | BOp.Equal, lit: LiteralExpr, ERef(x: Local)) =>
+        if (side) env += (x -> SELit(lit))
+      case EBinary(BOp.And, lhs, rhs) if side =>
+        propagateEnv(lhs, true); propagateEnv(rhs, true)
+      case EBinary(BOp.Or, lhs, rhs) if !side =>
+        propagateEnv(lhs, false); propagateEnv(rhs, false)
+      case _ => ()
 
   private def eval(block: Block): Option[SymExpr] =
     var retVal: Option[SymExpr] = None
@@ -225,6 +253,7 @@ class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
           env += (x -> SEList(es.tail))
         case _ => env -= lhs
     case IPop(lhs, _, _) => env -= lhs
+    case IExpr(EYet(_))  => ??? // intentionally fail
     case _               => ()
 
   private def eval(expr: Expr): SymExpr = expr match
@@ -354,9 +383,12 @@ class SymbolicInterpreter(entryFunc: Func, target: Cond)(using cfg: CFG) {
           case (l, r) =>
             val f = FEq(SEApp("[ir:contains]", List(l, r)), SELit(EBool(true)))
             Some(List(if (pos) f else FNot(f)))
-      case ERef(ref) => Some(List(FEq(eval(ref), SELit(EBool(pos)))))
-      case _: EYet   => None
-      case _         => ???
+      case ERef(ref) =>
+        eval(ref) match
+          case SELit(EBool(b)) if b != pos => None
+          case v => Some(List(FEq(v, SELit(EBool(pos)))))
+      case _: EYet => None
+      case _       => ???
 
   // constant folding for literals
   private def simplify(t: SymExpr): SymExpr = t match
@@ -401,8 +433,12 @@ object SymbolicInterpreter {
 
   case class State(env: Map[Local, SymExpr], callCtxt: Option[CallContext])
 
-  def apply(entryFunc: Func, target: Cond)(using CFG): LazyList[Goal] =
-    new SymbolicInterpreter(entryFunc, target).result
+  def apply(
+    entryFunc: Func,
+    target: Cond,
+    solveGoal: Goal => Option[Goal] = Some(_),
+  )(using CFG): SymbolicInterpreter =
+    new SymbolicInterpreter(entryFunc, target, solveGoal)
 
   private def foldUOp(op: UOp, lit: LiteralExpr): Option[SymExpr] =
     import UOp.*

@@ -57,12 +57,10 @@ case object Solve extends Phase[CFG, String] {
     cond: Cond,
   )(using CFG): LazyList[String] =
     val params = paramIds(entry)
-    val goals = SymbolicInterpreter(entry, cond)
-    goals.flatMap { goal =>
-      Solver.solve(goal).flatMap { simplified =>
-        Reify(simplified, params).witness.flatMap { witness =>
-          Reify.toJsCall(entry, params, witness)
-        }
+    val goals = SymbolicInterpreter(entry, cond, Solver.solve).result
+    goals.flatMap { solved =>
+      Reify(solved, params).witness.flatMap { witness =>
+        Reify.toJsCall(entry, params, witness)
       }
     }
 
