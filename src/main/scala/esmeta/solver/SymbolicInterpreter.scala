@@ -16,7 +16,10 @@ class SymbolicInterpreter(
   import SymbolicInterpreter.*, Formula.*, SymExpr.*
   private val Cond(branch, side) = target
   private val targetFunc = cfg.funcOf(branch)
-  var contradictionPruned: Boolean = false // FIXME: for classification
+
+  // FIXME: flags for classification
+  var pathContradiction: Boolean = false
+  var targetContradiction: Boolean = false
 
   private var env = Map[Local, SymExpr]()
   // TODO: symbolic heap
@@ -90,7 +93,7 @@ class SymbolicInterpreter(
           cs <- constraint
         } yield (node, cs)) match
           case Some((node, cs)) if Solver.hasContradiction(pc ++ cs) =>
-            contradictionPruned = true; None
+            pathContradiction = true; None
           case Some((node, cs)) =>
             stack ::= (Cond(br, side), cs, State(env, callCtxt))
             propagateEnv(br.cond, side)
@@ -184,7 +187,7 @@ class SymbolicInterpreter(
                 case Some(solved) =>
                   cur = backtrack(); Some(solved)
                 case None =>
-                  contradictionPruned = true
+                  targetContradiction = true
                   cur = backtrack(); nextGoal()
             case None =>
               cur = backtrack(); nextGoal()

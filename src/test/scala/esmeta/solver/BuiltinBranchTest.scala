@@ -153,8 +153,8 @@ class BuiltinBranchTest extends ESMetaTest {
                 val goals = interp.result
                 if (goals.isEmpty)
                   reason =
-                    if (interp.contradictionPruned)
-                      "contradiction"
+                    if (interp.targetContradiction) "contradiction"
+                    else if (interp.pathContradiction) "pruned"
                     else "no-goals"
                 else {
                   val params = Solve.paramIds(f)
