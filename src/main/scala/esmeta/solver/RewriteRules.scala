@@ -125,11 +125,19 @@ object RewriteRules {
         case _                  => List(f)
 
     // https://tc39.es/ecma262/#sec-isarray
-    // NOTE: IsArray returns true if array exotic object, and false in non-object
-    // Proxy exotic objects should be considered (according to the spec), but chose simple path now
+    // NOTE: true for Array exotic, false otherwise; Proxy recurses via ValidateNonRevokedProxy
     case FEq(SEApp("IsArray", List(x)), SELit(EBool(b))) =>
       if (b) List(FEq(SETypeOf(x), SEType(RecordT("Array"))))
-      else List(FNot(FEq(SETypeOf(x), SEType(ObjectT))))
+      else List(FNot(FEq(SETypeOf(x), SEType(RecordT("Array")))))
+    case FEq(SETypeOf(SEApp("IsArray", List(x))), SEType(ty)) if ty <= CompT =>
+      ty match
+        case _ if ty <= NormalT =>
+          List(FNot(FEq(SETypeOf(x), SEType(RecordT("ProxyExoticObject")))))
+        case _ if ty <= AbruptT =>
+          List(
+            FEq(SETypeOf(SEApp("ValidateNonRevokedProxy", List(x))), SEType(ty)),
+          )
+        case _ => List(f)
 
     // https://tc39.es/ecma262/#sec-iscallable
     case FEq(SEApp("IsCallable", List(x)), SELit(EBool(b))) =>
@@ -151,6 +159,17 @@ object RewriteRules {
           FExists(x, SELit(EStr("RegExpMatcher"))),
         )
       else List(FNot(FEq(SETypeOf(x), SEType(ObjectT))))
+    case FEq(SETypeOf(SEApp("IsRegExp", List(x))), SEType(ty)) if ty <= CompT =>
+      val symMatch = SEProj(SEApp("SYMBOL", List()), SELit(EStr("match")))
+      val getMatch = SEApp("Get", List(x, symMatch))
+      ty match
+        case _ if ty <= NormalT => List()
+        case _ if ty <= AbruptT =>
+          List(
+            FEq(SETypeOf(x), SEType(ObjectT)),
+            FEq(SETypeOf(getMatch), SEType(ty)),
+          )
+        case _ => List(f)
 
     // https://tc39.es/ecma262/#sec-samevalue
     // NOTE: strict - +0 != -0, NaN == NaN
@@ -260,6 +279,18 @@ object RewriteRules {
         case _ if ty <= NormalT || ty <= AbruptT =>
           List(FEq(SETypeOf(hasCause), SEType(ty)))
         case _ => List(f)
+
+    // https://tc39.es/ecma262/#sec-validatenonrevokedproxy
+    // NOTE: throws TypeError only if proxy is revoked (handler is null)
+    case FEq(
+          SETypeOf(SEApp("ValidateNonRevokedProxy", List(o))),
+          SEType(ty),
+        ) if ty <= CompT =>
+      val hasHandler = FExists(o, SELit(EStr("ProxyHandler")))
+      ty match
+        case _ if ty <= NormalT => List(hasHandler)
+        case _ if ty <= AbruptT => List(FNot(hasHandler))
+        case _                  => List(f)
 
     // https://tc39.es/ecma262/#sec-validatetypedarray
     // NOTE: delegates to RequireInternalSlot(typedArray, "TypedArrayName")
