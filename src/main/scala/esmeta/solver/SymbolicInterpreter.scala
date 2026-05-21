@@ -16,10 +16,17 @@ class SymbolicInterpreter(
   import SymbolicInterpreter.*, Formula.*, SymExpr.*
   private val Cond(branch, side) = target
   private val targetFunc = cfg.funcOf(branch)
-
-  // FIXME: flags for classification
   var pathContradiction: Boolean = false
   var targetContradiction: Boolean = false
+  var stepInBlocked: Boolean = false
+  var cycleBlocked: Boolean = false
+  var notImplBlocked: Option[String] = None
+  var whitelistEmpty: Boolean = false
+  var loopBlocked: Boolean = false
+  var internalMethodDispatch: Boolean = false
+  val hasVariadic: Boolean = entryFunc.head match
+    case Some(h: BuiltinHead) => h.params.exists(_.kind == ParamKind.Variadic)
+    case _                    => false
 
   private var env = Map[Local, SymExpr]()
   // TODO: symbolic heap
@@ -58,7 +65,7 @@ class SymbolicInterpreter(
   ) ).toMap.withDefaultValue(Set())
 
   lazy val result: LazyList[Goal] =
-    if (whitelist(entryFunc).isEmpty) LazyList()
+    if (whitelist(entryFunc).isEmpty) { whitelistEmpty = true; LazyList() }
     else {
       var stack = List[(Cond, Goal, State)]()
 
@@ -102,7 +109,11 @@ class SymbolicInterpreter(
 
       def feasible(n: Node): Boolean =
         whitelist(cfg.funcOf(n)).contains(n) && // prune unreachable nodes
-        !stack.exists(_._1.branch.id == n.id) // prune cycles in the same branch
+        !stack.exists { s =>
+          val hit = s._1.branch.id == n.id
+          if (hit && s._1.branch.isLoop) loopBlocked = true
+          hit
+        }
 
       def canStepIn(callee: Func, cur: Func): Boolean =
         stepInFuncs.contains(callee) &&
@@ -143,13 +154,21 @@ class SymbolicInterpreter(
                       .map((p, a) => p.lhs -> a)
                       .toMap
                     Some(callee.entry).filter(feasible)
+                  case Some(callee) if stepInFuncs.contains(callee) =>
+                    cycleBlocked = true
+                    env += (ret -> SEApp(fname, args.map(eval)))
+                    call.next.filter(feasible)
                   case _ =>
+                    if (cfg.fnameMap.get(fname).exists(stepInFuncs.contains))
+                      stepInBlocked = true
                     env += (ret -> SEApp(fname, args.map(eval)))
                     call.next.filter(feasible)
               case ICall(_, ERef(Field(base, EStr(method))), args) =>
+                internalMethodDispatch = true
                 env += (ret -> SEApp(method, eval(base) :: args.map(eval)))
                 call.next.filter(feasible)
               case ISdoCall(_, base, op, args) =>
+                internalMethodDispatch = true
                 env += (ret -> SEApp(op, eval(base) :: args.map(eval)))
                 call.next.filter(feasible)
               case _ => env -= ret; call.next.filter(feasible)
@@ -161,7 +180,17 @@ class SymbolicInterpreter(
             case b: Branch if b.id == branch.id =>
               getConstraint(b.cond, side).map(pc ++ _)
             case _ => step(node).flatMap(collectGoal)
-        } catch { case _: NotImplementedError => None }
+        } catch {
+          case e: NotImplementedError =>
+            if (notImplBlocked.isEmpty)
+              val msg = Option(e.getMessage).getOrElse("")
+              val site = e.getStackTrace
+                .find(_.getClassName.contains("SymbolicInterpreter"))
+                .map(f => s"${f.getMethodName}:${f.getLineNumber}")
+                .getOrElse("?")
+              notImplBlocked = Some(if (msg.nonEmpty) msg else site)
+            None
+        }
 
       // pop the stack and try the else-side of the most recent then-branch
       def backtrack(): Option[Node] =
@@ -256,12 +285,13 @@ class SymbolicInterpreter(
           env += (x -> SEList(es.tail))
         case _ => env -= lhs
     case IPop(lhs, _, _) => env -= lhs
-    case IExpr(EYet(_))  => ??? // intentionally fail
+    case IExpr(EYet(_))  => throw NotImplementedError("EYet")
     case _               => ()
 
   private def eval(expr: Expr): SymExpr = expr match
-    case _: EParse | _: EGrammarSymbol | _: ESourceText => ??? // syntactic
-    case _: EYet => ??? // not implemented
+    case _: EParse | _: EGrammarSymbol | _: ESourceText =>
+      throw NotImplementedError("syntactic")
+    case _: EYet => throw NotImplementedError("EYet")
     case EContains(list, elem) =>
       simplify(SEApp("[ir:contains]", List(eval(list), eval(elem))))
     case ESubstring(base, from, to) =>
@@ -283,27 +313,29 @@ class SymbolicInterpreter(
       simplify(SEApp(cop, List(eval(e))))
     case EExists(ref) =>
       ref match
-        case Field(base, EStr(field)) =>
-          eval(base) match
-            case SERecord(_, fs) => SELit(EBool(fs.contains(field)))
-            case SEMap(es) =>
-              val k = SELit(EStr(field))
+        case x: Local => SELit(EBool(env.contains(x)))
+        case Field(base, key) =>
+          (eval(base), eval(key)) match
+            case (SERecord(_, fs), SELit(EStr(f))) =>
+              SELit(EBool(fs.contains(f)))
+            case (SEMap(es), k) =>
               SELit(EBool(es.exists(_._1 == k)))
-            case t => SEApp("[ir:exists]", List(t, SELit(EStr(field))))
+            case (t, k) => SEApp("[ir:exists]", List(t, k))
         case _ => SELit(EBool(true))
     case ETypeOf(e)     => SETypeOf(eval(e))
-    case _: EInstanceOf => ??? // syntactic part
+    case _: EInstanceOf => throw NotImplementedError("EInstanceOf")
     case ETypeCheck(e, ty) =>
       simplify(SEApp(BOp.Eq, List(SETypeOf(eval(e)), SEType(ty.toValue))))
     case ESizeOf(e) =>
       eval(e) match
         case SEList(elems) => SELit(EMath(BigDecimal(elems.size)))
         case t             => SEApp("[ir:sizeof]", List(t))
-    case _: EClo                     => ??? // opaque closure
-    case _: ECont                    => ??? // opaque continuation
-    case _: EDebug                   => ??? // debug
-    case _: ERandom                  => ??? // non-deterministic
-    case _: ESyntactic | _: ELexical => ??? // syntactic part
+    case _: EClo    => ??? // opaque-closure
+    case _: ECont   => ??? // opaque-continuation
+    case EDebug(_)  => ??? // debug
+    case _: ERandom => ??? // non-deterministic
+    case _: ESyntactic | _: ELexical =>
+      throw NotImplementedError("syntactic")
     case ERecord(tname, pairs) =>
       SERecord(tname, pairs.map((k, e) => k -> eval(e)).toMap)
     case EMap(_, pairs) => SEMap(pairs.map((k, v) => (eval(k), eval(v))))
@@ -369,12 +401,15 @@ class SymbolicInterpreter(
         getConstraint(lhs, false).orElse(getConstraint(rhs, false))
       case EBinary(BOp.Or, lhs, rhs) =>
         getConstraint(lhs, true).orElse(getConstraint(rhs, true))
-      case EExists(Field(base, EStr(field))) =>
-        eval(base) match
-          case SERecord(_, fs) if fs.contains(field) =>
+      case EExists(x: Local) =>
+        if (env.contains(x) == pos) Some(List()) else None
+      case EExists(Field(base, key)) =>
+        val k = eval(key)
+        (eval(base), k) match
+          case (SERecord(_, fs), SELit(EStr(field))) if fs.contains(field) =>
             if (pos) Some(List()) else None
-          case t =>
-            val f = FExists(t, SELit(EStr(field)))
+          case (t, _) =>
+            val f = FExists(t, k)
             Some(List(if (pos) f else FNot(f)))
       case EContains(list, elem) =>
         (eval(list), eval(elem)) match
@@ -391,7 +426,10 @@ class SymbolicInterpreter(
           case SELit(EBool(b)) if b != pos => None
           case v => Some(List(FEq(v, SELit(EBool(pos)))))
       case _: EYet => None
-      case _       => ???
+      case e =>
+        throw NotImplementedError(
+          s"getConstraint: ${e.getClass.getSimpleName}",
+        )
 
   // constant folding for literals
   private def simplify(t: SymExpr): SymExpr = t match

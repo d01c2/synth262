@@ -155,6 +155,14 @@ class BuiltinBranchTest extends ESMetaTest {
                   reason =
                     if (interp.targetContradiction) "contradiction"
                     else if (interp.pathContradiction) "pruned"
+                    else if (interp.notImplBlocked.isDefined)
+                      s"no-goals(${interp.notImplBlocked.get})"
+                    else if (interp.loopBlocked) "no-goals(loop)"
+                    else if (interp.cycleBlocked) "no-goals(cycle)"
+                    else if (interp.stepInBlocked) "no-goals(step-in)"
+                    else if (interp.hasVariadic) "no-goals(variadic)"
+                    else if (interp.internalMethodDispatch)
+                      "no-goals(internal-method)"
                     else "no-goals"
                 else {
                   val params = Solve.paramIds(f)
