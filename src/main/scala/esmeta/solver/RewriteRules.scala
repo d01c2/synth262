@@ -261,6 +261,27 @@ object RewriteRules {
           List(FEq(SETypeOf(hasCause), SEType(ty)))
         case _ => List(f)
 
+    // https://tc39.es/ecma262/#sec-validatetypedarray
+    // NOTE: delegates to RequireInternalSlot(typedArray, "TypedArrayName")
+    case FEq(
+          SETypeOf(SEApp("ValidateTypedArray", List(o, _))),
+          SEType(ty),
+        ) if ty <= CompT =>
+      ty match
+        case _ if ty <= NormalT || ty <= AbruptT =>
+          List(
+            FEq(
+              SETypeOf(
+                SEApp(
+                  "RequireInternalSlot",
+                  List(o, SELit(EStr("TypedArrayName"))),
+                ),
+              ),
+              SEType(ty),
+            ),
+          )
+        case _ => List(f)
+
     case _ => List(f)
 
   // strips .Value, Completion/NormalCompletion, .Type (before rewrite)
