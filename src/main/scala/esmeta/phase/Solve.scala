@@ -57,7 +57,28 @@ case object Solve extends Phase[CFG, String] {
     cond: Cond,
   )(using CFG): LazyList[String] =
     val params = paramIds(entry)
-    val goals = SymbolicInterpreter(entry, cond, Solver.solve).result
+    var goalIdx = 0
+    println(s"\n=== Entry: ${entry.name} ===")
+    val goals = SymbolicInterpreter(
+      entry,
+      cond,
+      goal => {
+        goalIdx += 1
+        println(s"\n--- Goal $goalIdx [raw] ---")
+        goal.foreach(f => println(s"  $f"))
+        val rw = Solver.rewrite(goal)
+        println(s"--- Goal $goalIdx [rewritten] ---")
+        rw.foreach(f => println(s"  $f"))
+        Solver.simplify(rw) match
+          case None =>
+            println(s"--- Goal $goalIdx => CONTRADICTION ---")
+            None
+          case Some(fs) =>
+            println(s"--- Goal $goalIdx [simplified] ---")
+            fs.foreach(f => println(s"  $f"))
+            Some(fs)
+      },
+    ).result
     goals.flatMap { solved =>
       Reify(solved, params).witness.flatMap { witness =>
         Reify.toJsCall(entry, params, witness)
