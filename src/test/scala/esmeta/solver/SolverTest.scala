@@ -65,6 +65,15 @@ class SolverTest extends ESMetaTest {
       assert(result.get(Arg(0)) != "{}")
     }
 
+    check("type exclusion: union survives partial negation") {
+      val goal = List(
+        FEq(SETypeOf(SESym(Arg(0))), SEType(NumberT || StrT)),
+        FNot(FEq(SETypeOf(SESym(Arg(0))), SEType(NumberT))),
+      )
+      val result = solveAndReify(goal, List(Arg(0)))
+      assert(result == Some(Map(Arg(0) -> "\"\"")))
+    }
+
     // --- inequality ---
     check("inequality: x != null") {
       val goal = List(FNot(FEq(SESym(Arg(0)), SELit(ENull()))))
@@ -244,6 +253,21 @@ class SolverTest extends ESMetaTest {
       val result = solveAndReify(goal, List(Arg(0)))
       assert(result.isDefined)
       assert(result.get(Arg(0)) == "{}")
+    }
+
+    check("rewrite: ToBoolean(false) == true is contradiction") {
+      val goal = List(
+        FEq(SEApp("ToBoolean", List(SELit(EBool(false)))), SELit(EBool(true))),
+      )
+      assert(Solver.solve(goal).isEmpty)
+    }
+
+    check("rewrite: literal-left predicate equality is canonicalized") {
+      val goal = List(
+        FEq(SETypeOf(SESym(Arg(0))), SEType(NumberT)),
+        FEq(SELit(EBool(true)), SEApp("IsCallable", List(SESym(Arg(0))))),
+      )
+      assert(Solver.solve(goal).isEmpty)
     }
   }
 

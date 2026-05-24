@@ -12,9 +12,9 @@ object RewriteRules {
     // 7.1 Type Conversion
 
     // https://tc39.es/ecma262/#sec-toboolean
-    case FEq(SEApp("ToBoolean", List(x)), SELit(EBool(b))) =>
+    case FEq(SEApp("ToBoolean", List(x)), SELit(EBool(expected))) =>
       x match
-        case SELit(EBool(b)) => List(FEq(x, SELit(EBool(b))))
+        case SELit(_: EBool) => List(FEq(x, SELit(EBool(expected))))
         case SELit(lit) =>
           val isFalsy = lit match
             case EUndef() | ENull() => true

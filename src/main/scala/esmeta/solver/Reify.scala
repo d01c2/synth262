@@ -46,20 +46,28 @@ case class Reify(formulas: List[Formula], entryParams: List[Sym]) {
 
     // narrow type from type constraints and internal slot existence
     var ty = ESValueT
+    val avoidedTys = List.newBuilder[ValueTy]
+    val absentFields = List.newBuilder[String]
     for (f <- fs) f match
       case f @ FEq(SETypeOf(SESym(_)), SEType(pos)) =>
         consumed += f; ty = ty && pos
       case f @ FNot(FEq(SETypeOf(SESym(_)), SEType(neg))) =>
-        consumed += f; ty = ty -- neg
+        consumed += f; avoidedTys += neg
       case f @ FExists(SESym(_), SELit(EStr(field)))
           if fieldToRecordTy.contains(field) =>
         consumed += f; ty = ty && fieldToRecordTy(field)
       case f @ FNot(FExists(SESym(_), SELit(EStr(field))))
           if fieldToRecordTy.contains(field) =>
-        consumed += f; ty = ty -- fieldToRecordTy(field)
+        consumed += f
+        absentFields += field
+        avoidedTys += fieldToRecordTy(field)
       case _ => ()
+    for (field <- absentFields.result() if ty <= ObjectT)
+      ty =
+        ValueTy(record = ty.record.update(field, Binding.Absent, refine = true))
     val narrowedTy = ty
-    val hasTyConstraint = narrowedTy != ESValueT
+    val avoidTypes = avoidedTys.result()
+    val hasTyConstraint = narrowedTy != ESValueT || avoidTypes.nonEmpty
 
     // property constraints applicable when base is object-like or
     // when formulas imply property access on this param
@@ -73,7 +81,8 @@ case class Reify(formulas: List[Formula], entryParams: List[Sym]) {
       case _                                                       => false
     }
     val objLiteralBase =
-      defaultFor(narrowedTy).exists(_.startsWith("{")) || hasPropertyConstraints
+      defaultFor(narrowedTy, avoidTys = avoidTypes).exists(_.startsWith("{")) ||
+      hasPropertyConstraints
 
     // property constraints from Get/HasProperty
     val propsValue =
@@ -287,12 +296,23 @@ case class Reify(formulas: List[Formula], entryParams: List[Sym]) {
         propsFromLt.toMap,
         extensible,
         prototype,
+        avoidTypes,
       )
     else if (hasInterval) intervalPick.flatMap(n => litToJs(EMath(n)))
     else if (hasTyConstraint || excluded.nonEmpty)
       if (narrowedTy <= ObjectT)
-        buildObject(narrowedTy, Map(), Set(), Map(), Map(), Map(), None, None)
-      else defaultFor(narrowedTy, excluded.toSet)
+        buildObject(
+          narrowedTy,
+          Map(),
+          Set(),
+          Map(),
+          Map(),
+          Map(),
+          None,
+          None,
+          avoidTypes,
+        )
+      else defaultFor(narrowedTy, excluded.toSet, avoidTypes)
     else Some("undefined")
 
   // build plain object from property + config constraints
@@ -305,7 +325,8 @@ case class Reify(formulas: List[Formula], entryParams: List[Sym]) {
     propsFromLt: Map[String, BigDecimal],
     extensible: Option[Boolean],
     prototype: Option[LiteralExpr],
-  ): Option[String] = defaultFor(ty).map { base =>
+    avoidTys: List[ValueTy] = List(),
+  ): Option[String] = defaultFor(ty, avoidTys = avoidTys).map { base =>
     val usedKeys = propsValue.keySet ++ propsAbrupt ++ propsTyped.keySet
     val entries = List.newBuilder[String]
     for ((key, lit) <- propsValue)
@@ -419,7 +440,10 @@ case class Reify(formulas: List[Formula], entryParams: List[Sym]) {
           keyedFormulas += f
       case f @ FNot(FEq(SETypeOf(SEApp("Get", args)), SEType(ty)))
           if !(ty <= AbruptT) && !(ty <= NormalT) =>
-        for (key <- extractKey(args); js <- defaultFor(ESValueT -- ty))
+        for (
+          key <- extractKey(args);
+          js <- defaultFor(ESValueT, avoidTys = List(ty))
+        )
           getKeyed(key) = s"return $js;"
           keyedFormulas += f
       case f @ FEq(SEApp("HasProperty", args), SELit(EBool(b))) =>
@@ -464,7 +488,7 @@ case class Reify(formulas: List[Formula], entryParams: List[Sym]) {
       case FNot(FEq(SETypeOf(SEApp(fname: String, _)), SEType(ty)))
           if !(ty <= AbruptT) && !(ty <= NormalT) =>
         for {
-          jsVal <- defaultFor(ESValueT -- ty)
+          jsVal <- defaultFor(ESValueT, avoidTys = List(ty))
           trap <- proxyTrapName.get(fname)
         } traps += trap -> s"return $jsVal;"
       case _ => ()
@@ -653,39 +677,44 @@ object Reify {
   private def defaultFor(
     ty: ValueTy,
     excluded: Set[LiteralExpr] = Set(),
+    avoidTys: List[ValueTy] = Nil,
   ): Option[String] =
     val excJs = excluded.flatMap(litToJs)
+    def allowed(candidateTy: ValueTy, js: String): Boolean =
+      !excJs(js) && avoidTys.forall(avoidTy =>
+        (candidateTy && avoidTy).isBottom,
+      )
     // 1. exact match
     defaults
       .collectFirst {
-        case (ct, js) if (ty <= ct) && (ct <= ty) && !excJs(js) => js
+        case (ct, js) if (ty <= ct) && (ct <= ty) && allowed(ct, js) => js
       }
       .orElse {
         // 2. specific intersection for narrow object types
         if (ty <= ObjectT && !(ObjectT <= ty))
           specificDefaults.collectFirst {
-            case (ct, js) if !(ty && ct).isBottom && !excJs(js) => js
+            case (ct, js) if !(ty && ct).isBottom && allowed(ct, js) => js
           }
         else None
       }
       .orElse {
         // 3. abstract subtype match
         abstractDefaults.collectFirst {
-          case (ct, js) if ty <= ct && !excJs(js) => js
+          case (ct, js) if ty <= ct && allowed(ct, js) => js
         }
       }
       .orElse {
         // 4. abstract intersection match
         abstractDefaults.collectFirst {
-          case (ct, js) if !(ty && ct).isBottom && !excJs(js) => js
+          case (ct, js) if !(ty && ct).isBottom && allowed(ct, js) => js
         }
       }
       .orElse {
         // 5. fallback for excluded primitive defaults
         if (ty <= NumberT)
-          List("1", "-1", "0.5", "2", "100").find(!excJs(_))
+          List("1", "-1", "0.5", "2", "100").find(allowed(NumberT, _))
         else if (ty <= StrT)
-          List("\"a\"", "\"test\"").find(!excJs(_))
+          List("\"a\"", "\"test\"").find(allowed(StrT, _))
         else None
       }
 

@@ -28,6 +28,8 @@ object Solver {
       case FNot(FEq(SETypeOf(t), SEType(ty))) if ty <= AbruptT =>
         FEq(SETypeOf(t), SEType(NormalT))
       // boolean simplification
+      case FNot(FEq(l: SELit, r)) if !r.isInstanceOf[SELit] =>
+        normalize(FNot(FEq(r, l)))
       case FNot(inner) => FNot(normalize(inner))
       case FEq(SEApp(UOp.Not, List(t)), SELit(EBool(b))) =>
         normalize(FEq(t, SELit(EBool(!b))))
@@ -41,6 +43,9 @@ object Solver {
         if (b) FLt(l, r) else FNot(FLt(l, r))
       case FEq(SELit(EBool(b)), SEApp(BOp.Lt, List(l, r))) =>
         if (b) FLt(l, r) else FNot(FLt(l, r))
+      // canonicalize equality before AO-specific rewrites
+      case FEq(l: SELit, r) if !r.isInstanceOf[SELit] =>
+        normalize(FEq(r, l))
       // otherwise, identity
       case _ => f
 
@@ -83,9 +88,9 @@ object Solver {
       tys.reduce(_ && _).isBottom
     } || tyBindings.exists { (t, posTys) =>
       val posTy = posTys.reduce(_ && _)
-      negTyBindings
-        .getOrElse(t, Nil)
-        .exists(negTy => !(posTy && negTy).isBottom)
+      val negTy =
+        negTyBindings.getOrElse(t, Nil).foldLeft(BotT: ValueTy)(_ || _)
+      !negTy.isBottom && posTy <= negTy
     }
 
   private def removeTautologies(fs: Goal): Goal =
