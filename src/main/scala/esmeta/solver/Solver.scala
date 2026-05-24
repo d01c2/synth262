@@ -48,6 +48,8 @@ object Solver {
     hasContradictionRaw(removeTautologies(rewrite(fs)))
 
   private def hasContradictionRaw(fs: Goal): Boolean =
+    val eqSet = fs.collect { case f: FEq => f }.toSet
+    val ltSet = fs.collect { case f: FLt => f }.toSet
     val litBindings: Map[SymExpr, LiteralExpr] =
       fs.collect {
         case FEq(t, SELit(v)) => t -> v
@@ -56,6 +58,10 @@ object Solver {
     val tyBindings: Map[SymExpr, List[ValueTy]] =
       fs.collect {
         case FEq(SETypeOf(t), SEType(ty)) if !(ty <= CompT) => (t, ty)
+      }.groupMap(_._1)(_._2)
+    val negTyBindings: Map[SymExpr, List[ValueTy]] =
+      fs.collect {
+        case FNot(FEq(SETypeOf(t), SEType(ty))) if !(ty <= CompT) => (t, ty)
       }.groupMap(_._1)(_._2)
     fs.exists {
       // equality contradiction
@@ -68,10 +74,18 @@ object Solver {
       // t != v but t == v is already bound
       case FNot(FEq(t, SELit(v))) => litBindings.get(t).exists(_ == v)
       case FNot(FEq(SELit(v), t)) => litBindings.get(t).exists(_ == v)
-      case _                      => false
+      // direct positive/negative contradiction
+      case FNot(f: FEq) => eqSet.contains(f)
+      case FNot(f: FLt) => ltSet.contains(f)
+      case _            => false
     } || tyBindings.exists { (_, tys) =>
       // type contradiction
       tys.reduce(_ && _).isBottom
+    } || tyBindings.exists { (t, posTys) =>
+      val posTy = posTys.reduce(_ && _)
+      negTyBindings
+        .getOrElse(t, Nil)
+        .exists(negTy => !(posTy && negTy).isBottom)
     }
 
   private def removeTautologies(fs: Goal): Goal =

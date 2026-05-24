@@ -83,7 +83,7 @@ object RewriteRules {
       val guard = FNot(FEq(SETypeOf(x), SEType(ObjectT)))
       val isSymbol = FEq(SETypeOf(x), SEType(SymbolT))
       ty match
-        case _ if ty <= NormalT => List(guard, FNot(isSymbol))
+        case _ if ty <= NormalT => List(FNot(isSymbol))
         case _ if ty <= AbruptT => List(guard, isSymbol)
         case _                  => List(f)
 

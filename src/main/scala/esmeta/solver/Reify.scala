@@ -224,34 +224,15 @@ case class Reify(formulas: List[Formula], entryParams: List[Sym]) {
         consumed += f
       case _ => ()
 
-    // consume non-Abrupt internal-method formulas that won't produce
-    // useful Proxy traps (value comparisons, Normal checks, negated equalities)
-    def isNonAbruptConstraint(f: Formula): Boolean = f match
-      case FEq(SETypeOf(_), SEType(ty)) if ty <= AbruptT       => false
-      case FNot(FEq(SETypeOf(_), SEType(ty))) if ty <= NormalT => false
-      case _                                                   => true
-    def collectGetKeys(t: SymExpr): Set[String] = t match
-      case SEApp("Get", List(SESym(_), k)) => propKey(k).toSet
-      case SEApp(_, args)                  => args.flatMap(collectGetKeys).toSet
-      case SEProj(base, _)                 => collectGetKeys(base)
-      case SETypeOf(inner)                 => collectGetKeys(inner)
-      case _                               => Set()
-    def formulaGetKeys(f: Formula): Set[String] = f match
-      case FEq(l, r)     => collectGetKeys(l) ++ collectGetKeys(r)
-      case FLt(l, r)     => collectGetKeys(l) ++ collectGetKeys(r)
-      case FNot(inner)   => formulaGetKeys(inner)
-      case FExists(b, _) => collectGetKeys(b)
+    // Normal completion of an internal method is the default path
+    def isDroppableNormalInternal(f: Formula): Boolean = f match
+      case FEq(SETypeOf(SEApp(fname: String, _)), SEType(ty))
+          if isInternalMethod(fname) && ty <= NormalT =>
+        true
+      case _ => false
     for (f <- fs if !consumed(f))
-      if (isNonAbruptConstraint(f) && !hasUninterpretableApp(List(f))) {
-        for (key <- formulaGetKeys(f))
-          if (
-            !propsValue.contains(key) && !propsAbrupt.contains(key)
-            && !propsTyped.contains(key) && !propsFromLt.contains(key)
-          )
-            val default = if (key == "length") BigDecimal(2) else BigDecimal(0)
-            propsFromLt.getOrElseUpdate(key, default)
+      if (isDroppableNormalInternal(f))
         consumed += f
-      }
 
     val unconsumed = fs.filterNot(consumed)
 
