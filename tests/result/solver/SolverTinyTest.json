@@ -1,0 +1,4 @@
+{
+  "contradiction: x == 0 and x == 1" : true,
+  "contradiction: x == x and NOT(x == x)" : true
+}

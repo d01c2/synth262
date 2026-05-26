@@ -70,7 +70,7 @@ class BuiltinBranchTest extends ESMetaTest {
     }
     var verified = 0
 
-    // collect unique (builtin, branch) pairs — each branch solved once
+    // collect unique (builtin, branch) pairs; each branch is solved once.
     val targets: List[(Func, Branch)] = {
       val pairs = {
         val futures = builtins.map { f =>
@@ -91,6 +91,8 @@ class BuiltinBranchTest extends ESMetaTest {
     check("builtin branches: solve and verify") {
       case class BranchResult(
         fname: String,
+        targetName: String,
+        targetCfg: String,
         bid: Int,
         status: String,
         js: Option[String],
@@ -100,6 +102,8 @@ class BuiltinBranchTest extends ESMetaTest {
         blockingAOs: Set[String],
       )
 
+      case class Candidate(js: String, simplified: List[Formula])
+
       println(s"  Solving ${targets.size} branches with $nThreads threads...")
 
       val results = {
@@ -107,15 +111,29 @@ class BuiltinBranchTest extends ESMetaTest {
           Future {
             val t0 = System.nanoTime()
             val cond = Cond(b, true)
+            val targetFunc = cfg.funcOf(b)
             val candidates =
-              try Solve.solve(f, b, cond).take(20).toList
-              catch case _: NotImplementedError | _: MatchError => Nil
+              try {
+                val params = Solve.paramIds(f)
+                SymbolicInterpreter(
+                  f,
+                  cond,
+                  goal => Solver.solve(goal),
+                ).result
+                  .flatMap { fs =>
+                    Reify(fs, params).witness.flatMap { w =>
+                      Reify.toJsCall(f, params, w).map(Candidate(_, fs))
+                    }
+                  }
+                  .take(20)
+                  .toList
+              } catch case _: NotImplementedError | _: MatchError => Nil
             val elapsed = System.nanoTime() - t0
 
             if (candidates.nonEmpty) {
-              val hit = candidates.find { js =>
+              val hit = candidates.find { cand =>
                 try {
-                  val interp = cov.run(js)
+                  val interp = cov.run(cand.js)
                   interp.touchedCondViews.keys.exists { cv =>
                     cv.cond.branch.id == b.id && cv.cond.cond == true
                   }
@@ -125,23 +143,28 @@ class BuiltinBranchTest extends ESMetaTest {
                 case Some(js) =>
                   BranchResult(
                     f.name,
+                    targetFunc.name,
+                    s"logs/cfg/func/${targetFunc.normalizedName}.cfg",
                     b.id,
                     "ok",
-                    Some(js),
+                    Some(js.js),
                     elapsed,
                     "",
-                    None,
+                    Some(js.simplified),
                     Set(),
                   )
                 case None =>
+                  val cand = candidates.head
                   BranchResult(
                     f.name,
+                    targetFunc.name,
+                    s"logs/cfg/func/${targetFunc.normalizedName}.cfg",
                     b.id,
                     "miss",
-                    Some(candidates.head),
+                    Some(cand.js),
                     elapsed,
                     "",
-                    None,
+                    Some(cand.simplified),
                     Set(),
                   )
             } else {
@@ -149,7 +172,8 @@ class BuiltinBranchTest extends ESMetaTest {
               var simplifiedGoal: Option[List[Formula]] = None
               var blockingAOs: Set[String] = Set()
               try {
-                val interp = SymbolicInterpreter(f, cond, Solver.solve)
+                val interp =
+                  SymbolicInterpreter(f, cond, goal => Solver.solve(goal))
                 val goals = interp.result
                 if (goals.isEmpty)
                   reason =
@@ -194,6 +218,8 @@ class BuiltinBranchTest extends ESMetaTest {
               }
               BranchResult(
                 f.name,
+                targetFunc.name,
+                s"logs/cfg/func/${targetFunc.normalizedName}.cfg",
                 b.id,
                 "unsolved",
                 None,
@@ -205,8 +231,7 @@ class BuiltinBranchTest extends ESMetaTest {
             }
           }
         }
-        val res = futures.map(Await.result(_, Duration.Inf))
-        res
+        futures.map(Await.result(_, Duration.Inf))
       }
 
       // aggregate
@@ -219,11 +244,6 @@ class BuiltinBranchTest extends ESMetaTest {
         case "ok" =>
           solved += 1; verified += 1
           timings ::= (r.fname, r.bid, r.elapsed)
-          println(
-            f"  [OK] ${r.fname} Branch[${r.bid}]:T" +
-            f" (${r.elapsed / 1000.0}%.0f us)",
-          )
-          println(s"       js: ${r.js.get}")
         case "miss" =>
           solved += 1; verifyFailed += 1
           timings ::= (r.fname, r.bid, r.elapsed)
@@ -231,7 +251,6 @@ class BuiltinBranchTest extends ESMetaTest {
             f"  [MISS] ${r.fname} Branch[${r.bid}]:T" +
             f" (${r.elapsed / 1000.0}%.0f us)",
           )
-          println(s"         js: ${r.js.get}")
         case _ =>
           unsolved += 1
           reasons(r.reason) = reasons.getOrElse(r.reason, 0) + 1
@@ -245,15 +264,6 @@ class BuiltinBranchTest extends ESMetaTest {
         val avgUs = timings.map(_._3).sum / timings.size / 1_000.0
         println(f"\n  Solve time: $totalMs%.1f ms total, $avgUs%.1f us avg")
       }
-
-      val total = targets.size
-      println(f"\n  Target branches: $total")
-      println(
-        f"  Solve rate: $solved / $total (${solved * 100.0 / total}%.1f%%)",
-      )
-      println(
-        f"  Verified:   $verified / $total (${verified * 100.0 / total}%.1f%%)",
-      )
 
       if (reasons.nonEmpty) {
         println(f"\n  Unsolved breakdown:")
@@ -281,32 +291,29 @@ class BuiltinBranchTest extends ESMetaTest {
       // dump full diagnostics to file
       val dumpFile = new PrintWriter("solve-dump.log")
       try {
-        // dump MISS cases
-        for (r <- results if r.status == "miss") {
-          dumpFile.println(s"=== ${r.fname} Branch[${r.bid}] === MISS")
-          dumpFile.println(s"  [js] ${r.js.get}")
-          // re-derive the formula for diagnostics
-          try {
-            val cond = Cond(
-              cfg.nodeMap(r.bid).asInstanceOf[Branch],
-              true,
-            )
-            val goals = SymbolicInterpreter(
-              cfg.funcs.find(_.name == r.fname).get,
-              cond,
-              Solver.solve,
-            ).result
-            goals.headOption.foreach { fs =>
-              dumpFile.println("  [simplified]")
-              fs.foreach(f => dumpFile.println(s"    $f"))
-            }
-          } catch { case _: Throwable => () }
+        def dumpSolved(r: BranchResult): Unit = {
+          dumpFile.println(
+            s"=== ${r.fname} -> ${r.targetName} Branch[${r.bid}] === ${r.status.toUpperCase}",
+          )
+          dumpFile.println(s"  [cfg] ${r.targetCfg}")
+          r.js.foreach(js => dumpFile.println(s"  [js] $js"))
+          r.simplified.foreach { fs =>
+            dumpFile.println("  [simplified]")
+            fs.foreach(f => dumpFile.println(s"    $f"))
+          }
           dumpFile.println()
         }
+        // dump solved cases, including both verified OK and verification MISS.
+        for (r <- results if r.status == "ok" || r.status == "miss")
+          dumpSolved(r)
+
         dumpFile.println("=" * 60)
         // dump unsolved cases
         for (r <- results if r.status == "unsolved") {
-          dumpFile.println(s"=== ${r.fname} Branch[${r.bid}] === ${r.reason}")
+          dumpFile.println(
+            s"=== ${r.fname} -> ${r.targetName} Branch[${r.bid}] === ${r.reason}",
+          )
+          dumpFile.println(s"  [cfg] ${r.targetCfg}")
           r.simplified.foreach { fs =>
             dumpFile.println("  [simplified]")
             fs.foreach(f => dumpFile.println(s"    $f"))
@@ -317,6 +324,22 @@ class BuiltinBranchTest extends ESMetaTest {
         }
       } finally dumpFile.close()
       println(s"\n  Full dump written to solve-dump.log")
+
+      val total = targets.size
+      val missRate = if (solved == 0) 0.0 else verifyFailed * 100.0 / solved
+      println(
+        s"\n  Builtin functions:  ${builtins.size} (${allBuiltins.size - builtins.size} excluded)",
+      )
+      println(f"  Target branches: $total")
+      println(
+        f"  Solve rate: $solved / $total (${solved * 100.0 / total}%.1f%%)",
+      )
+      println(
+        f"  Verified:   $verified / $total (${verified * 100.0 / total}%.1f%%)",
+      )
+      println(
+        f"  Misses:     $verifyFailed / $solved ($missRate%.1f%%)",
+      )
 
       assert(solved > 0)
       assert(verified > 0)

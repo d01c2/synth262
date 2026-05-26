@@ -115,6 +115,9 @@ lazy val analyzerTest = taskKey[Unit]("Launch analyzer tests")
 lazy val analyzerTyCheckTest =
   taskKey[Unit]("Launch tycheck tests for analyzer (small)")
 
+// solver
+lazy val solverTest = taskKey[Unit]("Launch solver tests")
+
 // es
 lazy val esTest = taskKey[Unit]("Launch ECMAScript tests")
 lazy val esEvalTest = taskKey[Unit]("Launch eval tests for ECMAScript (small)")
@@ -282,6 +285,8 @@ lazy val root = project
     analyzerTyCheckTest := (Test / testOnly)
       .toTask(" *.analyzer.TyCheck*Test")
       .value,
+    // solver
+    solverTest := (Test / testOnly).toTask(" *.solver.*Test").value,
     // es
     esTest := (Test / testOnly).toTask(" *.es.*Test").value,
     esEvalTest := (Test / testOnly).toTask(" *.es.Eval*Test").value,
