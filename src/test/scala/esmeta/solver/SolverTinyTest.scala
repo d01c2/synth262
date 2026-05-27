@@ -20,6 +20,14 @@ class SolverTinyTest extends SolverTest {
       List(FEq(xSym, xSym), FNot(FEq(xSym, xSym))),
     )
 
+    checkUnsat("contradiction: x == undefined and x is Symbol")(
+      List(isValue(xSym, EUndef()), isType(xSym, SymbolT)),
+    )
+
+    checkUnsat("contradiction: x == undefined and x is not Undefined")(
+      List(isValue(xSym, EUndef()), isNotType(xSym, UndefT)),
+    )
+
     check("GetIterator normal keeps Call completion separate from its value") {
       val methodResult = SEApp("Get", List(xSym, SELit(EStr("iterator"))))
       val method = SEField(methodResult, "Value")
@@ -274,6 +282,7 @@ class SolverTinyTest extends SolverTest {
       assert(rewritten.contains(isType(resultValue, NormalT)))
       assert(!rewritten.contains(isType(bareValue, NormalT)))
     }
+
   }
 
   init

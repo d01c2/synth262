@@ -13,6 +13,8 @@
   "ToNumber value projection rewrites as a numeric input constraint" : true,
   "ToNumber value projection type rewrites to the input type" : true,
   "contradiction: x == 0 and x == 1" : true,
+  "contradiction: x == undefined and x is Symbol" : true,
+  "contradiction: x == undefined and x is not Undefined" : true,
   "contradiction: x == x and NOT(x == x)" : true,
   "generic projection is not an internal field witness" : true,
   "internal field value reifies by object shape" : true,

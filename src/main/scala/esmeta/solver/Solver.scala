@@ -70,11 +70,19 @@ object Solver {
       fs.collect {
         case FNot(FTypeCheck(t, ty)) if !(ty <= CompT) => (t, ty)
       }.groupMap(_._1)(_._2)
+    val literalTypeContradiction = litBindings.exists { (t, lit) =>
+      val litTy = literalTy(lit)
+      tyBindings.getOrElse(t, Nil).exists(ty => !(litTy <= ty)) ||
+      negTyBindings.getOrElse(t, Nil).exists(ty => litTy <= ty)
+    }
     fs.exists {
       // equality contradiction
       case FEq(SELit(a), SELit(b))   => a != b
       case FNot(FEq(l, r)) if l == r => true
       case FLt(l, r) if l == r       => true
+      // literal/type contradiction
+      case FTypeCheck(SELit(v), ty)       => !(literalTy(v) <= ty)
+      case FNot(FTypeCheck(SELit(v), ty)) => literalTy(v) <= ty
       // t == v1 and t == v2 where v1 != v2
       case FEq(t, SELit(v)) => litBindings.get(t).exists(_ != v)
       case FEq(SELit(v), t) => litBindings.get(t).exists(_ != v)
@@ -93,7 +101,7 @@ object Solver {
       val negTy =
         negTyBindings.getOrElse(t, Nil).foldLeft(BotT: ValueTy)(_ || _)
       !negTy.isBottom && posTy <= negTy
-    }
+    } || literalTypeContradiction
 
   private def removeTautologies(fs: Goal): Goal =
     val litBindings: Map[SymExpr, LiteralExpr] =
@@ -109,4 +117,16 @@ object Solver {
       case FNot(FEq(SELit(v), t)) => litBindings.get(t).exists(_ != v)
       case _                      => false
     }
+
+  private def literalTy(lit: LiteralExpr): ValueTy = lit match
+    case EMath(n)     => MathT(n)
+    case EInfinity(p) => InfinityT(p)
+    case ENumber(n)   => NumberT(esmeta.state.Number(n))
+    case EBigInt(_)   => BigIntT
+    case EStr(s)      => StrT(s)
+    case EBool(b)     => BoolT(b)
+    case EUndef()     => UndefT
+    case ENull()      => NullT
+    case EEnum(name)  => EnumT(name)
+    case ECodeUnit(_) => CodeUnitT
 }
