@@ -1,4 +1,20 @@
 {
+  "Completion-wrapped Call value projection is preserved" : true,
+  "Completion-wrapped ToNumber projection rewrites through value" : true,
+  "Get value projection reifies as property value" : true,
+  "GetIterator normal keeps Call completion separate from its value" : true,
+  "HasProperty value projection reifies as property shape" : true,
+  "IteratorComplete reads done from IteratorNext value" : true,
+  "IteratorNext normal keeps Call completion separate from its value" : true,
+  "IteratorValue reads value from IteratorNext value" : true,
+  "NormalCompletion Type check rewrites as known normal" : true,
+  "NormalCompletion value projection rewrites to inner value" : true,
+  "ToLength value projection delegates to ToNumber before rewriting" : true,
+  "ToNumber value projection rewrites as a numeric input constraint" : true,
+  "ToNumber value projection type rewrites to the input type" : true,
   "contradiction: x == 0 and x == 1" : true,
-  "contradiction: x == x and NOT(x == x)" : true
+  "contradiction: x == x and NOT(x == x)" : true,
+  "unknown Completion Type check stays on wrapper" : true,
+  "unknown Completion value projection is preserved" : true,
+  "value-level Call projection is not stripped into the Call completion" : true
 }

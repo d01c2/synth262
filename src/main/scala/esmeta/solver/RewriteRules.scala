@@ -8,7 +8,20 @@ object RewriteRules {
   def rewriteFormula(f: Formula): List[Formula] =
     rewrite(stripCompletion(f)).map(normalizeExpr)
 
+  private val ValueKey = SELit(EStr("Value"))
+  private val TypeKey = SELit(EStr("Type"))
+  private val Contradiction = FEq(SELit(EBool(true)), SELit(EBool(false)))
+
   private def rewrite(f: Formula): List[Formula] = f match
+    // Completion record wrappers
+    case FEq(SETypeOf(SEApp("NormalCompletion", List(x))), SEType(ty))
+        if ty <= CompT =>
+      if (ty <= AbruptT) List(Contradiction)
+      else normalCompletionTypeConstraints(x, ty)
+    case FEq(SETypeOf(SEApp("Completion", List(x))), SEType(ty))
+        if ty <= CompT && isKnownCompletionExpr(x) =>
+      List(FEq(SETypeOf(x), SEType(ty)))
+
     // 7.1 Type Conversion
 
     // https://tc39.es/ecma262/#sec-toboolean
@@ -35,6 +48,21 @@ object RewriteRules {
         case _ if ty <= NormalT => List(guard, FNot(isSymbolOrBigInt))
         case _ if ty <= AbruptT => List(guard, isSymbolOrBigInt)
         case _                  => List(f)
+    case FEq(
+          SETypeOf(SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value")))),
+          SEType(ty),
+        ) if ty <= NumberT =>
+      List(FEq(SETypeOf(x), SEType(ty)))
+    case FNot(
+          FEq(
+            SETypeOf(SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value")))),
+            SEType(ty),
+          ),
+        ) if ty <= NumberT =>
+      List(
+        FNot(FEq(SETypeOf(x), SEType(ty))),
+        FEq(SETypeOf(x), SEType(NumberT)),
+      )
 
     // FIXME: After application, return value should be treated as number
     // but in this model, we cannot handle that behavior
@@ -43,17 +71,41 @@ object RewriteRules {
       List(FEq(x, v), FEq(SETypeOf(x), SEType(NumberT)))
     case FEq(v, SEApp("ToNumber", List(x))) =>
       List(FEq(x, v), FEq(SETypeOf(x), SEType(NumberT)))
+    case FEq(SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value"))), v) =>
+      List(FEq(x, v), FEq(SETypeOf(x), SEType(NumberT)))
+    case FEq(v, SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value")))) =>
+      List(FEq(x, v), FEq(SETypeOf(x), SEType(NumberT)))
     case FLt(SEApp("ToNumber", List(x)), v) =>
       List(FLt(x, v), FEq(SETypeOf(x), SEType(NumberT)))
     case FLt(v, SEApp("ToNumber", List(x))) =>
+      List(FLt(v, x), FEq(SETypeOf(x), SEType(NumberT)))
+    case FLt(SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value"))), v) =>
+      List(FLt(x, v), FEq(SETypeOf(x), SEType(NumberT)))
+    case FLt(v, SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value")))) =>
       List(FLt(v, x), FEq(SETypeOf(x), SEType(NumberT)))
     case FNot(FEq(SEApp("ToNumber", List(x)), v)) =>
       List(FNot(FEq(x, v)), FEq(SETypeOf(x), SEType(NumberT)))
     case FNot(FEq(v, SEApp("ToNumber", List(x)))) =>
       List(FNot(FEq(x, v)), FEq(SETypeOf(x), SEType(NumberT)))
+    case FNot(
+          FEq(SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value"))), v),
+        ) =>
+      List(FNot(FEq(x, v)), FEq(SETypeOf(x), SEType(NumberT)))
+    case FNot(
+          FEq(v, SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value")))),
+        ) =>
+      List(FNot(FEq(x, v)), FEq(SETypeOf(x), SEType(NumberT)))
     case FNot(FLt(SEApp("ToNumber", List(x)), v)) =>
       List(FNot(FLt(x, v)), FEq(SETypeOf(x), SEType(NumberT)))
     case FNot(FLt(v, SEApp("ToNumber", List(x)))) =>
+      List(FNot(FLt(v, x)), FEq(SETypeOf(x), SEType(NumberT)))
+    case FNot(
+          FLt(SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value"))), v),
+        ) =>
+      List(FNot(FLt(x, v)), FEq(SETypeOf(x), SEType(NumberT)))
+    case FNot(
+          FLt(v, SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value")))),
+        ) =>
       List(FNot(FLt(v, x)), FEq(SETypeOf(x), SEType(NumberT)))
 
     // https://tc39.es/ecma262/#sec-tointegerorinfinity
@@ -313,15 +365,73 @@ object RewriteRules {
           )
         case _ => List(f)
 
-    case _ => List(f)
+    // 27.1 Iteration
 
-  // strips .Value, Completion/NormalCompletion, .Type (before rewrite)
+    // https://tc39.es/ecma262/#sec-getiterator
+    case FEq(SETypeOf(SEApp("GetIterator", List(obj))), SEType(ty))
+        if ty <= NormalT =>
+      val methodResult = SEApp("Get", List(obj, SELit(EStr("iterator"))))
+      val method = SEProj(methodResult, SELit(EStr("Value")))
+      val callResult = SEApp("Call", List(method, obj))
+      List(
+        FEq(SETypeOf(methodResult), SEType(NormalT)),
+        FEq(SETypeOf(callResult), SEType(NormalT)),
+        FEq(SETypeOf(SEProj(callResult, SELit(EStr("Value")))), SEType(ObjectT)),
+      )
+
+    // https://tc39.es/ecma262/#sec-getiteratorfrommethod
+    case FEq(
+          SETypeOf(SEApp("GetIteratorFromMethod", List(obj, method))),
+          SEType(ty),
+        ) if ty <= NormalT =>
+      val callResult = SEApp("Call", List(method, obj))
+      List(
+        FEq(SETypeOf(callResult), SEType(NormalT)),
+        FEq(SETypeOf(SEProj(callResult, SELit(EStr("Value")))), SEType(ObjectT)),
+      )
+
+    // https://tc39.es/ecma262/#sec-iteratornext
+    case FEq(SETypeOf(SEApp("IteratorNext", iterRecord :: args)), SEType(ty))
+        if ty <= NormalT =>
+      iteratorParts(iterRecord) match
+        case Some(_) =>
+          val result = iteratorNextResult(iterRecord, args)
+          List(
+            FEq(SETypeOf(result), SEType(NormalT)),
+            FEq(
+              SETypeOf(SEProj(result, SELit(EStr("Value")))),
+              SEType(ObjectT),
+            ),
+          )
+        case None => List(f)
+
+    // https://tc39.es/ecma262/#sec-iteratorcomplete
+    case FEq(SETypeOf(SEApp("IteratorComplete", List(result))), SEType(ty))
+        if ty <= NormalT =>
+      val doneResult =
+        SEApp("Get", List(iteratorResultValue(result), SELit(EStr("done"))))
+      List(
+        FEq(SETypeOf(doneResult), SEType(NormalT)),
+        FEq(SETypeOf(SEProj(doneResult, SELit(EStr("Value")))), SEType(BoolT)),
+      )
+
+    // https://tc39.es/ecma262/#sec-iteratorvalue
+    case FEq(SETypeOf(SEApp("IteratorValue", List(result))), SEType(ty))
+        if ty <= NormalT =>
+      val valueResult =
+        SEApp("Get", List(iteratorResultValue(result), SELit(EStr("value"))))
+      List(FEq(SETypeOf(valueResult), SEType(NormalT)))
+
+    case _ => rewriteCompletionValues(f).getOrElse(f) :: Nil
+
+  // Converts .Type comparisons before rewrite while preserving completion
+  // wrappers whose value semantics need explicit rewrite rules.
 
   private def stripCompletion(f: Formula): Formula = f match
-    case FEq(SEProj(base, SELit(EStr("Type"))), SELit(EEnum(e))) =>
+    case FEq(SEProj(base, TypeKey), SELit(EEnum(e))) =>
       val ty = if (e == "normal") NormalT else AbruptT
       FEq(SETypeOf(stripExpr(base)), SEType(ty))
-    case FEq(SELit(EEnum(e)), SEProj(base, SELit(EStr("Type")))) =>
+    case FEq(SELit(EEnum(e)), SEProj(base, TypeKey)) =>
       val ty = if (e == "normal") NormalT else AbruptT
       FEq(SETypeOf(stripExpr(base)), SEType(ty))
     case FNot(inner)   => FNot(stripCompletion(inner))
@@ -330,22 +440,23 @@ object RewriteRules {
     case FExists(b, k) => FExists(stripExpr(b), k)
 
   private def stripExpr(t: SymExpr): SymExpr = t match
-    case SEApp("Completion", List(x))        => stripExpr(x)
-    case SEApp("NormalCompletion", List(x))  => stripExpr(x)
-    case SEProj(inner, SELit(EStr("Value"))) => stripExpr(inner)
-    case SETypeOf(inner)                     => SETypeOf(stripExpr(inner))
-    case SEProj(base, k)                     => SEProj(stripExpr(base), k)
-    case SEApp(op, args)                     => SEApp(op, args.map(stripExpr))
-    case SEList(elems)                       => SEList(elems.map(stripExpr))
-    case _                                   => t
+    case SETypeOf(inner) => SETypeOf(stripExpr(inner))
+    case SEProj(base, k) => SEProj(stripExpr(base), stripExpr(k))
+    case SEApp(op, args) => SEApp(op, args.map(stripExpr))
+    case SEList(elems)   => SEList(elems.map(stripExpr))
+    case SERecord(tn, fields) =>
+      SERecord(tn, fields.map((k, v) => k -> stripExpr(v)))
+    case SEMap(entries) =>
+      SEMap(entries.map((k, v) => stripExpr(k) -> stripExpr(v)))
+    case _ => t
 
-  // strips AO wrappers for value-level witness generation (after rewrite)
+  // Normalizes value-level AO projections after rewrite.
 
   private def normalizeExpr(f: Formula): Formula = f match
-    case FEq(SEProj(base, SELit(EStr("Type"))), SELit(EEnum(e))) =>
+    case FEq(SEProj(base, TypeKey), SELit(EEnum(e))) =>
       val ty = if (e == "normal") NormalT else AbruptT
       FEq(SETypeOf(reduceExpr(base)), SEType(ty))
-    case FEq(SELit(EEnum(e)), SEProj(base, SELit(EStr("Type")))) =>
+    case FEq(SELit(EEnum(e)), SEProj(base, TypeKey)) =>
       val ty = if (e == "normal") NormalT else AbruptT
       FEq(SETypeOf(reduceExpr(base)), SEType(ty))
     case FNot(inner)   => FNot(normalizeExpr(inner))
@@ -354,8 +465,23 @@ object RewriteRules {
     case FExists(b, k) => FExists(reduceExpr(b), k)
 
   private def reduceExpr(t: SymExpr): SymExpr = t match
-    case SEApp("Completion", List(x))       => reduceExpr(x)
-    case SEApp("NormalCompletion", List(x)) => reduceExpr(x)
+    case SEProj(SEApp("ToIntegerOrInfinity", List(x)), ValueKey) =>
+      SEProj(SEApp("ToNumber", List(reduceExpr(x))), ValueKey)
+    case SEProj(SEApp("ToLength", List(x)), ValueKey) =>
+      SEProj(SEApp("ToNumber", List(reduceExpr(x))), ValueKey)
+    case SEProj(SEApp("ToIndex", List(x)), ValueKey) =>
+      SEProj(SEApp("ToNumber", List(reduceExpr(x))), ValueKey)
+    case SEProj(SEApp("ToString", List(x)), ValueKey) =>
+      reduceExpr(x)
+    case SEProj(SEApp("ToObject", List(x)), ValueKey) =>
+      reduceExpr(x)
+    case SEProj(
+          SEApp("RequireObjectCoercible", List(x)),
+          ValueKey,
+        ) =>
+      reduceExpr(x)
+    case SEProj(SEApp("ToPropertyKey", List(x)), ValueKey) =>
+      reduceExpr(x)
     case SEApp("LengthOfArrayLike", List(x)) =>
       SEApp("Get", List(reduceExpr(x), SELit(EStr("length"))))
     case SEApp("GetMethod", List(v, SELit(EStr(p)))) =>
@@ -373,10 +499,165 @@ object RewriteRules {
       SEApp("ToIntegerOrInfinity", List(reduceExpr(x)))
     case SEApp("ToIndex", List(x)) =>
       SEApp("ToIntegerOrInfinity", List(reduceExpr(x)))
-    case SETypeOf(inner)                     => SETypeOf(reduceExpr(inner))
-    case SEProj(inner, SELit(EStr("Value"))) => reduceExpr(inner)
-    case SEProj(base, k)                     => SEProj(reduceExpr(base), k)
-    case SEApp(op, args) => SEApp(op, args.map(reduceExpr(_)))
-    case SEList(elems)   => SEList(elems.map(reduceExpr(_)))
-    case _               => t
+    case SETypeOf(inner)         => SETypeOf(reduceExpr(inner))
+    case SEProj(inner, ValueKey) => SEProj(reduceExpr(inner), ValueKey)
+    case SEProj(base, k)         => SEProj(reduceExpr(base), reduceExpr(k))
+    case SEApp(op, args)         => SEApp(op, args.map(reduceExpr(_)))
+    case SEList(elems)           => SEList(elems.map(reduceExpr(_)))
+    case SERecord(tn, fields) =>
+      SERecord(tn, fields.map((k, v) => k -> reduceExpr(v)))
+    case SEMap(entries) =>
+      SEMap(entries.map((k, v) => reduceExpr(k) -> reduceExpr(v)))
+    case _ => t
+
+  private def rewriteCompletionValues(f: Formula): Option[Formula] = f match
+    case FNot(inner) =>
+      rewriteCompletionValues(inner).map(FNot(_))
+    case FEq(l, r) =>
+      rewriteCompletionValueExpr(l)
+        .map(FEq(_, r))
+        .orElse(rewriteCompletionValueExpr(r).map(FEq(l, _)))
+    case FLt(l, r) =>
+      rewriteCompletionValueExpr(l)
+        .map(FLt(_, r))
+        .orElse(rewriteCompletionValueExpr(r).map(FLt(l, _)))
+    case FExists(b, k) =>
+      rewriteCompletionValueExpr(b).map(FExists(_, k))
+
+  private def rewriteCompletionValueExpr(expr: SymExpr): Option[SymExpr] =
+    expr match
+      case SEProj(SEApp("NormalCompletion", List(inner)), ValueKey) =>
+        Some(reduceExpr(inner))
+      case SEProj(SEApp("Completion", List(inner)), ValueKey)
+          if isKnownCompletionExpr(inner) =>
+        Some(SEProj(reduceExpr(inner), ValueKey))
+      case SETypeOf(inner) =>
+        rewriteCompletionValueExpr(inner).map(SETypeOf(_))
+      case SEProj(base, key) =>
+        rewriteCompletionValueExpr(base)
+          .map(SEProj(_, key))
+          .orElse(rewriteCompletionValueExpr(key).map(SEProj(base, _)))
+      case SEApp(op, args) =>
+        rewriteFirst(args, rewriteCompletionValueExpr).map(SEApp(op, _))
+      case SEList(elems) =>
+        rewriteFirst(elems, rewriteCompletionValueExpr).map(SEList(_))
+      case SERecord(tn, fields) =>
+        rewriteFirstMapValue(fields, rewriteCompletionValueExpr)
+          .map(SERecord(tn, _))
+      case SEMap(entries) =>
+        rewriteFirst(
+          entries,
+          {
+            case (k, v) =>
+              rewriteCompletionValueExpr(k)
+                .map(_ -> v)
+                .orElse(rewriteCompletionValueExpr(v).map(k -> _))
+          },
+        ).map(SEMap(_))
+      case _ => None
+
+  private def rewriteFirst[A](
+    values: List[A],
+    f: A => Option[A],
+  ): Option[List[A]] =
+    values match
+      case Nil => None
+      case head :: tail =>
+        f(head).map(_ :: tail).orElse(rewriteFirst(tail, f).map(head :: _))
+
+  private def rewriteFirstMapValue(
+    fields: Map[String, SymExpr],
+    f: SymExpr => Option[SymExpr],
+  ): Option[Map[String, SymExpr]] =
+    rewriteFirst(
+      fields.toList,
+      {
+        case (k, v) => f(v).map(k -> _)
+      },
+    ).map(_.toMap)
+
+  private def normalCompletionTypeConstraints(
+    value: SymExpr,
+    ty: ValueTy,
+  ): List[Formula] =
+    val valueTy = (ty && NormalT).record("Value").value
+    if (valueTy.isTop) Nil else List(FEq(SETypeOf(value), SEType(valueTy)))
+
+  private val completionReturningOps: Set[String] = Set(
+    "Call",
+    "Construct",
+    "DefineOwnProperty",
+    "Delete",
+    "Get",
+    "GetIterator",
+    "GetIteratorFromMethod",
+    "GetMethod",
+    "GetOwnProperty",
+    "GetPrototypeOf",
+    "GetV",
+    "HasProperty",
+    "InstallErrorCause",
+    "IsArray",
+    "IsExtensible",
+    "IsRegExp",
+    "IteratorComplete",
+    "IteratorNext",
+    "IteratorValue",
+    "OrdinaryCreateFromConstructor",
+    "OwnPropertyKeys",
+    "PreventExtensions",
+    "RequireInternalSlot",
+    "RequireObjectCoercible",
+    "Set",
+    "SetPrototypeOf",
+    "ThisBigIntValue",
+    "ThisBooleanValue",
+    "ThisNumberValue",
+    "ThisStringValue",
+    "ThisSymbolValue",
+    "ToBigInt",
+    "ToIndex",
+    "ToIntegerOrInfinity",
+    "ToLength",
+    "ToNumber",
+    "ToObject",
+    "ToString",
+    "ValidateNonRevokedProxy",
+    "ValidateTypedArray",
+  )
+
+  private def isKnownCompletionExpr(expr: SymExpr): Boolean = expr match
+    case SEApp("Completion" | "NormalCompletion", List(_)) => true
+    case SEApp(op: String, _) => completionReturningOps(op)
+    case _                    => false
+
+  private def iteratorParts(
+    iterRecord: SymExpr,
+  ): Option[(SymExpr, SymExpr, SymExpr)] =
+    reduceExpr(iterRecord) match
+      case SERecord("IteratorRecord", fields) =>
+        for {
+          iterator <- fields.get("Iterator")
+          nextMethod <- fields.get("NextMethod")
+          done <- fields.get("Done")
+        } yield (reduceExpr(iterator), reduceExpr(nextMethod), reduceExpr(done))
+      case _ => None
+
+  private def iteratorNextResult(
+    iterRecord: SymExpr,
+    args: List[SymExpr],
+  ): SymExpr =
+    iteratorParts(iterRecord) match
+      case Some((iterator, nextMethod, _)) =>
+        val callArgs = List(nextMethod, iterator) ++ args.map(reduceExpr)
+        SEApp("Call", callArgs)
+      case None =>
+        SEApp("IteratorNext", reduceExpr(iterRecord) :: args.map(reduceExpr))
+
+  private def iteratorResultValue(result: SymExpr): SymExpr =
+    reduceExpr(result) match
+      case SEApp("IteratorNext", iterRecord :: args) =>
+        SEProj(iteratorNextResult(iterRecord, args), SELit(EStr("Value")))
+      case app @ SEApp("Call", _) => SEProj(app, SELit(EStr("Value")))
+      case other                  => other
 }

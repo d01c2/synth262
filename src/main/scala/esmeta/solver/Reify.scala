@@ -198,6 +198,45 @@ object Reify {
   ): Option[List[(Sym, Fact)]] = term match
     case SESym(sym) =>
       Some(List(sym -> fact))
+    case SEProj(SEApp("Get", List(base, key)), SELit(EStr("Value"))) =>
+      getFact(base, key, fact)
+    case SEProj(SEApp("Get", base :: _ :: key :: _), SELit(EStr("Value"))) =>
+      getFact(base, key, fact)
+    case SEProj(SEApp("GetV", List(base, key)), SELit(EStr("Value"))) =>
+      getFact(base, key, fact)
+    case SEProj(SEApp("GetMethod", List(base, key)), SELit(EStr("Value"))) =>
+      getFact(base, key, fact)
+    case SEProj(
+          SEApp("HasProperty", List(base, key)),
+          SELit(EStr("Value")),
+        ) =>
+      hasPropertyFact(base, key, fact)
+    case SEProj(
+          SEApp("HasProperty", base :: _ :: key :: Nil),
+          SELit(EStr("Value")),
+        ) =>
+      hasPropertyFact(base, key, fact)
+    case SEProj(SEApp("Call", fn :: _), SELit(EStr("Value"))) =>
+      termFact(fn, Fact.Call(fact))
+    case SEProj(SEApp("Construct", ctor :: _), SELit(EStr("Value"))) =>
+      termFact(ctor, Fact.Trap("Construct", fact))
+    case SEProj(
+          SEApp("GetPrototypeOf", base :: _),
+          SELit(EStr("Value")),
+        ) =>
+      fact match
+        case Fact.Value(lit) => termFact(base, Fact.Prototype(lit))
+        case _ => termFact(base, Fact.Trap("GetPrototypeOf", fact))
+    case SEProj(SEApp("IsExtensible", base :: _), SELit(EStr("Value"))) =>
+      fact match
+        case Fact.Value(EBool(value)) =>
+          termFact(base, Fact.Extensible(value))
+        case Fact.NotValue(EBool(value)) =>
+          termFact(base, Fact.Extensible(!value))
+        case _ => termFact(base, Fact.Trap("IsExtensible", fact))
+    case SEProj(SEApp(fname: String, base :: _), SELit(EStr("Value")))
+        if isTrapOnlyMethod(fname) =>
+      termFact(base, Fact.Trap(fname, fact))
     case SEApp("Get", List(base, key)) =>
       getFact(base, key, fact)
     case SEApp("Get", base :: _ :: key :: _) =>
