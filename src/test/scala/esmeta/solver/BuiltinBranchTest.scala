@@ -347,14 +347,6 @@ class BuiltinBranchTest extends ESMetaTest {
 
     check("builtin branches: summary") {
       val total = targets.size
-      println(
-        s"  Builtin functions:  ${builtins.size} (${allBuiltins.size - builtins.size} excluded)",
-      )
-      println(s"  Target branches:    $total")
-      println(
-        f"  Total coverage:     $verified/$total" +
-        f" (${verified * 100.0 / total}%.1f%%)",
-      )
       assert(total > 0)
       pool.shutdown()
     }

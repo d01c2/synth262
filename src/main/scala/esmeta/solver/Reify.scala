@@ -6,11 +6,13 @@ import esmeta.spec.{BuiltinHead, BuiltinPath}
 import esmeta.ty.*
 import esmeta.util.*
 import esmeta.util.BaseUtils.*
-import scala.collection.mutable.{Set => MSet}
 import Formula.*, SymExpr.*
 
 /** reify simplified formulas into JS code for entry parameters */
-case class Reify(formulas: List[Formula], entryParams: List[Sym]) {
+case class Reify(
+  formulas: List[Formula],
+  entryParams: List[Sym],
+) {
   import Reify.*
 
   def witness: Option[Witness] =
@@ -28,527 +30,983 @@ case class Reify(formulas: List[Formula], entryParams: List[Sym]) {
         case Sym.Arg(k) => omitted.contains(k)
         case _          => false
       }
-      val pairs = activeParams.map { param =>
-        val relevants = normalized.filter(_.freeVars.contains(param))
-        buildExpr(param, relevants).map(param -> _)
-      }
-      if (pairs.forall(_.isDefined)) Some(pairs.flatten.toMap)
-      else None
-    }
-
-  private def buildExpr(param: Sym, fs: List[Formula]): Option[String] =
-    val consumed = MSet[Formula]()
-
-    // literal equality
-    val litVal = fs.collectFirst {
-      case f @ FEq(SESym(_), SELit(lit)) => consumed += f; lit
-    }
-
-    // narrow type from type constraints and internal slot existence
-    var ty = ESValueT
-    val avoidedTys = List.newBuilder[ValueTy]
-    val absentFields = List.newBuilder[String]
-    for (f <- fs) f match
-      case f @ FEq(SETypeOf(SESym(_)), SEType(pos)) =>
-        consumed += f; ty = ty && pos
-      case f @ FNot(FEq(SETypeOf(SESym(_)), SEType(neg))) =>
-        consumed += f; avoidedTys += neg
-      case f @ FExists(SESym(_), SELit(EStr(field)))
-          if fieldToRecordTy.contains(field) =>
-        consumed += f; ty = ty && fieldToRecordTy(field)
-      case f @ FNot(FExists(SESym(_), SELit(EStr(field))))
-          if fieldToRecordTy.contains(field) =>
-        consumed += f
-        absentFields += field
-        avoidedTys += fieldToRecordTy(field)
-      case _ => ()
-    for (field <- absentFields.result() if ty <= ObjectT)
-      ty =
-        ValueTy(record = ty.record.update(field, Binding.Absent, refine = true))
-    val narrowedTy = ty
-    val avoidTypes = avoidedTys.result()
-    val hasTyConstraint = narrowedTy != ESValueT || avoidTypes.nonEmpty
-
-    // property constraints applicable when base is object-like or
-    // when formulas imply property access on this param
-    val hasPropertyConstraints = fs.exists {
-      case FEq(SEApp("Get" | "HasProperty", _), _)                 => true
-      case FEq(_, SEApp("Get", _))                                 => true
-      case FEq(SETypeOf(SEApp("Get" | "HasProperty", _)), _)       => true
-      case FNot(FEq(SEApp("Get" | "HasProperty", _), _))           => true
-      case FNot(FEq(SETypeOf(SEApp("Get" | "HasProperty", _)), _)) => true
-      case FLt(_, SEApp("Get", _)) | FLt(SEApp("Get", _), _)       => true
-      case _                                                       => false
-    }
-    val objLiteralBase =
-      defaultFor(narrowedTy, avoidTys = avoidTypes).exists(_.startsWith("{")) ||
-      hasPropertyConstraints
-
-    // property constraints from Get/HasProperty
-    val propsValue =
-      if (objLiteralBase) fs.collect {
-        case f @ FEq(SEApp("Get", List(_, k)), SELit(lit))
-            if propKey(k).isDefined =>
-          consumed += f; (propKey(k).get, lit)
-      }.toMap
-      else Map.empty[String, LiteralExpr]
-    val propsAbrupt =
-      if (objLiteralBase) fs.collect {
-        case f @ FEq(SETypeOf(SEApp("Get", List(_, k))), SEType(ty))
-            if ty <= AbruptT && propKey(k).isDefined =>
-          consumed += f; propKey(k).get
-      }.toSet
-      else Set.empty[String]
-    val propsExist = fs.collect {
-      case f @ FEq(SEApp("HasProperty", List(_, k)), SELit(EBool(exists)))
-          if objLiteralBase && propKey(k).isDefined =>
-        consumed += f; (propKey(k).get, exists)
-      case f @ FExists(SESym(_), SELit(EStr(field)))
-          if !fieldToRecordTy.contains(field) =>
-        consumed += f; (field, true)
-      case f @ FNot(FExists(SESym(_), SELit(EStr(field))))
-          if !fieldToRecordTy.contains(field) =>
-        consumed += f; (field, false)
-    }.toMap
-    val propsTyped =
-      if (objLiteralBase) fs.collect {
-        case f @ FEq(SETypeOf(SEApp("Get", List(_, k))), SEType(ty))
-            if !(ty <= AbruptT) && !(ty <= NormalT) && propKey(k).isDefined =>
-          consumed += f; (propKey(k).get, ty)
-      }.toMap
-      else Map.empty[String, ValueTy]
-    if (objLiteralBase) for (f <- fs) f match
-      case f @ FNot(FEq(SEApp("Get", List(_, k)), SELit(_)))
-          if propKey(k).isDefined =>
-        consumed += f
-      case f @ FNot(FEq(SETypeOf(SEApp("Get", List(_, k))), SEType(_)))
-          if propKey(k).isDefined =>
-        consumed += f
-      case _ => ()
-
-    // object config from IsExtensible/GetPrototypeOf
-    val extensible = fs.collectFirst {
-      case f @ FEq(SEApp("IsExtensible", _), SELit(EBool(false))) =>
-        consumed += f; false
-      case f @ FEq(SEApp("IsExtensible", _), SELit(EBool(true))) =>
-        consumed += f; true
-    }
-    val prototype = fs.collectFirst {
-      case f @ FEq(SEApp("GetPrototypeOf", _), SELit(lit)) =>
-        consumed += f; lit
-    }
-
-    // disequality constraints
-    val excluded = fs.collect {
-      case f @ FNot(FEq(SESym(_), SELit(lit))) => consumed += f; lit
-    }
-
-    // interval bounds from FLt constraints
-    // strict: (lo, hi), inclusive: [lo, hi]
-    var loStrict: Option[BigDecimal] = None
-    var hiStrict: Option[BigDecimal] = None
-    var loIncl: Option[BigDecimal] = None
-    var hiIncl: Option[BigDecimal] = None
-    def numVal(lit: LiteralExpr): Option[BigDecimal] = lit match
-      case EMath(n)                                => Some(n)
-      case ENumber(d) if !d.isNaN && !d.isInfinite => Some(BigDecimal(d))
-      case _                                       => None
-    for (f <- fs) f match
-      case f @ FLt(SESym(_), SELit(lit)) => // x < k
-        numVal(lit).foreach(k => {
-          consumed += f; hiStrict = Some(hiStrict.fold(k)(_ min k))
-        })
-      case f @ FLt(SELit(lit), SESym(_)) => // k < x
-        numVal(lit).foreach(k => {
-          consumed += f; loStrict = Some(loStrict.fold(k)(_ max k))
-        })
-      case f @ FNot(FLt(SESym(_), SELit(lit))) => // x >= k
-        numVal(lit).foreach(k => {
-          consumed += f; loIncl = Some(loIncl.fold(k)(_ max k))
-        })
-      case f @ FNot(FLt(SELit(lit), SESym(_))) => // k >= x
-        numVal(lit).foreach(k => {
-          consumed += f; hiIncl = Some(hiIncl.fold(k)(_ min k))
-        })
-      case _ => ()
-    val hasInterval = loStrict.isDefined || hiStrict.isDefined ||
-      loIncl.isDefined || hiIncl.isDefined
-    val excSet = excluded.flatMap(numVal).toSet
-    val intervalPick: Option[BigDecimal] =
-      if (!hasInterval) None
-      else
-        def valid(v: BigDecimal): Boolean =
-          !excSet.contains(v) &&
-          loStrict.forall(_ < v) && hiStrict.forall(v < _) &&
-          loIncl.forall(_ <= v) && hiIncl.forall(v <= _)
-        // effective bounds for picking
-        val effLo = List(loStrict, loIncl).flatten match
-          case Nil => None
-          case xs  => Some(xs.max)
-        val effHi = List(hiStrict, hiIncl).flatten match
-          case Nil => None
-          case xs  => Some(xs.min)
-        // single-point range
-        val singlePick = for {
-          l <- effLo; h <- effHi; if l <= h
-        } yield (l + h) / 2
-        // try integers in a bounded window
-        val lo = effLo.getOrElse(effHi.getOrElse(BigDecimal(0)) - 100)
-        val hi = effHi.getOrElse(effLo.getOrElse(BigDecimal(0)) + 100)
-        val intLo = lo.setScale(0, BigDecimal.RoundingMode.CEILING)
-        val intHi = hi.setScale(0, BigDecimal.RoundingMode.FLOOR)
-        val intPick = Iterator
-          .iterate(intLo)(_ + 1)
-          .takeWhile(_ <= intHi)
-          .take(200) // safety bound
-          .find(valid)
-        intPick.orElse {
-          singlePick.filter(valid)
-        }
-
-    // consume FLt involving Get — infer property values from bounds
-    val propsFromLt = scala.collection.mutable.Map[String, BigDecimal]()
-    if (objLiteralBase) for (f <- fs if !consumed(f)) f match
-      case f @ FLt(SELit(lit), SEApp("Get", List(_, k)))
-          if propKey(k).isDefined =>
-        val key = propKey(k).get
-        numVal(lit).foreach(lo =>
-          if (!propsValue.contains(key))
-            propsFromLt(key) =
-              propsFromLt.get(key).fold(lo + 1)(_ max (lo + 1)),
-        )
-        consumed += f
-      case f @ FLt(SEApp("Get", List(_, k)), SELit(lit))
-          if propKey(k).isDefined =>
-        val key = propKey(k).get
-        numVal(lit).foreach(hi =>
-          if (!propsValue.contains(key))
-            propsFromLt(key) =
-              propsFromLt.get(key).fold(hi - 1)(_ min (hi - 1)),
-        )
-        consumed += f
-      case f @ FNot(FLt(_, SEApp("Get", List(_, k)))) if propKey(k).isDefined =>
-        consumed += f
-      case f @ FNot(FLt(SEApp("Get", List(_, k)), _)) if propKey(k).isDefined =>
-        consumed += f
-      case _ => ()
-
-    // Normal completion of an internal method is the default path
-    def isDroppableNormalInternal(f: Formula): Boolean = f match
-      case FEq(SETypeOf(SEApp(fname: String, _)), SEType(ty))
-          if isInternalMethod(fname) && ty <= NormalT =>
-        true
-      case _ => false
-    for (f <- fs if !consumed(f))
-      if (isDroppableNormalInternal(f))
-        consumed += f
-
-    val unconsumed = fs.filterNot(consumed)
-
-    val hasProps = propsValue.nonEmpty || propsAbrupt.nonEmpty ||
-      propsTyped.nonEmpty || propsExist.exists(_._2) ||
-      propsFromLt.nonEmpty
-    val hasObjConstraints =
-      hasProps || extensible.isDefined || prototype.isDefined
-
-    // build target properties from consumed constraints (for Proxy target)
-    val targetProps = List.newBuilder[String]
-    for ((key, lit) <- propsValue)
-      litToJs(lit).foreach(js => targetProps += s"${jsPropKey(key)}: $js")
-    for ((key, n) <- propsFromLt)
-      if (!propsValue.contains(key)) {
-        val v = if (n.isValidInt) n.toInt.toString else n.toString
-        targetProps += s"${jsPropKey(key)}: $v"
-      }
-    for ((key, propTy) <- propsTyped)
-      if (!propsValue.contains(key) && !propsFromLt.contains(key))
-        defaultFor(propTy).foreach(js =>
-          targetProps += s"${jsPropKey(key)}: $js",
-        )
-    val consumedTarget = targetProps.result() match
-      case Nil   => None
-      case props => Some(s"{${props.mkString(", ")}}")
-
-    if (litVal.isDefined) litVal.flatMap(litToJs)
-    else if (hasTyConstraint && narrowedTy.isBottom) None
-    else if (unconsumed.nonEmpty)
-      val extraTraps = List.newBuilder[Formula]
-      val p = SESym(param)
-      extensible.foreach(b =>
-        extraTraps += FEq(SEApp("IsExtensible", List(p)), SELit(EBool(b))),
-      )
-      prototype.foreach(lit =>
-        extraTraps += FEq(SEApp("GetPrototypeOf", List(p)), SELit(lit)),
-      )
-      buildProxy(
-        narrowedTy,
-        unconsumed ++ extraTraps.result(),
-        consumedTarget,
-        propsExist.filter(_._2).keySet,
-      )
-    else if (hasObjConstraints)
-      buildObject(
-        narrowedTy,
-        propsValue,
-        propsAbrupt,
-        propsTyped,
-        propsExist,
-        propsFromLt.toMap,
-        extensible,
-        prototype,
-        avoidTypes,
-      )
-    else if (hasInterval) intervalPick.flatMap(n => litToJs(EMath(n)))
-    else if (hasTyConstraint || excluded.nonEmpty)
-      if (narrowedTy <= ObjectT)
-        buildObject(
-          narrowedTy,
-          Map(),
-          Set(),
-          Map(),
-          Map(),
-          Map(),
-          None,
-          None,
-          avoidTypes,
-        )
-      else defaultFor(narrowedTy, excluded.toSet, avoidTypes)
-    else Some("undefined")
-
-  // build plain object from property + config constraints
-  private def buildObject(
-    ty: ValueTy,
-    propsValue: Map[String, LiteralExpr],
-    propsAbrupt: Set[String],
-    propsTyped: Map[String, ValueTy],
-    propsExist: Map[String, Boolean],
-    propsFromLt: Map[String, BigDecimal],
-    extensible: Option[Boolean],
-    prototype: Option[LiteralExpr],
-    avoidTys: List[ValueTy] = List(),
-  ): Option[String] = defaultFor(ty, avoidTys = avoidTys).map { base =>
-    val usedKeys = propsValue.keySet ++ propsAbrupt ++ propsTyped.keySet
-    val entries = List.newBuilder[String]
-    for ((key, lit) <- propsValue)
-      litToJs(lit).foreach(jsLit => entries += s"${jsPropKey(key)}: $jsLit")
-    for (key <- propsAbrupt)
-      entries += s"get ${jsPropKey(key)}() { throw 0; }"
-    for ((key, propTy) <- propsTyped)
-      if (!usedKeys.contains(key) || propsTyped.contains(key))
-        if (!propsValue.contains(key) && !propsAbrupt.contains(key))
-          defaultFor(propTy).foreach(jsVal =>
-            entries += s"${jsPropKey(key)}: $jsVal",
-          )
-    for ((key, n) <- propsFromLt)
-      if (!usedKeys.contains(key))
-        val v = if (n.isValidInt) n.toInt.toString else n.toString
-        entries += s"${jsPropKey(key)}: $v"
-    for ((key, exists) <- propsExist)
-      if (exists && !usedKeys.contains(key) && !propsFromLt.contains(key))
-        entries += s"${jsPropKey(key)}: 0"
-
-    val propList = entries.result()
-    val needsDefineProperty =
-      propList.nonEmpty && !base.startsWith("{") &&
-      (ty <= FunctionT || ty <= ConstructorT || ty <= RecordT("Array"))
-    val objLiteral =
-      if (propList.isEmpty) base
-      else if (needsDefineProperty)
-        val defs = List.newBuilder[String]
-        for ((key, lit) <- propsValue)
-          litToJs(lit).foreach(jsLit =>
-            defs += s"Object.defineProperty(o,${jsKeyLit(key)},{value:$jsLit,writable:true,configurable:true})",
-          )
-        for (key <- propsAbrupt)
-          defs += s"Object.defineProperty(o,${jsKeyLit(key)},{get(){throw 0},configurable:true})"
-        for ((key, propTy) <- propsTyped)
-          if (!propsValue.contains(key) && !propsAbrupt.contains(key))
-            defaultFor(propTy).foreach(jsVal =>
-              defs += s"Object.defineProperty(o,${jsKeyLit(key)},{value:$jsVal,writable:true,configurable:true})",
-            )
-        for ((key, n) <- propsFromLt)
-          if (!usedKeys.contains(key)) {
-            val v = if (n.isValidInt) n.toInt.toString else n.toString
-            defs += s"Object.defineProperty(o,${jsKeyLit(key)},{value:$v,writable:true,configurable:true})"
+      collectFacts(normalized.filterNot(isOmittedArgFormula)).flatMap {
+        factMap =>
+          val pairs = activeParams.map { param =>
+            renderParam(param, factMap).map(param -> _)
           }
-        val defStr = defs.result().mkString(";")
-        if (defStr.isEmpty) base
-        else s"(()=>{var o=$base;$defStr;return o})()"
-      else
-        val baseProps =
-          if (base.startsWith("{") && base.endsWith("}"))
-            val inner = base.drop(1).dropRight(1).trim
-            if (inner.isEmpty) Nil else List(inner)
-          else Nil
-        s"{${(baseProps ++ propList).mkString(", ")}}"
-
-    (extensible, prototype) match
-      case (Some(false), Some(ENull())) =>
-        s"Object.preventExtensions(Object.create(null))"
-      case (Some(false), _)   => s"Object.preventExtensions($objLiteral)"
-      case (_, Some(ENull())) => "Object.create(null)"
-      case _                  => objLiteral
-  }
-
-  // build Proxy from unhandled trap formulas
-  private def buildProxy(
-    ty: ValueTy,
-    trapFormulas: List[Formula],
-    consumedTarget: Option[String] = None,
-    consumedExists: Set[String] = Set(),
-  ): Option[String] =
-    val rawTarget = trapFormulas
-      .collectFirst {
-        case FEq(SETypeOf(SEApp(fname: String, _)), SEType(_)) =>
-          proxyTarget(fname)
-        case FEq(SEApp(fname: String, _), _)       => proxyTarget(fname)
-        case FNot(FEq(SEApp(fname: String, _), _)) => proxyTarget(fname)
-        case FNot(FEq(SETypeOf(SEApp(fname: String, _)), SEType(_))) =>
-          proxyTarget(fname)
+          if (pairs.forall(_.isDefined)) Some(pairs.flatten.toMap)
+          else None
       }
-      .getOrElse("{}")
-    val target = rawTarget
-
-    import scala.collection.mutable.{Map => MMap, Set => MSet, LinkedHashMap}
-    val getKeyed = LinkedHashMap[String, String]()
-    val hasKeyed = LinkedHashMap[String, String]()
-    val keyedFormulas = MSet[Formula]()
-
-    def extractKey(args: List[SymExpr]): Option[String] = args match
-      case List(_, k, _*) => propKey(k)
-      case _              => None
-
-    // phase 1: collect per-key Get/HasProperty constraints
-    for (formula <- trapFormulas) formula match
-      case f @ FEq(SEApp("Get", args), SELit(lit)) =>
-        for (key <- extractKey(args); js <- litToJs(lit))
-          getKeyed(key) = s"return $js;"
-          keyedFormulas += f
-      case f @ FEq(SETypeOf(SEApp("Get", args)), SEType(ty)) if ty <= AbruptT =>
-        extractKey(args).foreach { key =>
-          getKeyed(key) = "throw 0;"
-          keyedFormulas += f
-        }
-      case f @ FEq(SETypeOf(SEApp("Get", args)), SEType(ty))
-          if !(ty <= AbruptT) && !(ty <= NormalT) =>
-        for (key <- extractKey(args); js <- defaultFor(ty))
-          getKeyed(key) = s"return $js;"
-          keyedFormulas += f
-      case f @ FNot(FEq(SEApp("Get", args), SELit(lit))) =>
-        for (key <- extractKey(args); js <- defaultFor(ESValueT, Set(lit)))
-          getKeyed(key) = s"return $js;"
-          keyedFormulas += f
-      case f @ FNot(FEq(SETypeOf(SEApp("Get", args)), SEType(ty)))
-          if !(ty <= AbruptT) && !(ty <= NormalT) =>
-        for (
-          key <- extractKey(args);
-          js <- defaultFor(ESValueT, avoidTys = List(ty))
-        )
-          getKeyed(key) = s"return $js;"
-          keyedFormulas += f
-      case f @ FEq(SEApp("HasProperty", args), SELit(EBool(b))) =>
-        extractKey(args).foreach { key =>
-          hasKeyed(key) = s"return $b;"
-          keyedFormulas += f
-        }
-      case f @ FEq(SETypeOf(SEApp("HasProperty", args)), SEType(ty))
-          if ty <= AbruptT =>
-        extractKey(args).foreach { key =>
-          hasKeyed(key) = "throw 0;"
-          keyedFormulas += f
-        }
-      case _ => ()
-
-    // inject consumed HasProperty data from buildExpr
-    for (key <- consumedExists if !hasKeyed.contains(key))
-      hasKeyed(key) = "return true;"
-
-    // phase 2: process non-keyed formulas as regular traps
-    val traps = List.newBuilder[(String, String)]
-    for (formula <- trapFormulas if !keyedFormulas(formula)) formula match
-      case FEq(SETypeOf(SEApp(fname: String, _)), SEType(ty))
-          if ty <= AbruptT =>
-        proxyTrapName.get(fname).foreach(trap => traps += trap -> "throw 0;")
-      case FEq(SEApp(fname: String, _), SELit(lit)) =>
-        for {
-          jsLit <- litToJs(lit)
-          trap <- proxyTrapName.get(fname)
-        } traps += trap -> s"return $jsLit;"
-      case FNot(FEq(SEApp(fname: String, _), SELit(lit))) =>
-        for {
-          jsVal <- defaultFor(ESValueT, Set(lit))
-          trap <- proxyTrapName.get(fname)
-        } traps += trap -> s"return $jsVal;"
-      case FEq(SETypeOf(SEApp(fname: String, _)), SEType(ty))
-          if !(ty <= AbruptT) && !(ty <= NormalT) =>
-        for {
-          jsVal <- defaultFor(ty)
-          trap <- proxyTrapName.get(fname)
-        } traps += trap -> s"return $jsVal;"
-      case FNot(FEq(SETypeOf(SEApp(fname: String, _)), SEType(ty)))
-          if !(ty <= AbruptT) && !(ty <= NormalT) =>
-        for {
-          jsVal <- defaultFor(ESValueT, avoidTys = List(ty))
-          trap <- proxyTrapName.get(fname)
-        } traps += trap -> s"return $jsVal;"
-      case _ => ()
-
-    // phase 3: merge keyed traps with non-keyed as fallback
-    val phase2Traps = traps.result()
-    val mergedTraps = List.newBuilder[(String, String)]
-
-    // collect non-keyed trap bodies for fallback
-    val nonKeyedGet = phase2Traps.collect { case ("get", b) => b }.lastOption
-    val nonKeyedHas = phase2Traps.collect { case ("has", b) => b }.lastOption
-
-    // add non-get/has traps as-is
-    for ((name, body) <- phase2Traps if name != "get" && name != "has")
-      mergedTraps += name -> body
-
-    // merge get: keyed branches + non-keyed or target fallback
-    if (getKeyed.nonEmpty) {
-      val branches = getKeyed
-        .map { (key, body) => s"if(${jsKeyCompare(key)}){$body}" }
-        .mkString("")
-      val fallback = nonKeyedGet.getOrElse("return t[p];")
-      mergedTraps += "get" -> s"(t,p){$branches$fallback}"
-    } else nonKeyedGet.foreach(b => mergedTraps += "get" -> b)
-
-    // merge has: keyed branches + non-keyed or target fallback
-    if (hasKeyed.nonEmpty) {
-      val branches = hasKeyed
-        .map { (key, body) => s"if(${jsKeyCompare(key)}){$body}" }
-        .mkString("")
-      val fallback = nonKeyedHas.getOrElse("return p in t;")
-      mergedTraps += "has" -> s"(t,p){$branches$fallback}"
-    } else nonKeyedHas.foreach(b => mergedTraps += "has" -> b)
-
-    val trapList = mergedTraps.result()
-    if (trapList.isEmpty) return None
-
-    // use consumed properties as Proxy target, fall back to formula-derived
-    val baseTarget = consumedTarget.getOrElse(target)
-    val effectiveTarget =
-      if (baseTarget == "{}" && ty <= ConstructorT) "function(){}"
-      else if (baseTarget == "{}" && ty <= FunctionT) "() => {}"
-      else baseTarget
-
-    val needsNonExtensible = trapList.exists { (name, body) =>
-      name == "preventExtensions" ||
-      (name == "isExtensible" && body != "return true;")
     }
-    val finalTarget =
-      if (needsNonExtensible) s"Object.preventExtensions($effectiveTarget)"
-      else effectiveTarget
-    val trapStr = trapList
-      .map { (name, body) =>
-        if (body.startsWith("(")) s"$name$body" else s"$name(){$body}"
-      }
-      .mkString(", ")
-    Some(s"new Proxy($finalTarget, {$trapStr})")
+
+  private def isOmittedArgFormula(f: Formula): Boolean = f match
+    case FNot(FExists(SESym(Sym.ArgsList), SELit(EStr(idx)))) =>
+      idx.toIntOption.isDefined
+    case _ => false
 }
 
 object Reify {
+  enum Fact:
+    case Type(ty: ValueTy)
+    case NotType(ty: ValueTy)
+    case Value(lit: LiteralExpr)
+    case NotValue(lit: LiteralExpr)
+    case Lower(lit: LiteralExpr, strict: Boolean)
+    case Upper(lit: LiteralExpr, strict: Boolean)
+    case Prop(key: String, fact: Fact)
+    case Has(key: String, exists: Boolean)
+    case Call(fact: Fact)
+    case Extensible(value: Boolean)
+    case Prototype(lit: LiteralExpr)
+    case Trap(name: String, fact: Fact)
+    case Field(name: String, fact: Fact)
+
+  type FactMap = Map[Sym, Set[Fact]]
+
+  private def collectFacts(formulas: List[Formula]): Option[FactMap] =
+    val entries = formulas.map(factsOf)
+    if (entries.forall(_.isDefined))
+      Some(
+        entries.flatten.flatten
+          .groupMap(_._1)(_._2)
+          .view
+          .mapValues(_.toSet)
+          .toMap,
+      )
+    else None
+
+  private def factsOf(formula: Formula): Option[List[(Sym, Fact)]] =
+    formula match
+      case FEq(SETypeOf(term), SEType(ty)) =>
+        typeFacts(term, ty, positive = true)
+      case FNot(FEq(SETypeOf(term), SEType(ty))) =>
+        typeFacts(term, ty, positive = false)
+      case FEq(term, SELit(lit)) =>
+        valueFacts(term, lit, positive = true)
+      case FNot(FEq(term, SELit(lit))) =>
+        valueFacts(term, lit, positive = false)
+      case FExists(base, SELit(EStr(field))) =>
+        existsFacts(base, field, exists = true)
+      case FNot(FExists(base, SELit(EStr(field)))) =>
+        existsFacts(base, field, exists = false)
+      case FLt(term, SELit(lit)) =>
+        termFact(term, Fact.Upper(lit, strict = true))
+      case FLt(SELit(lit), term) =>
+        termFact(term, Fact.Lower(lit, strict = true))
+      case FNot(FLt(term, SELit(lit))) =>
+        termFact(term, Fact.Lower(lit, strict = false))
+      case FNot(FLt(SELit(lit), term)) =>
+        termFact(term, Fact.Upper(lit, strict = false))
+      case _ => None
+
+  private def valueFacts(
+    term: SymExpr,
+    lit: LiteralExpr,
+    positive: Boolean,
+  ): Option[List[(Sym, Fact)]] =
+    term match
+      case SEApp("HasProperty", List(base, key)) =>
+        lit match
+          case EBool(exists) =>
+            hasPropertyFact(
+              base,
+              key,
+              Fact.Value(EBool(if (positive) exists else !exists)),
+            )
+          case _ => None
+      case SEApp("HasProperty", base :: _ :: key :: Nil) =>
+        lit match
+          case EBool(exists) =>
+            hasPropertyFact(
+              base,
+              key,
+              Fact.Value(EBool(if (positive) exists else !exists)),
+            )
+          case _ => None
+      case SEApp("IsExtensible", base :: _) =>
+        lit match
+          case EBool(value) =>
+            termFact(
+              base,
+              Fact.Extensible(if (positive) value else !value),
+            )
+          case _ => None
+      case SEApp("GetPrototypeOf", base :: _) if positive =>
+        termFact(base, Fact.Prototype(lit))
+      case SEApp(fname: String, base :: _) if isTrapOnlyMethod(fname) =>
+        termFact(
+          base,
+          Fact.Trap(
+            fname,
+            if (positive) Fact.Value(lit) else Fact.NotValue(lit),
+          ),
+        )
+      case _ =>
+        termFact(
+          term,
+          if (positive) Fact.Value(lit) else Fact.NotValue(lit),
+        )
+
+  private def typeFacts(
+    term: SymExpr,
+    ty: ValueTy,
+    positive: Boolean,
+  ): Option[List[(Sym, Fact)]] =
+    val fact = if (positive) Fact.Type(ty) else Fact.NotType(ty)
+    term match
+      case SEApp("HasProperty", List(base, key)) =>
+        if (isDefaultNormal(ty, positive))
+          termFact(base, Fact.Type(ObjectT))
+        else hasPropertyFact(base, key, fact)
+      case SEApp("HasProperty", base :: _ :: key :: Nil) =>
+        if (isDefaultNormal(ty, positive))
+          termFact(base, Fact.Type(ObjectT))
+        else hasPropertyFact(base, key, fact)
+      case SEApp(fname: String, base :: _)
+          if fname == "IsExtensible" || fname == "GetPrototypeOf" =>
+        if (isDefaultNormal(ty, positive))
+          termFact(base, Fact.Type(ObjectT))
+        else termFact(base, Fact.Trap(fname, fact))
+      case SEApp(fname: String, base :: _) if isTrapOnlyMethod(fname) =>
+        if (isDefaultNormal(ty, positive))
+          termFact(base, Fact.Type(ObjectT))
+        else termFact(base, Fact.Trap(fname, fact))
+      case _ => termFact(term, fact)
+
+  private def existsFacts(
+    base: SymExpr,
+    field: String,
+    exists: Boolean,
+  ): Option[List[(Sym, Fact)]] =
+    base match
+      case SESym(_) =>
+        fieldToRecordTy.get(field) match
+          case Some(ty) =>
+            termFact(
+              base,
+              if (exists) Fact.Type(ty) else Fact.NotType(ty),
+            )
+          case None =>
+            termFact(base, Fact.Has(field, exists))
+      case _ =>
+        termFact(base, Fact.Has(field, exists))
+
+  private def termFact(
+    term: SymExpr,
+    fact: Fact,
+  ): Option[List[(Sym, Fact)]] = term match
+    case SESym(sym) =>
+      Some(List(sym -> fact))
+    case SEApp("Get", List(base, key)) =>
+      getFact(base, key, fact)
+    case SEApp("Get", base :: _ :: key :: _) =>
+      getFact(base, key, fact)
+    case SEApp("Call", fn :: _) =>
+      termFact(fn, Fact.Call(fact))
+    case SEApp("Construct", ctor :: _) =>
+      termFact(ctor, Fact.Trap("Construct", fact))
+    case SEApp(fname: String, base :: _) if isTrapOnlyMethod(fname) =>
+      termFact(base, Fact.Trap(fname, fact))
+    case SEProj(base, SELit(EStr(field))) =>
+      termFact(base, Fact.Field(field, fact))
+    case _ => None
+
+  private def getFact(
+    base: SymExpr,
+    key: SymExpr,
+    fact: Fact,
+  ): Option[List[(Sym, Fact)]] =
+    propKey(key) match
+      case Some(k) => termFact(base, Fact.Prop(k, fact))
+      case None    => termFact(base, Fact.Trap("Get", fact))
+
+  private def hasPropertyFact(
+    base: SymExpr,
+    key: SymExpr,
+    fact: Fact,
+  ): Option[List[(Sym, Fact)]] =
+    propKey(key) match
+      case Some(k) if fact == Fact.Value(EBool(true)) =>
+        termFact(base, Fact.Has(k, exists = true))
+      case Some(k) =>
+        termFact(
+          base,
+          Fact.Trap("HasProperty", Fact.Prop(k, fact)),
+        )
+      case None =>
+        termFact(base, Fact.Trap("HasProperty", fact))
+
+  private def isTrapOnlyMethod(name: String): Boolean =
+    isInternalMethod(name) &&
+    name != "Get" &&
+    name != "Call" &&
+    name != "Construct" &&
+    name != "HasProperty" &&
+    name != "IsExtensible" &&
+    name != "GetPrototypeOf"
+
+  private def isDefaultNormal(ty: ValueTy, positive: Boolean): Boolean =
+    (positive && ty <= NormalT) || (!positive && ty <= AbruptT)
+
+  private def renderParam(param: Sym, factMap: FactMap): Option[String] =
+    val facts = factMap.getOrElse(param, Set.empty)
+    param match
+      case Sym.NewTarget => renderNewTarget(facts)
+      case _ =>
+        if (facts.isEmpty) Some("undefined")
+        else if (isDirectAbruptCompletion(facts)) Some(abruptConversionObject)
+        else renderFacts(facts)
+
+  private def renderNewTarget(facts: Set[Fact]): Option[String] =
+    if (facts.isEmpty) Some("undefined")
+    else
+      val parts = partitionFacts(facts)
+      val hasInvalidValue = parts.values.exists(lit => !isUndefinedLiteral(lit))
+      if (hasInvalidValue || parts.values.size > 1 || hasNumericBounds(parts))
+        None
+      else
+        val requiresConstructor = newTargetRequiresConstructor(parts)
+        if (!requiresConstructor && newTargetAllowsUndefined(parts))
+          Some("undefined")
+        else renderConstructorTarget(parts)
+
+  private def newTargetAllowsUndefined(parts: FactParts): Boolean =
+    val requiredTy = requiredValueType(parts)
+    parts.values.forall(isUndefinedLiteral) &&
+    !parts.excluded.exists(isUndefinedLiteral) &&
+    !hasObjectShape(parts) &&
+    parts.calls.isEmpty &&
+    parts.traps.isEmpty &&
+    !(requiredTy && UndefT).isBottom &&
+    !parts.avoidedTypes.exists(ty => overlaps(ty, UndefT))
+
+  private def newTargetRequiresConstructor(parts: FactParts): Boolean =
+    parts.excluded.exists(isUndefinedLiteral) ||
+    parts.avoidedTypes.exists(ty => overlaps(ty, UndefT)) ||
+    hasObjectShape(parts) ||
+    parts.calls.nonEmpty ||
+    parts.traps.nonEmpty ||
+    parts.types.exists(ty =>
+      ty <= ObjectT || ty <= FunctionT || ty <= ConstructorT,
+    )
+
+  private def renderConstructorTarget(parts: FactParts): Option[String] =
+    val requiredTy = requiredValueType(parts)
+    val avoidedTys = avoidedValueTypes(parts)
+    if (parts.values.nonEmpty) None
+    else if ((requiredTy && ConstructorT).isBottom) None
+    else if (avoidedTys.exists(ty => overlaps(ty, ConstructorT))) None
+    else
+      for {
+        prepared <- prepareConstructorPrototype(parts)
+        (base, objectParts, extraTraps) = prepared
+        configured <- renderObjectLike(base, objectParts)
+        trapped <- renderTraps(
+          configured,
+          mergeTraps(objectParts.traps, extraTraps),
+        )
+      } yield trapped
+
+  private def prepareConstructorPrototype(
+    parts: FactParts,
+  ): Option[(String, FactParts, Map[String, Set[Fact]])] =
+    val prototypeProps = parts.props.getOrElse("prototype", Set.empty)
+    val prototypeHas = parts.has.get("prototype")
+    if (prototypeHas.exists(_.size > 1)) None
+    else
+      val prototypeGet =
+        if (prototypeProps.nonEmpty)
+          renderTrapFacts(prototypeProps)
+        else Some(None)
+      prototypeGet.flatMap { getBody =>
+        val hasFalse = prototypeHas.exists(_.contains(false))
+        val hasTrue = prototypeHas.exists(_.contains(true))
+        val needsBoundTarget = getBody.isDefined || hasFalse
+        renderConstructorFunction(parts.calls).map { rawBase =>
+          val base =
+            if (needsBoundTarget) bindConstructor(rawBase)
+            else rawBase
+          val objectParts = parts.copy(
+            props = parts.props - "prototype",
+            has = parts.has - "prototype",
+          )
+          val getTrap =
+            if (getBody.isDefined)
+              Map("Get" -> prototypeProps.map(Fact.Prop("prototype", _)))
+            else Map.empty[String, Set[Fact]]
+          val hasTrap =
+            if (hasTrue && needsBoundTarget)
+              Map(
+                "HasProperty" ->
+                Set(Fact.Prop("prototype", Fact.Value(EBool(true)))),
+              )
+            else Map.empty[String, Set[Fact]]
+          (base, objectParts, mergeTraps(getTrap, hasTrap))
+        }
+      }
+
+  private def bindConstructor(base: String): String =
+    s"($base).bind(null)"
+
+  private def mergeTraps(
+    left: Map[String, Set[Fact]],
+    right: Map[String, Set[Fact]],
+  ): Map[String, Set[Fact]] =
+    (left.keySet ++ right.keySet)
+      .map(key =>
+        key -> (left.getOrElse(key, Set.empty) ++ right
+          .getOrElse(key, Set.empty)),
+      )
+      .toMap
+
+  private def renderConstructorFunction(callFacts: Set[Fact]): Option[String] =
+    if (callFacts.isEmpty) Some("function(){}")
+    else
+      val parts = partitionFacts(callFacts)
+      val throws = parts.types.exists(_ <= AbruptT) ||
+        parts.avoidedTypes.exists(_ <= NormalT)
+      if (throws) Some("function(){throw 0;}")
+      else
+        val returnFacts = dropNormalCompletionFacts(callFacts)
+        if (returnFacts.isEmpty) Some("function(){}")
+        else renderFacts(returnFacts).map(js => s"function(){return $js;}")
+
+  private def isUndefinedLiteral(lit: LiteralExpr): Boolean = lit match
+    case EUndef() => true
+    case _        => false
+
+  private def overlaps(left: ValueTy, right: ValueTy): Boolean =
+    !(left && right).isBottom
+
+  private def isDirectAbruptCompletion(facts: Set[Fact]): Boolean =
+    val parts = partitionFacts(facts)
+    parts.types.exists(_ <= AbruptT) &&
+    parts.values.isEmpty &&
+    parts.excluded.isEmpty &&
+    parts.lowers.isEmpty &&
+    parts.uppers.isEmpty &&
+    parts.props.isEmpty &&
+    parts.has.isEmpty &&
+    parts.calls.isEmpty &&
+    parts.extensible.isEmpty &&
+    parts.prototypes.isEmpty &&
+    parts.traps.isEmpty &&
+    parts.fields.isEmpty
+
+  private val abruptConversionObject: String =
+    "{[Symbol.toPrimitive](){throw 0}}"
+
+  private case class FactParts(
+    values: Set[LiteralExpr],
+    excluded: Set[LiteralExpr],
+    lowers: Set[(LiteralExpr, Boolean)],
+    uppers: Set[(LiteralExpr, Boolean)],
+    types: Set[ValueTy],
+    avoidedTypes: List[ValueTy],
+    props: Map[String, Set[Fact]],
+    has: Map[String, Set[Boolean]],
+    calls: Set[Fact],
+    extensible: Set[Boolean],
+    prototypes: Set[LiteralExpr],
+    traps: Map[String, Set[Fact]],
+    fields: Map[String, Set[Fact]],
+  )
+
+  private case class PropertyRender(entry: String, define: String)
+
+  private def partitionFacts(facts: Set[Fact]): FactParts =
+    FactParts(
+      values = facts.collect { case Fact.Value(lit) => lit },
+      excluded = facts.collect { case Fact.NotValue(lit) => lit },
+      lowers = facts.collect { case Fact.Lower(lit, strict) => lit -> strict },
+      uppers = facts.collect { case Fact.Upper(lit, strict) => lit -> strict },
+      types = facts.collect { case Fact.Type(ty) => ty },
+      avoidedTypes = facts.collect { case Fact.NotType(ty) => ty }.toList,
+      props = facts
+        .collect { case Fact.Prop(key, fact) => key -> fact }
+        .groupMap(_._1)(_._2)
+        .view
+        .mapValues(_.toSet)
+        .toMap,
+      has = facts
+        .collect { case Fact.Has(key, exists) => key -> exists }
+        .groupMap(_._1)(_._2)
+        .view
+        .mapValues(_.toSet)
+        .toMap,
+      calls = facts.collect { case Fact.Call(fact) => fact },
+      extensible = facts.collect { case Fact.Extensible(value) => value },
+      prototypes = facts.collect { case Fact.Prototype(lit) => lit },
+      traps = facts
+        .collect { case Fact.Trap(name, fact) => name -> fact }
+        .groupMap(_._1)(_._2)
+        .view
+        .mapValues(_.toSet)
+        .toMap,
+      fields = facts
+        .collect { case Fact.Field(name, fact) => name -> fact }
+        .groupMap(_._1)(_._2)
+        .view
+        .mapValues(_.toSet)
+        .toMap,
+    )
+
+  private def renderFacts(facts: Set[Fact]): Option[String] =
+    val parts = partitionFacts(facts)
+    renderTarget(parts).flatMap(renderTraps(_, parts.traps))
+
+  private def renderTarget(parts: FactParts): Option[String] =
+    val structural = hasObjectShape(parts) || parts.calls.nonEmpty
+    parts.values.headOption match
+      case Some(lit) =>
+        if (parts.values.exists(_ != lit) || parts.excluded(lit) || structural)
+          None
+        else litToJs(lit)
+      case None =>
+        val requiredTy = requiredValueType(parts)
+        val avoidedTys = avoidedValueTypes(parts)
+        if (requiredTy.isBottom) None
+        else if (hasNumericBounds(parts))
+          renderNumber(parts, requiredTy, avoidedTys)
+        else if (parts.fields.nonEmpty)
+          renderFieldBackedTarget(parts, requiredTy, avoidedTys)
+            .flatMap(renderObjectLike(_, parts))
+        else if (parts.calls.nonEmpty)
+          renderFunction(parts.calls).flatMap(renderObjectLike(_, parts))
+        else if (requiredTy <= FunctionT || requiredTy <= ConstructorT)
+          defaultFor(requiredTy, parts.excluded, avoidedTys)
+            .flatMap(renderObjectLike(_, parts))
+        else if (hasObjectShape(parts))
+          val objectTy =
+            if ((requiredTy && ObjectT).isBottom) return None
+            else requiredTy && ObjectT
+          defaultFor(objectTy, parts.excluded, avoidedTys)
+            .flatMap(renderObjectLike(_, parts))
+        else defaultFor(requiredTy, parts.excluded, avoidedTys)
+
+  private def renderFunction(callFacts: Set[Fact]): Option[String] =
+    val parts = partitionFacts(callFacts)
+    val throws = parts.types.exists(_ <= AbruptT) ||
+      parts.avoidedTypes.exists(_ <= NormalT)
+    if (throws) Some("() => { throw 0; }")
+    else
+      val returnFacts = dropNormalCompletionFacts(callFacts)
+      if (returnFacts.isEmpty) Some("() => {}")
+      else renderFacts(returnFacts).map(js => s"() => { return $js; }")
+
+  private def dropNormalCompletionFacts(facts: Set[Fact]): Set[Fact] =
+    facts.filter {
+      case Fact.Type(ty) if ty <= NormalT    => false
+      case Fact.NotType(ty) if ty <= AbruptT => false
+      case _                                 => true
+    }
+
+  private def hasObjectShape(parts: FactParts): Boolean =
+    parts.props.nonEmpty ||
+    parts.has.exists(_._2.contains(true)) ||
+    parts.extensible.nonEmpty ||
+    parts.prototypes.nonEmpty ||
+    parts.fields.nonEmpty
+
+  private def requiredValueType(parts: FactParts): ValueTy =
+    parts.types.filterNot(_ <= CompT).foldLeft(ESValueT)(_ && _)
+
+  private def avoidedValueTypes(parts: FactParts): List[ValueTy] =
+    parts.avoidedTypes.filterNot(_ <= CompT)
+
+  private def renderObjectLike(
+    base: String,
+    parts: FactParts,
+  ): Option[String] =
+    for {
+      props <- renderProperties(parts)
+      configured <- applyObjectConfig(
+        mergeProperties(base, props),
+        props,
+        parts,
+      )
+    } yield configured
+
+  private def renderProperties(parts: FactParts): Option[List[PropertyRender]] =
+    val rendered = List.newBuilder[PropertyRender]
+    val renderedKeys = scala.collection.mutable.Set[String]()
+    var failed = false
+
+    for ((key, facts) <- parts.props.toList.sortBy(_._1) if !failed) {
+      val existsSet = parts.has.getOrElse(key, Set())
+      if (existsSet.contains(false)) failed = true
+      renderProperty(key, facts) match
+        case None => failed = true
+        case Some(Some(prop)) =>
+          rendered += prop
+          renderedKeys += key
+        case Some(None) => ()
+    }
+
+    for ((key, existsSet) <- parts.has.toList.sortBy(_._1) if !failed)
+      if (existsSet.size > 1) failed = true
+      else if (existsSet.contains(true) && !renderedKeys(key))
+        rendered += valueProperty(key, "0")
+
+    if (failed) None else Some(rendered.result())
+
+  private def renderProperty(
+    key: String,
+    facts: Set[Fact],
+  ): Option[Option[PropertyRender]] =
+    val parts = partitionFacts(facts)
+    val throws = parts.types.exists(_ <= AbruptT) ||
+      parts.avoidedTypes.exists(_ <= NormalT)
+    if (parts.calls.nonEmpty)
+      renderFunction(parts.calls).map(js => Some(valueProperty(key, js)))
+    else
+      parts.values.headOption match
+        case Some(lit) =>
+          if (parts.values.exists(_ != lit) || parts.excluded(lit)) None
+          else litToJs(lit).map(js => Some(valueProperty(key, js)))
+        case None if throws =>
+          Some(Some(throwingGetter(key)))
+        case None if hasNumericBounds(parts) =>
+          renderNumber(
+            parts,
+            requiredValueType(parts),
+            avoidedValueTypes(parts),
+          )
+            .map(js => Some(valueProperty(key, js)))
+        case None if isOnlyNormalCompletion(parts) =>
+          Some(None)
+        case None if key == "length" =>
+          renderArrayLikeLength(parts).map(js => Some(valueProperty(key, js)))
+        case None =>
+          val requiredTy = requiredValueType(parts)
+          val avoidedTys = avoidedValueTypes(parts)
+          if (requiredTy.isBottom) None
+          else if (hasObjectShape(parts))
+            renderTarget(parts).map(js => Some(valueProperty(key, js)))
+          else
+            defaultFor(requiredTy, parts.excluded, avoidedTys)
+              .map(js => Some(valueProperty(key, js)))
+
+  private def isOnlyNormalCompletion(parts: FactParts): Boolean =
+    parts.values.isEmpty &&
+    parts.excluded.isEmpty &&
+    parts.lowers.isEmpty &&
+    parts.uppers.isEmpty &&
+    parts.props.isEmpty &&
+    parts.has.isEmpty &&
+    parts.calls.isEmpty &&
+    parts.extensible.isEmpty &&
+    parts.prototypes.isEmpty &&
+    parts.traps.isEmpty &&
+    parts.fields.isEmpty &&
+    parts.types.nonEmpty &&
+    parts.types.forall(_ <= NormalT) &&
+    parts.avoidedTypes.isEmpty
+
+  private def valueProperty(key: String, js: String): PropertyRender =
+    PropertyRender(
+      s"${jsPropKey(key)}: $js",
+      s"Object.defineProperty(o,${jsKeyLit(key)},{value:$js,writable:true,configurable:true})",
+    )
+
+  private def throwingGetter(key: String): PropertyRender =
+    PropertyRender(
+      s"get ${jsPropKey(key)}() { throw 0; }",
+      s"Object.defineProperty(o,${jsKeyLit(key)},{get(){throw 0},configurable:true})",
+    )
+
+  private def renderArrayLikeLength(parts: FactParts): Option[String] =
+    val requiredTy = requiredValueType(parts)
+    val avoidedTys = avoidedValueTypes(parts)
+    val canUseNumber =
+      (requiredTy == ESValueT || !(requiredTy && NumberT).isBottom) &&
+      avoidedTys.forall(avoidTy => (NumberT && avoidTy).isBottom)
+    if (canUseNumber)
+      List(1, 2, 0)
+        .map(n => EMath(BigDecimal(n)))
+        .find(lit => !parts.excluded(lit))
+        .flatMap(litToJs)
+    else defaultFor(requiredTy, parts.excluded, avoidedTys)
+
+  private def mergeProperties(
+    base: String,
+    props: List[PropertyRender],
+  ): String =
+    if (props.isEmpty) base
+    else if (isObjectLiteral(base))
+      val inner = base.drop(1).dropRight(1).trim
+      val baseProps = if (inner.isEmpty) Nil else List(inner)
+      s"{${(baseProps ++ props.map(_.entry)).mkString(", ")}}"
+    else
+      val defs = props.map(_.define).mkString(";")
+      s"(()=>{var o=$base;$defs;return o})()"
+
+  private def applyObjectConfig(
+    js: String,
+    props: List[PropertyRender],
+    parts: FactParts,
+  ): Option[String] =
+    val extensible =
+      if (parts.extensible.size > 1) return None
+      else parts.extensible.headOption
+    val prototype =
+      if (parts.prototypes.size > 1) return None
+      else parts.prototypes.headOption
+
+    val withPrototype = prototype match
+      case Some(ENull()) if props.isEmpty && js == "{}" =>
+        "Object.create(null)"
+      case Some(ENull()) =>
+        s"(()=>{var o=$js;Object.setPrototypeOf(o,null);return o})()"
+      case Some(_) => return None
+      case None    => js
+
+    extensible match
+      case Some(false) => Some(s"Object.preventExtensions($withPrototype)")
+      case _           => Some(withPrototype)
+
+  private def isObjectLiteral(js: String): Boolean =
+    js.startsWith("{") && js.endsWith("}")
+
+  private def renderTraps(
+    target: String,
+    traps: Map[String, Set[Fact]],
+  ): Option[String] =
+    if (traps.isEmpty) Some(target)
+    else {
+      val direct = List.newBuilder[(String, String)]
+      val getKeyed = scala.collection.mutable.LinkedHashMap[String, String]()
+      val hasKeyed = scala.collection.mutable.LinkedHashMap[String, String]()
+      var targetHint = target
+      var failed = false
+
+      for ((name, facts) <- traps.toList.sortBy(_._1) if !failed) {
+        proxyTrapName.get(name) match
+          case None => failed = true
+          case Some(trapName) =>
+            if (targetHint == "{}") targetHint = proxyTarget(name)
+            val directFacts = List.newBuilder[Fact]
+            val keyedFacts = scala.collection.mutable
+              .LinkedHashMap[String, Set[Fact]]()
+            for (fact <- facts)
+              fact match
+                case Fact.Prop(key, inner)
+                    if name == "Get" || name == "HasProperty" =>
+                  keyedFacts(key) = keyedFacts.getOrElse(key, Set()) + inner
+                case _ =>
+                  directFacts += fact
+
+            for ((key, innerFacts) <- keyedFacts if !failed)
+              renderKeyedTrapFacts(name, innerFacts) match
+                case None => failed = true
+                case Some(Some(body)) =>
+                  if (name == "Get") getKeyed(key) = body
+                  else hasKeyed(key) = body
+                case Some(None) => ()
+
+            val directSet = directFacts.result().toSet
+            if (directSet.nonEmpty)
+              renderInternalMethodTrapFacts(name, directSet) match
+                case None             => failed = true
+                case Some(Some(body)) => direct += trapName -> body
+                case Some(None)       => ()
+      }
+
+      if (failed) None
+      else {
+        val directTraps = direct.result()
+        val nonKeyedGet = directTraps.collect {
+          case ("get", b) => b
+        }.lastOption
+        val nonKeyedHas = directTraps.collect {
+          case ("has", b) => b
+        }.lastOption
+        val merged = List.newBuilder[(String, String)]
+
+        for ((name, body) <- directTraps if name != "get" && name != "has")
+          merged += name -> body
+
+        if (getKeyed.nonEmpty) {
+          val branches = getKeyed
+            .map { (key, body) => s"if(${jsKeyCompare(key)}){$body}" }
+            .mkString("")
+          val fallback = nonKeyedGet.getOrElse("return t[p];")
+          merged += "get" -> s"(t,p){$branches$fallback}"
+        } else nonKeyedGet.foreach(body => merged += "get" -> body)
+
+        if (hasKeyed.nonEmpty) {
+          val branches = hasKeyed
+            .map { (key, body) => s"if(${jsKeyCompare(key)}){$body}" }
+            .mkString("")
+          val fallback = nonKeyedHas.getOrElse("return p in t;")
+          merged += "has" -> s"(t,p){$branches$fallback}"
+        } else nonKeyedHas.foreach(body => merged += "has" -> body)
+
+        val trapList = merged.result()
+        if (trapList.isEmpty) Some(target)
+        else {
+          val needsNonExtensible = requiresNonExtensibleProxyTarget(traps)
+          val finalTarget =
+            if (needsNonExtensible)
+              s"Object.preventExtensions($targetHint)"
+            else targetHint
+          val trapStr = trapList
+            .map { (name, body) =>
+              if (body.startsWith("(")) s"$name$body" else s"$name(){$body}"
+            }
+            .mkString(", ")
+          Some(s"new Proxy($finalTarget, {$trapStr})")
+        }
+      }
+    }
+
+  private def renderKeyedTrapFacts(
+    name: String,
+    facts: Set[Fact],
+  ): Option[Option[String]] =
+    if (name == "HasProperty") renderBooleanTrapFacts(facts)
+    else renderTrapFacts(facts)
+
+  private def renderTrapFacts(facts: Set[Fact]): Option[Option[String]] =
+    val parts = partitionFacts(facts)
+    val throws = parts.types.exists(_ <= AbruptT) ||
+      parts.avoidedTypes.exists(_ <= NormalT)
+    if (throws) Some(Some("throw 0;"))
+    else
+      val returnFacts = facts.filter {
+        case Fact.Type(ty) if ty <= NormalT    => false
+        case Fact.NotType(ty) if ty <= AbruptT => false
+        case _                                 => true
+      }
+      if (returnFacts.isEmpty) Some(None)
+      else renderFacts(returnFacts).map(js => Some(s"return $js;"))
+
+  private def renderInternalMethodTrapFacts(
+    name: String,
+    facts: Set[Fact],
+  ): Option[Option[String]] =
+    if (name == "GetOwnProperty") renderGetOwnPropertyTrapFacts(facts)
+    else if (booleanInternalMethods(name)) renderBooleanTrapFacts(facts)
+    else renderTrapFacts(facts)
+
+  private def renderBooleanTrapFacts(
+    facts: Set[Fact],
+  ): Option[Option[String]] =
+    val parts = partitionFacts(facts)
+    val throws = parts.types.exists(_ <= AbruptT) ||
+      parts.avoidedTypes.exists(_ <= NormalT)
+    if (throws) Some(Some("throw 0;"))
+    else if (parts.values(EBool(true)) && parts.values(EBool(false))) None
+    else if (parts.values(EBool(true)) || parts.excluded(EBool(false)))
+      Some(Some("return true;"))
+    else if (parts.values(EBool(false)) || parts.excluded(EBool(true)))
+      Some(Some("return false;"))
+    else renderTrapFacts(facts)
+
+  private def requiresNonExtensibleProxyTarget(
+    traps: Map[String, Set[Fact]],
+  ): Boolean =
+    traps.exists {
+      case ("PreventExtensions", facts) =>
+        booleanFactsAllow(facts, value = true)
+      case ("IsExtensible", facts) => booleanFactsAllow(facts, value = false)
+      case _                       => false
+    }
+
+  private def booleanFactsAllow(facts: Set[Fact], value: Boolean): Boolean =
+    val parts = partitionFacts(facts)
+    parts.values(EBool(value)) || parts.excluded(EBool(!value))
+
+  private def renderGetOwnPropertyTrapFacts(
+    facts: Set[Fact],
+  ): Option[Option[String]] =
+    val parts = partitionFacts(facts)
+    val throws = parts.types.exists(_ <= AbruptT) ||
+      parts.avoidedTypes.exists(_ <= NormalT)
+    if (throws) Some(Some("throw 0;"))
+    else if (parts.values.nonEmpty || parts.props.nonEmpty)
+      renderTrapFacts(facts)
+    else if (parts.has.nonEmpty)
+      renderPropertyDescriptor(parts).map(js => Some(s"return $js;"))
+    else renderTrapFacts(facts)
+
+  private def renderPropertyDescriptor(parts: FactParts): Option[String] =
+    def has(field: String): Option[Boolean] =
+      parts.has.get(field) match
+        case Some(values) if values.size > 1 => None
+        case Some(values)                    => Some(values.contains(true))
+        case None                            => Some(false)
+
+    for {
+      hasValue <- has("Value")
+      hasWritable <- has("Writable")
+      hasGet <- has("Get")
+      hasSet <- has("Set")
+      hasEnumerable <- has("Enumerable")
+      _ <- has("Configurable")
+    } yield {
+      val data = hasValue || hasWritable
+      val accessor = hasGet || hasSet
+      val entries = List.newBuilder[String]
+      if (data || !accessor) {
+        if (hasValue) entries += "value: 0"
+        if (hasWritable) entries += "writable: true"
+      } else {
+        if (hasGet) entries += "get: function(){}"
+        if (hasSet) entries += "set: function(v){}"
+      }
+      if (hasEnumerable) entries += "enumerable: true"
+      val rendered = entries.result()
+      val finalEntries = rendered :+ "configurable: true"
+      s"{${finalEntries.mkString(", ")}}"
+    }
+
+  private case class TypedArrayDefault(
+    name: String,
+    contentType: String,
+    js: String,
+  ) {
+    val ty: ValueTy = RecordT(name)
+  }
+
+  private val typedArrayDefaults: List[TypedArrayDefault] = List(
+    TypedArrayDefault("Int8Array", "number", "new Int8Array()"),
+    TypedArrayDefault("Uint8Array", "number", "new Uint8Array()"),
+    TypedArrayDefault("Uint8ClampedArray", "number", "new Uint8ClampedArray()"),
+    TypedArrayDefault("Int16Array", "number", "new Int16Array()"),
+    TypedArrayDefault("Uint16Array", "number", "new Uint16Array()"),
+    TypedArrayDefault("Int32Array", "number", "new Int32Array()"),
+    TypedArrayDefault("Uint32Array", "number", "new Uint32Array()"),
+    TypedArrayDefault("BigInt64Array", "bigint", "new BigInt64Array()"),
+    TypedArrayDefault("BigUint64Array", "bigint", "new BigUint64Array()"),
+    TypedArrayDefault("Float32Array", "number", "new Float32Array()"),
+    TypedArrayDefault("Float64Array", "number", "new Float64Array()"),
+  )
+
+  private def renderFieldBackedTarget(
+    parts: FactParts,
+    requiredTy: ValueTy,
+    avoidedTys: List[ValueTy],
+  ): Option[String] =
+    typedArrayDefaults
+      .find(candidate =>
+        isTypedArrayCandidateAllowed(candidate, parts, requiredTy, avoidedTys),
+      )
+      .map(_.js)
+
+  private def isTypedArrayCandidateAllowed(
+    candidate: TypedArrayDefault,
+    parts: FactParts,
+    requiredTy: ValueTy,
+    avoidedTys: List[ValueTy],
+  ): Boolean =
+    val candidateTy = candidate.ty
+    val typedArrayRelevant =
+      !(requiredTy && TypedArrayT).isBottom ||
+      parts.fields.contains("TypedArrayName") ||
+      parts.fields.contains("ContentType")
+    typedArrayRelevant &&
+    !(requiredTy && candidateTy).isBottom &&
+    avoidedTys.forall(avoidTy => (candidateTy && avoidTy).isBottom) &&
+    parts.fields.forall {
+      case ("TypedArrayName", facts) =>
+        literalFactsAllow(facts, EStr(candidate.name))
+      case ("ContentType", facts) =>
+        literalFactsAllow(facts, EEnum(candidate.contentType))
+      case _ => false
+    }
+
+  private def literalFactsAllow(facts: Set[Fact], lit: LiteralExpr): Boolean =
+    val parts = partitionFacts(facts)
+    parts.values.forall(_ == lit) &&
+    !parts.excluded(lit) &&
+    parts.lowers.isEmpty &&
+    parts.uppers.isEmpty &&
+    parts.props.isEmpty &&
+    parts.has.isEmpty &&
+    parts.calls.isEmpty &&
+    parts.extensible.isEmpty &&
+    parts.prototypes.isEmpty &&
+    parts.traps.isEmpty &&
+    parts.fields.isEmpty
+
+  private def hasNumericBounds(parts: FactParts): Boolean =
+    parts.lowers.nonEmpty || parts.uppers.nonEmpty
+
+  private def renderNumber(
+    parts: FactParts,
+    requiredTy: ValueTy,
+    avoidedTys: List[ValueTy],
+  ): Option[String] =
+    if ((requiredTy && NumberT).isBottom) None
+    else if (avoidedTys.exists(avoidTy => !(NumberT && avoidTy).isBottom)) None
+    else pickNumber(parts).flatMap(n => litToJs(EMath(n)))
+
+  private def pickNumber(parts: FactParts): Option[BigDecimal] =
+    def parseBounds(
+      bounds: Set[(LiteralExpr, Boolean)],
+    ): Option[Set[(BigDecimal, Boolean)]] =
+      val parsed = bounds.toList.map { (lit, strict) =>
+        numValue(lit).map(_ -> strict)
+      }
+      if (parsed.forall(_.isDefined)) Some(parsed.flatten.toSet) else None
+
+    for {
+      lowers <- parseBounds(parts.lowers)
+      uppers <- parseBounds(parts.uppers)
+      pick <- pickNumber(lowers, uppers, parts.excluded.flatMap(numValue))
+    } yield pick
+
+  private def pickNumber(
+    lowers: Set[(BigDecimal, Boolean)],
+    uppers: Set[(BigDecimal, Boolean)],
+    excluded: Set[BigDecimal],
+  ): Option[BigDecimal] =
+    val lower = lowers.toList.sortBy(_._1).lastOption
+    val upper = uppers.toList.sortBy(_._1).headOption
+
+    def valid(v: BigDecimal): Boolean =
+      !excluded(v) &&
+      lowers.forall((n, strict) => if (strict) n < v else n <= v) &&
+      uppers.forall((n, strict) => if (strict) v < n else v <= n)
+
+    val lo = lower
+      .map(_._1)
+      .getOrElse(upper.map(_._1).getOrElse(BigDecimal(0)) - 100)
+    val hi = upper
+      .map(_._1)
+      .getOrElse(lower.map(_._1).getOrElse(BigDecimal(0)) + 100)
+    val intLo = lo.setScale(0, BigDecimal.RoundingMode.CEILING)
+    val intHi = hi.setScale(0, BigDecimal.RoundingMode.FLOOR)
+    val nearBounds =
+      List(
+        lower.map((n, strict) => if (strict) n + 1 else n),
+        upper.map((n, strict) => if (strict) n - 1 else n),
+        Some(BigDecimal(0)),
+        Some(BigDecimal(1)),
+        Some(BigDecimal(-1)),
+      ).flatten.distinct
+
+    nearBounds
+      .find(valid)
+      .orElse {
+        Iterator
+          .iterate(intLo)(_ + 1)
+          .takeWhile(_ <= intHi)
+          .take(200)
+          .find(valid)
+      }
+      .orElse {
+        val mid = (lo + hi) / 2
+        Option.when(valid(mid))(mid)
+      }
+
+  private def numValue(lit: LiteralExpr): Option[BigDecimal] = lit match
+    case EMath(n)                                => Some(n)
+    case ENumber(d) if !d.isNaN && !d.isInfinite => Some(BigDecimal(d))
+    case _                                       => None
+
   private val wellKnownSymbols: Set[String] = Set(
     "iterator",
     "asyncIterator",
@@ -566,16 +1024,51 @@ object Reify {
   )
 
   private def jsPropKey(key: String): String =
-    if (wellKnownSymbols.contains(key)) s"[Symbol.$key]"
-    else key
+    JsPropertyKey(key).objectKey
 
   private def jsKeyLit(key: String): String =
-    if (wellKnownSymbols.contains(key)) s"Symbol.$key"
-    else s"'$key'"
+    JsPropertyKey(key).expr
 
   private def jsKeyCompare(key: String): String =
-    if (wellKnownSymbols.contains(key)) s"p===Symbol.$key"
-    else s"""p==="$key""""
+    JsPropertyKey(key).compare("p")
+
+  private case class JsPropertyKey(key: String) {
+    def objectKey: String =
+      if (wellKnownSymbols.contains(key)) s"[Symbol.$key]"
+      else if (isIdentifierName(key)) key
+      else s"[${jsStringLit(key)}]"
+
+    def expr: String =
+      if (wellKnownSymbols.contains(key)) s"Symbol.$key"
+      else jsStringLit(key)
+
+    def compare(prop: String): String = s"$prop===$expr"
+  }
+
+  private case class JsStringProperty(key: String) {
+    def expr: String = jsStringLit(key)
+
+    def memberAccess: String =
+      if (isIdentifierName(key)) s".$key"
+      else s"[$expr]"
+  }
+
+  private def isIdentifierName(s: String): Boolean =
+    s.nonEmpty &&
+    (s.head == '_' || s.head == '$' || s.head.isLetter) &&
+    s.tail.forall(c => c == '_' || c == '$' || c.isLetterOrDigit)
+
+  private def jsStringLit(s: String): String =
+    val escaped = s.flatMap {
+      case '\\'                => "\\\\"
+      case '"'                 => "\\\""
+      case '\n'                => "\\n"
+      case '\r'                => "\\r"
+      case '\t'                => "\\t"
+      case c if c.toInt < 0x20 => f"\\u${c.toInt}%04x"
+      case c                   => c.toString
+    }
+    s"\"$escaped\""
 
   private val proxyTrapName: Map[String, String] = Map(
     "GetPrototypeOf" -> "getPrototypeOf",
@@ -593,6 +1086,16 @@ object Reify {
     "Construct" -> "construct",
   )
 
+  private val booleanInternalMethods: Set[String] = Set(
+    "SetPrototypeOf",
+    "IsExtensible",
+    "PreventExtensions",
+    "DefineOwnProperty",
+    "HasProperty",
+    "Set",
+    "Delete",
+  )
+
   val internalMethods: Set[String] = proxyTrapName.keySet
 
   def isInternalMethod(fname: String): Boolean =
@@ -605,14 +1108,7 @@ object Reify {
 
   private def litToJs(lit: LiteralExpr): Option[String] = lit match
     case EBool(b) => Some(b.toString)
-    case EStr(s) =>
-      val escaped = s
-        .replace("\\", "\\\\")
-        .replace("\"", "\\\"")
-        .replace("\n", "\\n")
-        .replace("\r", "\\r")
-        .replace("\t", "\\t")
-      Some(s"\"$escaped\"")
+    case EStr(s)  => Some(jsStringLit(s))
     case EMath(n) =>
       Some(if (n.isWhole) n.toBigInt.toString else n.toString)
     case ENumber(d) =>
@@ -629,46 +1125,65 @@ object Reify {
     case EUndef()       => Some("undefined")
     case _: EEnum       => None
 
-  // specific record types (language-type only)
-  private val specificDefaults: List[(ValueTy, String)] = List(
-    RecordT("TypedArray") -> "new Int8Array()",
-    RecordT("ArrayIteratorInstance") -> "[][Symbol.iterator]()",
-    RecordT("RegExp") -> "{[Symbol.match]: true}",
-    RecordT("BuiltinFunctionObject") -> "Array.isArray",
-    RecordT("BooleanObject") -> "Object(true)",
-    RecordT("NumberObject") -> "Object(0)",
-    RecordT("BigIntObject") -> "Object(0n)",
-    RecordT("StringExoticObject") -> "Object('')",
-    RecordT("Map") -> "new Map()",
-    RecordT("Set") -> "new Set()",
-    RecordT("WeakMap") -> "new WeakMap()",
-    RecordT("WeakSet") -> "new WeakSet()",
-    RecordT("ArrayBuffer") -> "new ArrayBuffer(0)",
-    RecordT("DataView") -> "new DataView(new ArrayBuffer(0))",
-    RecordT("Date") -> "new Date()",
-    RecordT("Promise") -> "new Promise(() => {})",
-    RecordT("ErrorObject") -> "new Error()",
-    RecordT("Generator") -> "(function*(){})()",
-    RecordT("AsyncGenerator") -> "(async function*(){})()",
-    RecordT("WeakRef") -> "new WeakRef({})",
-    RecordT("FinalizationRegistry") -> "new FinalizationRegistry(() => {})",
-    RecordT("ProxyExoticObject") -> "new Proxy({}, {})",
-    RecordT("BoundFunctionExoticObject") -> "(function(){}).bind()",
-    RecordT("Array") -> "[]",
+  private enum DefaultWitnessKind:
+    case SpecificRecord, AbstractValue
+
+  private case class DefaultWitness(
+    ty: ValueTy,
+    js: String,
+    kind: DefaultWitnessKind,
+  )
+
+  private object DefaultWitness {
+    def record(name: String, js: String): DefaultWitness =
+      DefaultWitness(RecordT(name), js, DefaultWitnessKind.SpecificRecord)
+
+    def abstractValue(ty: ValueTy, js: String): DefaultWitness =
+      DefaultWitness(ty, js, DefaultWitnessKind.AbstractValue)
+  }
+
+  // specific record types: each candidate must be a concrete JS value with the
+  // corresponding ECMAScript internal-slot shape.
+  private val specificDefaults: List[DefaultWitness] = List(
+    DefaultWitness.record("TypedArray", "new Int8Array()"),
+    DefaultWitness.record("ArrayIteratorInstance", "[][Symbol.iterator]()"),
+    DefaultWitness.record("RegExp", "/./"),
+    DefaultWitness.record("BuiltinFunctionObject", "Array.isArray"),
+    DefaultWitness.record("BooleanObject", "Object(true)"),
+    DefaultWitness.record("NumberObject", "Object(0)"),
+    DefaultWitness.record("BigIntObject", "Object(0n)"),
+    DefaultWitness.record("StringExoticObject", "Object('')"),
+    DefaultWitness.record("Map", "new Map()"),
+    DefaultWitness.record("Set", "new Set()"),
+    DefaultWitness.record("WeakMap", "new WeakMap()"),
+    DefaultWitness.record("WeakSet", "new WeakSet()"),
+    DefaultWitness.record("ArrayBuffer", "new ArrayBuffer(0)"),
+    DefaultWitness.record("DataView", "new DataView(new ArrayBuffer(0))"),
+    DefaultWitness.record("Date", "new Date()"),
+    DefaultWitness.record("Promise", "new Promise(() => {})"),
+    DefaultWitness.record("ErrorObject", "new Error()"),
+    DefaultWitness.record("Generator", "(function*(){})()"),
+    DefaultWitness.record("AsyncGenerator", "(async function*(){})()"),
+    DefaultWitness.record("WeakRef", "new WeakRef({})"),
+    DefaultWitness
+      .record("FinalizationRegistry", "new FinalizationRegistry(() => {})"),
+    DefaultWitness.record("ProxyExoticObject", "new Proxy({}, {})"),
+    DefaultWitness.record("BoundFunctionExoticObject", "(function(){}).bind()"),
+    DefaultWitness.record("Array", "[]"),
   )
 
   // abstract types (primitives + general object categories)
-  private val abstractDefaults: List[(ValueTy, String)] = List(
-    ConstructorT -> "function(){}",
-    FunctionT -> "() => {}",
-    NumberT -> "0",
-    StrT -> "\"\"",
-    BoolT -> "true",
-    NullT -> "null",
-    UndefT -> "undefined",
-    BigIntT -> "0n",
-    SymbolT -> "Symbol()",
-    ObjectT -> "{}",
+  private val abstractDefaults: List[DefaultWitness] = List(
+    DefaultWitness.abstractValue(ConstructorT, "function(){}"),
+    DefaultWitness.abstractValue(FunctionT, "() => {}"),
+    DefaultWitness.abstractValue(NumberT, "0"),
+    DefaultWitness.abstractValue(StrT, "\"\""),
+    DefaultWitness.abstractValue(BoolT, "true"),
+    DefaultWitness.abstractValue(NullT, "null"),
+    DefaultWitness.abstractValue(UndefT, "undefined"),
+    DefaultWitness.abstractValue(BigIntT, "0n"),
+    DefaultWitness.abstractValue(SymbolT, "Symbol()"),
+    DefaultWitness.abstractValue(ObjectT, "{}"),
   )
 
   // all candidates: specific first (for exact match)
@@ -687,26 +1202,38 @@ object Reify {
     // 1. exact match
     defaults
       .collectFirst {
-        case (ct, js) if (ty <= ct) && (ct <= ty) && allowed(ct, js) => js
+        case candidate
+            if (ty <= candidate.ty) &&
+            (candidate.ty <= ty) &&
+            allowed(candidate.ty, candidate.js) =>
+          candidate.js
       }
       .orElse {
         // 2. specific intersection for narrow object types
         if (ty <= ObjectT && !(ObjectT <= ty))
           specificDefaults.collectFirst {
-            case (ct, js) if !(ty && ct).isBottom && allowed(ct, js) => js
+            case candidate
+                if !(ty && candidate.ty).isBottom &&
+                allowed(candidate.ty, candidate.js) =>
+              candidate.js
           }
         else None
       }
       .orElse {
         // 3. abstract subtype match
         abstractDefaults.collectFirst {
-          case (ct, js) if ty <= ct && allowed(ct, js) => js
+          case candidate
+              if ty <= candidate.ty && allowed(candidate.ty, candidate.js) =>
+            candidate.js
         }
       }
       .orElse {
         // 4. abstract intersection match
         abstractDefaults.collectFirst {
-          case (ct, js) if !(ty && ct).isBottom && allowed(ct, js) => js
+          case candidate
+              if !(ty && candidate.ty).isBottom &&
+              allowed(candidate.ty, candidate.js) =>
+            candidate.js
         }
       }
       .orElse {
@@ -718,7 +1245,7 @@ object Reify {
         else None
       }
 
-  // reverse index: field name -> union of record types that have it
+  // reverse index: field name -> union of record types that always have it
   private lazy val fieldToRecordTy: Map[String, ValueTy] =
     val tyModel = ManualInfo.tyModel
     val pairs = for {
@@ -762,11 +1289,11 @@ object Reify {
       case FEq(l, r)     => fromExpr(l) ++ fromExpr(r)
       case FLt(l, r)     => fromExpr(l) ++ fromExpr(r)
       case FExists(b, _) => fromExpr(b)
-    fs.exists(fromFormula(_).exists(!internalMethods.contains(_)))
+    fs.exists(fromFormula(_).exists(!isKnownApp(_)))
 
   def outerAppNames(f: Formula): Set[String] =
     def fromExpr(t: SymExpr): Set[String] = t match
-      case SEApp(fname: String, _) if !internalMethods(fname) => Set(fname)
+      case SEApp(fname: String, _) if !isKnownApp(fname) => Set(fname)
       case SEApp(_, args)  => args.flatMap(fromExpr).toSet
       case SEProj(base, _) => fromExpr(base)
       case SEList(elems)   => elems.flatMap(fromExpr).toSet
@@ -780,6 +1307,9 @@ object Reify {
       case FEq(l, r)     => fromExpr(l) ++ fromExpr(r)
       case FLt(l, r)     => fromExpr(l) ++ fromExpr(r)
       case FExists(b, _) => fromExpr(b)
+
+  private def isKnownApp(name: String): Boolean =
+    internalMethods.contains(name)
 
   /** JS expression to access a builtin function */
   def funcAccessExpr(f: Func): Option[String] =
@@ -826,14 +1356,15 @@ object Reify {
 
   private def descriptorExpr(base: BuiltinPath): String = base match
     case BuiltinPath.NormalAccess(owner, prop) =>
-      s"Object.getOwnPropertyDescriptor(${pathStr(owner)}, '$prop')"
+      s"Object.getOwnPropertyDescriptor(${pathStr(owner)}, ${JsStringProperty(prop).expr})"
     case BuiltinPath.SymbolAccess(owner, sym) =>
       s"Object.getOwnPropertyDescriptor(${pathStr(owner)}, Symbol.$sym)"
     case _ => "undefined"
 
   private def pathStr(path: BuiltinPath): String = path match
     case BuiltinPath.Base(name) => globalAlias.getOrElse(name, name)
-    case BuiltinPath.NormalAccess(base, name) => s"${pathStr(base)}.$name"
+    case BuiltinPath.NormalAccess(base, name) =>
+      s"${pathStr(base)}${JsStringProperty(name).memberAccess}"
     case BuiltinPath.SymbolAccess(base, sym) => s"${pathStr(base)}[Symbol.$sym]"
     case BuiltinPath.Getter(base)            => pathStr(base)
     case BuiltinPath.Setter(base)            => pathStr(base)
