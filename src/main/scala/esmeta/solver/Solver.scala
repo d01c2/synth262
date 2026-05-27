@@ -23,10 +23,10 @@ object Solver {
       // double negation elimination
       case FNot(FNot(inner)) => normalize(inner)
       // abrupt is not normal, and vice versa
-      case FNot(FEq(SETypeOf(t), SEType(ty))) if ty <= NormalT =>
-        FEq(SETypeOf(t), SEType(AbruptT))
-      case FNot(FEq(SETypeOf(t), SEType(ty))) if ty <= AbruptT =>
-        FEq(SETypeOf(t), SEType(NormalT))
+      case FNot(FEq(SETypeOf(t), SEType(ty))) =>
+        normalize(FNot(FTypeCheck(t, ty)))
+      case FNot(FTypeCheck(t, ty)) if ty <= NormalT => FTypeCheck(t, AbruptT)
+      case FNot(FTypeCheck(t, ty)) if ty <= AbruptT => FTypeCheck(t, NormalT)
       // boolean simplification
       case FNot(FEq(l: SELit, r)) if !r.isInstanceOf[SELit] =>
         normalize(FNot(FEq(r, l)))
@@ -43,6 +43,8 @@ object Solver {
         if (b) FLt(l, r) else FNot(FLt(l, r))
       case FEq(SELit(EBool(b)), SEApp(BOp.Lt, List(l, r))) =>
         if (b) FLt(l, r) else FNot(FLt(l, r))
+      case FEq(SETypeOf(t), SEType(ty)) => FTypeCheck(t, ty)
+      case FEq(SEType(ty), SETypeOf(t)) => FTypeCheck(t, ty)
       // canonicalize equality before AO-specific rewrites
       case FEq(l: SELit, r) if !r.isInstanceOf[SELit] =>
         normalize(FEq(r, l))
@@ -62,11 +64,11 @@ object Solver {
       }.toMap
     val tyBindings: Map[SymExpr, List[ValueTy]] =
       fs.collect {
-        case FEq(SETypeOf(t), SEType(ty)) if !(ty <= CompT) => (t, ty)
+        case FTypeCheck(t, ty) if !(ty <= CompT) => (t, ty)
       }.groupMap(_._1)(_._2)
     val negTyBindings: Map[SymExpr, List[ValueTy]] =
       fs.collect {
-        case FNot(FEq(SETypeOf(t), SEType(ty))) if !(ty <= CompT) => (t, ty)
+        case FNot(FTypeCheck(t, ty)) if !(ty <= CompT) => (t, ty)
       }.groupMap(_._1)(_._2)
     fs.exists {
       // equality contradiction

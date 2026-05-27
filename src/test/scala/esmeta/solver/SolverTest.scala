@@ -45,7 +45,7 @@ object SolverTest {
   lazy val ySym: SymExpr = SESym(y)
 
   def isType(expr: SymExpr, ty: ValueTy): Formula =
-    FEq(SETypeOf(expr), SEType(ty))
+    FTypeCheck(expr, ty)
 
   def isValue(expr: SymExpr, lit: LiteralExpr): Formula =
     FEq(expr, SELit(lit))

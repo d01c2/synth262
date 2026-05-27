@@ -78,9 +78,9 @@ object Reify {
 
   private def factsOf(formula: Formula): Option[List[(Sym, Fact)]] =
     formula match
-      case FEq(SETypeOf(term), SEType(ty)) =>
+      case FTypeCheck(term, ty) =>
         typeFacts(term, ty, positive = true)
-      case FNot(FEq(SETypeOf(term), SEType(ty))) =>
+      case FNot(FTypeCheck(term, ty)) =>
         typeFacts(term, ty, positive = false)
       case FEq(term, SELit(lit)) =>
         valueFacts(term, lit, positive = true)
@@ -1324,10 +1324,11 @@ object Reify {
       case SETypeOf(t) => fromExpr(t)
       case _           => Set()
     def fromFormula(f: Formula): Set[String] = f match
-      case FNot(inner)   => fromFormula(inner)
-      case FEq(l, r)     => fromExpr(l) ++ fromExpr(r)
-      case FLt(l, r)     => fromExpr(l) ++ fromExpr(r)
-      case FExists(b, _) => fromExpr(b)
+      case FNot(inner)      => fromFormula(inner)
+      case FEq(l, r)        => fromExpr(l) ++ fromExpr(r)
+      case FLt(l, r)        => fromExpr(l) ++ fromExpr(r)
+      case FExists(b, _)    => fromExpr(b)
+      case FTypeCheck(e, _) => fromExpr(e)
     fs.exists(fromFormula(_).exists(!isKnownApp(_)))
 
   def outerAppNames(f: Formula): Set[String] =
@@ -1342,10 +1343,11 @@ object Reify {
       case SETypeOf(t) => fromExpr(t)
       case _           => Set()
     f match
-      case FNot(inner)   => outerAppNames(inner)
-      case FEq(l, r)     => fromExpr(l) ++ fromExpr(r)
-      case FLt(l, r)     => fromExpr(l) ++ fromExpr(r)
-      case FExists(b, _) => fromExpr(b)
+      case FNot(inner)      => outerAppNames(inner)
+      case FEq(l, r)        => fromExpr(l) ++ fromExpr(r)
+      case FLt(l, r)        => fromExpr(l) ++ fromExpr(r)
+      case FExists(b, _)    => fromExpr(b)
+      case FTypeCheck(e, _) => fromExpr(e)
 
   private def isKnownApp(name: String): Boolean =
     internalMethods.contains(name)

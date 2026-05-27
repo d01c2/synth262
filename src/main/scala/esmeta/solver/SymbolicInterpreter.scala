@@ -375,7 +375,7 @@ class SymbolicInterpreter(
     expr match
       case EUnary(UOp.Not, inner) => getConstraint(inner, !pos)
       case ETypeCheck(base, ty) =>
-        val f = FEq(SETypeOf(eval(base)), SEType(ty.toValue))
+        val f = FTypeCheck(eval(base), ty.toValue)
         Some(List(if (pos) f else FNot(f)))
       case EBinary(BOp.Eq | BOp.Equal, lhs, rhs) =>
         (lhs, rhs) match

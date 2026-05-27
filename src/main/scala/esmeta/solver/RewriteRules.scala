@@ -14,13 +14,12 @@ object RewriteRules {
 
   private def rewrite(f: Formula): List[Formula] = f match
     // Completion record wrappers
-    case FEq(SETypeOf(SEApp("NormalCompletion", List(x))), SEType(ty))
-        if ty <= CompT =>
+    case FTypeCheck(SEApp("NormalCompletion", List(x)), ty) if ty <= CompT =>
       if (ty <= AbruptT) List(Contradiction)
       else normalCompletionTypeConstraints(x, ty)
-    case FEq(SETypeOf(SEApp("Completion", List(x))), SEType(ty))
+    case FTypeCheck(SEApp("Completion", List(x)), ty)
         if ty <= CompT && isKnownCompletionExpr(x) =>
-      List(FEq(SETypeOf(x), SEType(ty)))
+      List(FTypeCheck(x, ty))
 
     // 7.1 Type Conversion
 
@@ -41,89 +40,78 @@ object RewriteRules {
 
     // https://tc39.es/ecma262/#sec-tonumber
     // NOTE: only handles non-object case; object case not modeled (delegate to ToPrimitive)
-    case FEq(SETypeOf(SEApp("ToNumber", List(x))), SEType(ty)) if ty <= CompT =>
-      val guard = FNot(FEq(SETypeOf(x), SEType(ObjectT)))
-      val isSymbolOrBigInt = FEq(SETypeOf(x), SEType(SymbolT || BigIntT))
+    case FTypeCheck(SEApp("ToNumber", List(x)), ty) if ty <= CompT =>
+      val guard = FNot(FTypeCheck(x, ObjectT))
+      val isSymbolOrBigInt = FTypeCheck(x, SymbolT || BigIntT)
       ty match
         case _ if ty <= NormalT => List(guard, FNot(isSymbolOrBigInt))
         case _ if ty <= AbruptT => List(guard, isSymbolOrBigInt)
         case _                  => List(f)
-    case FEq(
-          SETypeOf(SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value")))),
-          SEType(ty),
-        ) if ty <= NumberT =>
-      List(FEq(SETypeOf(x), SEType(ty)))
-    case FNot(
-          FEq(
-            SETypeOf(SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value")))),
-            SEType(ty),
-          ),
-        ) if ty <= NumberT =>
-      List(
-        FNot(FEq(SETypeOf(x), SEType(ty))),
-        FEq(SETypeOf(x), SEType(NumberT)),
-      )
+    case FTypeCheck(SEProj(SEApp("ToNumber", List(x)), ValueKey), ty)
+        if ty <= NumberT =>
+      List(FTypeCheck(x, ty))
+    case FNot(FTypeCheck(SEProj(SEApp("ToNumber", List(x)), ValueKey), ty))
+        if ty <= NumberT =>
+      List(FNot(FTypeCheck(x, ty)), FTypeCheck(x, NumberT))
 
     // FIXME: After application, return value should be treated as number
     // but in this model, we cannot handle that behavior
     // so we have to rewrite while symbolic interpretation and update environment accordingly
     case FEq(SEApp("ToNumber", List(x)), v) =>
-      List(FEq(x, v), FEq(SETypeOf(x), SEType(NumberT)))
+      List(FEq(x, v), FTypeCheck(x, NumberT))
     case FEq(v, SEApp("ToNumber", List(x))) =>
-      List(FEq(x, v), FEq(SETypeOf(x), SEType(NumberT)))
+      List(FEq(x, v), FTypeCheck(x, NumberT))
     case FEq(SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value"))), v) =>
-      List(FEq(x, v), FEq(SETypeOf(x), SEType(NumberT)))
+      List(FEq(x, v), FTypeCheck(x, NumberT))
     case FEq(v, SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value")))) =>
-      List(FEq(x, v), FEq(SETypeOf(x), SEType(NumberT)))
+      List(FEq(x, v), FTypeCheck(x, NumberT))
     case FLt(SEApp("ToNumber", List(x)), v) =>
-      List(FLt(x, v), FEq(SETypeOf(x), SEType(NumberT)))
+      List(FLt(x, v), FTypeCheck(x, NumberT))
     case FLt(v, SEApp("ToNumber", List(x))) =>
-      List(FLt(v, x), FEq(SETypeOf(x), SEType(NumberT)))
+      List(FLt(v, x), FTypeCheck(x, NumberT))
     case FLt(SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value"))), v) =>
-      List(FLt(x, v), FEq(SETypeOf(x), SEType(NumberT)))
+      List(FLt(x, v), FTypeCheck(x, NumberT))
     case FLt(v, SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value")))) =>
-      List(FLt(v, x), FEq(SETypeOf(x), SEType(NumberT)))
+      List(FLt(v, x), FTypeCheck(x, NumberT))
     case FNot(FEq(SEApp("ToNumber", List(x)), v)) =>
-      List(FNot(FEq(x, v)), FEq(SETypeOf(x), SEType(NumberT)))
+      List(FNot(FEq(x, v)), FTypeCheck(x, NumberT))
     case FNot(FEq(v, SEApp("ToNumber", List(x)))) =>
-      List(FNot(FEq(x, v)), FEq(SETypeOf(x), SEType(NumberT)))
+      List(FNot(FEq(x, v)), FTypeCheck(x, NumberT))
     case FNot(
           FEq(SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value"))), v),
         ) =>
-      List(FNot(FEq(x, v)), FEq(SETypeOf(x), SEType(NumberT)))
+      List(FNot(FEq(x, v)), FTypeCheck(x, NumberT))
     case FNot(
           FEq(v, SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value")))),
         ) =>
-      List(FNot(FEq(x, v)), FEq(SETypeOf(x), SEType(NumberT)))
+      List(FNot(FEq(x, v)), FTypeCheck(x, NumberT))
     case FNot(FLt(SEApp("ToNumber", List(x)), v)) =>
-      List(FNot(FLt(x, v)), FEq(SETypeOf(x), SEType(NumberT)))
+      List(FNot(FLt(x, v)), FTypeCheck(x, NumberT))
     case FNot(FLt(v, SEApp("ToNumber", List(x)))) =>
-      List(FNot(FLt(v, x)), FEq(SETypeOf(x), SEType(NumberT)))
+      List(FNot(FLt(v, x)), FTypeCheck(x, NumberT))
     case FNot(
           FLt(SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value"))), v),
         ) =>
-      List(FNot(FLt(x, v)), FEq(SETypeOf(x), SEType(NumberT)))
+      List(FNot(FLt(x, v)), FTypeCheck(x, NumberT))
     case FNot(
           FLt(v, SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value")))),
         ) =>
-      List(FNot(FLt(v, x)), FEq(SETypeOf(x), SEType(NumberT)))
+      List(FNot(FLt(v, x)), FTypeCheck(x, NumberT))
 
     // https://tc39.es/ecma262/#sec-tointegerorinfinity
     // NOTE: delegates to ToNumber
-    case FEq(SETypeOf(SEApp("ToIntegerOrInfinity", List(x))), SEType(ty))
-        if ty <= CompT =>
+    case FTypeCheck(SEApp("ToIntegerOrInfinity", List(x)), ty) if ty <= CompT =>
       val toNumber = SEApp("ToNumber", List(x))
       ty match
         case _ if ty <= NormalT || ty <= AbruptT =>
-          List(FEq(SETypeOf(toNumber), SEType(ty)))
+          List(FTypeCheck(toNumber, ty))
         case _ => List(f)
 
     // https://tc39.es/ecma262/#sec-tobigint
     // NOTE: only handles non-object case; object case not modeled (delegate to ToPrimitive)
-    case FEq(SETypeOf(SEApp("ToBigInt", List(x))), SEType(ty)) if ty <= CompT =>
-      val guard = FNot(FEq(SETypeOf(x), SEType(ObjectT)))
-      val isThrowTy =
-        FEq(SETypeOf(x), SEType(UndefT || NullT || NumberT || SymbolT))
+    case FTypeCheck(SEApp("ToBigInt", List(x)), ty) if ty <= CompT =>
+      val guard = FNot(FTypeCheck(x, ObjectT))
+      val isThrowTy = FTypeCheck(x, UndefT || NullT || NumberT || SymbolT)
       ty match
         case _ if ty <= NormalT => List(guard, FNot(isThrowTy))
         case _ if ty <= AbruptT => List(guard, isThrowTy)
@@ -131,17 +119,17 @@ object RewriteRules {
 
     // https://tc39.es/ecma262/#sec-tostring
     // NOTE: only handles non-object case; object case not modeled (delegate to ToPrimitive)
-    case FEq(SETypeOf(SEApp("ToString", List(x))), SEType(ty)) if ty <= CompT =>
-      val guard = FNot(FEq(SETypeOf(x), SEType(ObjectT)))
-      val isSymbol = FEq(SETypeOf(x), SEType(SymbolT))
+    case FTypeCheck(SEApp("ToString", List(x)), ty) if ty <= CompT =>
+      val guard = FNot(FTypeCheck(x, ObjectT))
+      val isSymbol = FTypeCheck(x, SymbolT)
       ty match
         case _ if ty <= NormalT => List(FNot(isSymbol))
         case _ if ty <= AbruptT => List(guard, isSymbol)
         case _                  => List(f)
 
     // https://tc39.es/ecma262/#sec-toobject
-    case FEq(SETypeOf(SEApp("ToObject", List(x))), SEType(ty)) if ty <= CompT =>
-      val isUndefOrNull = FEq(SETypeOf(x), SEType(UndefT || NullT))
+    case FTypeCheck(SEApp("ToObject", List(x)), ty) if ty <= CompT =>
+      val isUndefOrNull = FTypeCheck(x, UndefT || NullT)
       ty match
         case _ if ty <= NormalT => List(FNot(isUndefOrNull))
         case _ if ty <= AbruptT => List(isUndefOrNull)
@@ -149,28 +137,28 @@ object RewriteRules {
 
     // https://tc39.es/ecma262/#sec-tolength
     // NOTE: delegates to ToIntegerOrInfinity
-    case FEq(SETypeOf(SEApp("ToLength", List(x))), SEType(ty)) if ty <= CompT =>
+    case FTypeCheck(SEApp("ToLength", List(x)), ty) if ty <= CompT =>
       val toIntegerOrInfinity = SEApp("ToIntegerOrInfinity", List(x))
       ty match
         case _ if ty <= NormalT || ty <= AbruptT =>
-          List(FEq(SETypeOf(toIntegerOrInfinity), SEType(ty)))
+          List(FTypeCheck(toIntegerOrInfinity, ty))
         case _ => List(f)
 
     // https://tc39.es/ecma262/#sec-toindex
     // NOTE: delegates to ToIntegerOrInfinity
-    case FEq(SETypeOf(SEApp("ToIndex", List(x))), SEType(ty)) if ty <= CompT =>
+    case FTypeCheck(SEApp("ToIndex", List(x)), ty) if ty <= CompT =>
       val toIntegerOrInfinity = SEApp("ToIntegerOrInfinity", List(x))
       ty match
         case _ if ty <= NormalT || ty <= AbruptT =>
-          List(FEq(SETypeOf(toIntegerOrInfinity), SEType(ty)))
+          List(FTypeCheck(toIntegerOrInfinity, ty))
         case _ => List(f)
 
     // 7.2 Testing and Comparison Operations
 
     // https://tc39.es/ecma262/#sec-requireobjectcoercible
-    case FEq(SETypeOf(SEApp("RequireObjectCoercible", List(x))), SEType(ty))
+    case FTypeCheck(SEApp("RequireObjectCoercible", List(x)), ty)
         if ty <= CompT =>
-      val isUndefOrNull = FEq(SETypeOf(x), SEType(UndefT || NullT))
+      val isUndefOrNull = FTypeCheck(x, UndefT || NullT)
       ty match
         case _ if ty <= NormalT => List(FNot(isUndefOrNull))
         case _ if ty <= AbruptT => List(isUndefOrNull)
@@ -179,26 +167,24 @@ object RewriteRules {
     // https://tc39.es/ecma262/#sec-isarray
     // NOTE: true for Array exotic, false otherwise; Proxy recurses via ValidateNonRevokedProxy
     case FEq(SEApp("IsArray", List(x)), SELit(EBool(b))) =>
-      if (b) List(FEq(SETypeOf(x), SEType(RecordT("Array"))))
-      else List(FNot(FEq(SETypeOf(x), SEType(RecordT("Array")))))
-    case FEq(SETypeOf(SEApp("IsArray", List(x))), SEType(ty)) if ty <= CompT =>
+      if (b) List(FTypeCheck(x, RecordT("Array")))
+      else List(FNot(FTypeCheck(x, RecordT("Array"))))
+    case FTypeCheck(SEApp("IsArray", List(x)), ty) if ty <= CompT =>
       ty match
         case _ if ty <= NormalT =>
-          List(FNot(FEq(SETypeOf(x), SEType(RecordT("ProxyExoticObject")))))
+          List(FNot(FTypeCheck(x, RecordT("ProxyExoticObject"))))
         case _ if ty <= AbruptT =>
-          List(
-            FEq(SETypeOf(SEApp("ValidateNonRevokedProxy", List(x))), SEType(ty)),
-          )
+          List(FTypeCheck(SEApp("ValidateNonRevokedProxy", List(x)), ty))
         case _ => List(f)
 
     // https://tc39.es/ecma262/#sec-iscallable
     case FEq(SEApp("IsCallable", List(x)), SELit(EBool(b))) =>
-      val eq = FEq(SETypeOf(x), SEType(FunctionT))
+      val eq = FTypeCheck(x, FunctionT)
       List(if (b) eq else FNot(eq))
 
     // https://tc39.es/ecma262/#sec-isconstructor
     case FEq(SEApp("IsConstructor", List(x)), SELit(EBool(b))) =>
-      val eq = FEq(SETypeOf(x), SEType(ConstructorT))
+      val eq = FTypeCheck(x, ConstructorT)
       List(if (b) eq else FNot(eq))
 
     // https://tc39.es/ecma262/#sec-isregexp
@@ -206,21 +192,15 @@ object RewriteRules {
     // @@match check should be considered, but chose simple path now
     case FEq(SEApp("IsRegExp", List(x)), SELit(EBool(b))) =>
       if (b)
-        List(
-          FEq(SETypeOf(x), SEType(ObjectT)),
-          FExists(x, SELit(EStr("RegExpMatcher"))),
-        )
-      else List(FNot(FEq(SETypeOf(x), SEType(ObjectT))))
-    case FEq(SETypeOf(SEApp("IsRegExp", List(x))), SEType(ty)) if ty <= CompT =>
+        List(FTypeCheck(x, ObjectT), FExists(x, SELit(EStr("RegExpMatcher"))))
+      else List(FNot(FTypeCheck(x, ObjectT)))
+    case FTypeCheck(SEApp("IsRegExp", List(x)), ty) if ty <= CompT =>
       val symMatch = SEProj(SEApp("SYMBOL", List()), SELit(EStr("match")))
       val getMatch = SEApp("Get", List(x, symMatch))
       ty match
         case _ if ty <= NormalT => List()
         case _ if ty <= AbruptT =>
-          List(
-            FEq(SETypeOf(x), SEType(ObjectT)),
-            FEq(SETypeOf(getMatch), SEType(ty)),
-          )
+          List(FTypeCheck(x, ObjectT), FTypeCheck(getMatch, ty))
         case _ => List(f)
 
     // https://tc39.es/ecma262/#sec-samevalue
@@ -241,68 +221,59 @@ object RewriteRules {
 
     // https://tc39.es/ecma262/#sec-canbeheldweakly
     case FEq(SEApp("CanBeHeldWeakly", List(x)), SELit(EBool(b))) =>
-      if (b) List(FEq(SETypeOf(x), SEType(ObjectT)))
-      else
-        List(
-          FNot(FEq(SETypeOf(x), SEType(ObjectT))),
-          FNot(FEq(SETypeOf(x), SEType(SymbolT))),
-        )
+      if (b) List(FTypeCheck(x, ObjectT))
+      else List(FNot(FTypeCheck(x, ObjectT)), FNot(FTypeCheck(x, SymbolT)))
 
     // 10.1 Ordinary Object Internal Methods and Internal Slots
 
     // https://tc39.es/ecma262/#sec-requireinternalslot
-    case FEq(
-          SETypeOf(SEApp("RequireInternalSlot", List(x, SELit(EStr(slot))))),
-          SEType(ty),
+    case FTypeCheck(
+          SEApp("RequireInternalSlot", List(x, SELit(EStr(slot)))),
+          ty,
         ) if ty <= CompT =>
       ty match
         case _ if ty <= NormalT =>
-          List(FEq(SETypeOf(x), SEType(ObjectT)), FExists(x, SELit(EStr(slot))))
-        case _ if ty <= AbruptT => List(FNot(FEq(SETypeOf(x), SEType(ObjectT))))
+          List(FTypeCheck(x, ObjectT), FExists(x, SELit(EStr(slot))))
+        case _ if ty <= AbruptT => List(FNot(FTypeCheck(x, ObjectT)))
         case _                  => List(f)
 
     // ThisXXXValue series (around 20.XX)
 
     // https://tc39.es/ecma262/#sec-thissymbolvalue
-    case FEq(SETypeOf(SEApp("ThisSymbolValue", List(x))), SEType(ty))
-        if ty <= CompT =>
-      val isSymbol = FEq(SETypeOf(x), SEType(SymbolT))
+    case FTypeCheck(SEApp("ThisSymbolValue", List(x)), ty) if ty <= CompT =>
+      val isSymbol = FTypeCheck(x, SymbolT)
       ty match
         case _ if ty <= NormalT => List(isSymbol)
         case _ if ty <= AbruptT => List(FNot(isSymbol))
         case _                  => List(f)
 
     // https://tc39.es/ecma262/#sec-thisnumbervalue
-    case FEq(SETypeOf(SEApp("ThisNumberValue", List(x))), SEType(ty))
-        if ty <= CompT =>
-      val isNumber = FEq(SETypeOf(x), SEType(NumberT))
+    case FTypeCheck(SEApp("ThisNumberValue", List(x)), ty) if ty <= CompT =>
+      val isNumber = FTypeCheck(x, NumberT)
       ty match
         case _ if ty <= NormalT => List(isNumber)
         case _ if ty <= AbruptT => List(FNot(isNumber))
         case _                  => List(f)
 
     // https://tc39.es/ecma262/#sec-thisbigintvalue
-    case FEq(SETypeOf(SEApp("ThisBigIntValue", List(x))), SEType(ty))
-        if ty <= CompT =>
-      val isBigInt = FEq(SETypeOf(x), SEType(BigIntT))
+    case FTypeCheck(SEApp("ThisBigIntValue", List(x)), ty) if ty <= CompT =>
+      val isBigInt = FTypeCheck(x, BigIntT)
       ty match
         case _ if ty <= NormalT => List(isBigInt)
         case _ if ty <= AbruptT => List(FNot(isBigInt))
         case _                  => List(f)
 
     // https://tc39.es/ecma262/#sec-thisstringvalue
-    case FEq(SETypeOf(SEApp("ThisStringValue", List(x))), SEType(ty))
-        if ty <= CompT =>
-      val isString = FEq(SETypeOf(x), SEType(StrT))
+    case FTypeCheck(SEApp("ThisStringValue", List(x)), ty) if ty <= CompT =>
+      val isString = FTypeCheck(x, StrT)
       ty match
         case _ if ty <= NormalT => List(isString)
         case _ if ty <= AbruptT => List(FNot(isString))
         case _                  => List(f)
 
     // https://tc39.es/ecma262/#sec-thisbooleanvalue
-    case FEq(SETypeOf(SEApp("ThisBooleanValue", List(x))), SEType(ty))
-        if ty <= CompT =>
-      val isBoolean = FEq(SETypeOf(x), SEType(BoolT))
+    case FTypeCheck(SEApp("ThisBooleanValue", List(x)), ty) if ty <= CompT =>
+      val isBoolean = FTypeCheck(x, BoolT)
       ty match
         case _ if ty <= NormalT => List(isBoolean)
         case _ if ty <= AbruptT => List(FNot(isBoolean))
@@ -310,34 +281,28 @@ object RewriteRules {
 
     // https://tc39.es/ecma262/#sec-ordinarycreatefromconstructor
     // NOTE: delegates to Get(constructor, "prototype") via GetPrototypeFromConstructor
-    case FEq(
-          SETypeOf(SEApp("OrdinaryCreateFromConstructor", List(ctor, _*))),
-          SEType(ty),
-        ) if ty <= CompT =>
+    case FTypeCheck(SEApp("OrdinaryCreateFromConstructor", List(ctor, _*)), ty)
+        if ty <= CompT =>
       val getProto = SEApp("Get", List(ctor, SELit(EStr("prototype"))))
       ty match
         case _ if ty <= NormalT || ty <= AbruptT =>
-          List(FEq(SETypeOf(getProto), SEType(ty)))
+          List(FTypeCheck(getProto, ty))
         case _ => List(f)
 
     // https://tc39.es/ecma262/#sec-installerrorcause
     // NOTE: delegates to HasProperty(options, "cause")
-    case FEq(
-          SETypeOf(SEApp("InstallErrorCause", List(_, options))),
-          SEType(ty),
-        ) if ty <= CompT =>
+    case FTypeCheck(SEApp("InstallErrorCause", List(_, options)), ty)
+        if ty <= CompT =>
       val hasCause = SEApp("HasProperty", List(options, SELit(EStr("cause"))))
       ty match
         case _ if ty <= NormalT || ty <= AbruptT =>
-          List(FEq(SETypeOf(hasCause), SEType(ty)))
+          List(FTypeCheck(hasCause, ty))
         case _ => List(f)
 
     // https://tc39.es/ecma262/#sec-validatenonrevokedproxy
     // NOTE: throws TypeError only if proxy is revoked (handler is null)
-    case FEq(
-          SETypeOf(SEApp("ValidateNonRevokedProxy", List(o))),
-          SEType(ty),
-        ) if ty <= CompT =>
+    case FTypeCheck(SEApp("ValidateNonRevokedProxy", List(o)), ty)
+        if ty <= CompT =>
       val hasHandler = FExists(o, SELit(EStr("ProxyHandler")))
       ty match
         case _ if ty <= NormalT => List(hasHandler)
@@ -346,21 +311,17 @@ object RewriteRules {
 
     // https://tc39.es/ecma262/#sec-validatetypedarray
     // NOTE: delegates to RequireInternalSlot(typedArray, "TypedArrayName")
-    case FEq(
-          SETypeOf(SEApp("ValidateTypedArray", List(o, _))),
-          SEType(ty),
-        ) if ty <= CompT =>
+    case FTypeCheck(SEApp("ValidateTypedArray", List(o, _)), ty)
+        if ty <= CompT =>
       ty match
         case _ if ty <= NormalT || ty <= AbruptT =>
           List(
-            FEq(
-              SETypeOf(
-                SEApp(
-                  "RequireInternalSlot",
-                  List(o, SELit(EStr("TypedArrayName"))),
-                ),
+            FTypeCheck(
+              SEApp(
+                "RequireInternalSlot",
+                List(o, SELit(EStr("TypedArrayName"))),
               ),
-              SEType(ty),
+              ty,
             ),
           )
         case _ => List(f)
@@ -368,59 +329,53 @@ object RewriteRules {
     // 27.1 Iteration
 
     // https://tc39.es/ecma262/#sec-getiterator
-    case FEq(SETypeOf(SEApp("GetIterator", List(obj))), SEType(ty))
-        if ty <= NormalT =>
+    case FTypeCheck(SEApp("GetIterator", List(obj)), ty) if ty <= NormalT =>
       val methodResult = SEApp("Get", List(obj, SELit(EStr("iterator"))))
       val method = SEProj(methodResult, SELit(EStr("Value")))
       val callResult = SEApp("Call", List(method, obj))
       List(
-        FEq(SETypeOf(methodResult), SEType(NormalT)),
-        FEq(SETypeOf(callResult), SEType(NormalT)),
-        FEq(SETypeOf(SEProj(callResult, SELit(EStr("Value")))), SEType(ObjectT)),
+        FTypeCheck(methodResult, NormalT),
+        FTypeCheck(callResult, NormalT),
+        FTypeCheck(SEProj(callResult, SELit(EStr("Value"))), ObjectT),
       )
 
     // https://tc39.es/ecma262/#sec-getiteratorfrommethod
-    case FEq(
-          SETypeOf(SEApp("GetIteratorFromMethod", List(obj, method))),
-          SEType(ty),
-        ) if ty <= NormalT =>
+    case FTypeCheck(SEApp("GetIteratorFromMethod", List(obj, method)), ty)
+        if ty <= NormalT =>
       val callResult = SEApp("Call", List(method, obj))
       List(
-        FEq(SETypeOf(callResult), SEType(NormalT)),
-        FEq(SETypeOf(SEProj(callResult, SELit(EStr("Value")))), SEType(ObjectT)),
+        FTypeCheck(callResult, NormalT),
+        FTypeCheck(SEProj(callResult, SELit(EStr("Value"))), ObjectT),
       )
 
     // https://tc39.es/ecma262/#sec-iteratornext
-    case FEq(SETypeOf(SEApp("IteratorNext", iterRecord :: args)), SEType(ty))
+    case FTypeCheck(SEApp("IteratorNext", iterRecord :: args), ty)
         if ty <= NormalT =>
       iteratorParts(iterRecord) match
         case Some(_) =>
           val result = iteratorNextResult(iterRecord, args)
           List(
-            FEq(SETypeOf(result), SEType(NormalT)),
-            FEq(
-              SETypeOf(SEProj(result, SELit(EStr("Value")))),
-              SEType(ObjectT),
-            ),
+            FTypeCheck(result, NormalT),
+            FTypeCheck(SEProj(result, SELit(EStr("Value"))), ObjectT),
           )
         case None => List(f)
 
     // https://tc39.es/ecma262/#sec-iteratorcomplete
-    case FEq(SETypeOf(SEApp("IteratorComplete", List(result))), SEType(ty))
+    case FTypeCheck(SEApp("IteratorComplete", List(result)), ty)
         if ty <= NormalT =>
       val doneResult =
         SEApp("Get", List(iteratorResultValue(result), SELit(EStr("done"))))
       List(
-        FEq(SETypeOf(doneResult), SEType(NormalT)),
-        FEq(SETypeOf(SEProj(doneResult, SELit(EStr("Value")))), SEType(BoolT)),
+        FTypeCheck(doneResult, NormalT),
+        FTypeCheck(SEProj(doneResult, SELit(EStr("Value"))), BoolT),
       )
 
     // https://tc39.es/ecma262/#sec-iteratorvalue
-    case FEq(SETypeOf(SEApp("IteratorValue", List(result))), SEType(ty))
+    case FTypeCheck(SEApp("IteratorValue", List(result)), ty)
         if ty <= NormalT =>
       val valueResult =
         SEApp("Get", List(iteratorResultValue(result), SELit(EStr("value"))))
-      List(FEq(SETypeOf(valueResult), SEType(NormalT)))
+      List(FTypeCheck(valueResult, NormalT))
 
     case _ => rewriteCompletionValues(f).getOrElse(f) :: Nil
 
@@ -430,14 +385,15 @@ object RewriteRules {
   private def stripCompletion(f: Formula): Formula = f match
     case FEq(SEProj(base, TypeKey), SELit(EEnum(e))) =>
       val ty = if (e == "normal") NormalT else AbruptT
-      FEq(SETypeOf(stripExpr(base)), SEType(ty))
+      FTypeCheck(stripExpr(base), ty)
     case FEq(SELit(EEnum(e)), SEProj(base, TypeKey)) =>
       val ty = if (e == "normal") NormalT else AbruptT
-      FEq(SETypeOf(stripExpr(base)), SEType(ty))
-    case FNot(inner)   => FNot(stripCompletion(inner))
-    case FEq(l, r)     => FEq(stripExpr(l), stripExpr(r))
-    case FLt(l, r)     => FLt(stripExpr(l), stripExpr(r))
-    case FExists(b, k) => FExists(stripExpr(b), k)
+      FTypeCheck(stripExpr(base), ty)
+    case FNot(inner)       => FNot(stripCompletion(inner))
+    case FEq(l, r)         => FEq(stripExpr(l), stripExpr(r))
+    case FLt(l, r)         => FLt(stripExpr(l), stripExpr(r))
+    case FExists(b, k)     => FExists(stripExpr(b), k)
+    case FTypeCheck(e, ty) => FTypeCheck(stripExpr(e), ty)
 
   private def stripExpr(t: SymExpr): SymExpr = t match
     case SETypeOf(inner) => SETypeOf(stripExpr(inner))
@@ -455,14 +411,15 @@ object RewriteRules {
   private def normalizeExpr(f: Formula): Formula = f match
     case FEq(SEProj(base, TypeKey), SELit(EEnum(e))) =>
       val ty = if (e == "normal") NormalT else AbruptT
-      FEq(SETypeOf(reduceExpr(base)), SEType(ty))
+      FTypeCheck(reduceExpr(base), ty)
     case FEq(SELit(EEnum(e)), SEProj(base, TypeKey)) =>
       val ty = if (e == "normal") NormalT else AbruptT
-      FEq(SETypeOf(reduceExpr(base)), SEType(ty))
-    case FNot(inner)   => FNot(normalizeExpr(inner))
-    case FEq(l, r)     => FEq(reduceExpr(l), reduceExpr(r))
-    case FLt(l, r)     => FLt(reduceExpr(l), reduceExpr(r))
-    case FExists(b, k) => FExists(reduceExpr(b), k)
+      FTypeCheck(reduceExpr(base), ty)
+    case FNot(inner)       => FNot(normalizeExpr(inner))
+    case FEq(l, r)         => FEq(reduceExpr(l), reduceExpr(r))
+    case FLt(l, r)         => FLt(reduceExpr(l), reduceExpr(r))
+    case FExists(b, k)     => FExists(reduceExpr(b), k)
+    case FTypeCheck(e, ty) => FTypeCheck(reduceExpr(e), ty)
 
   private def reduceExpr(t: SymExpr): SymExpr = t match
     case SEProj(SEApp("ToIntegerOrInfinity", List(x)), ValueKey) =>
@@ -475,10 +432,7 @@ object RewriteRules {
       reduceExpr(x)
     case SEProj(SEApp("ToObject", List(x)), ValueKey) =>
       reduceExpr(x)
-    case SEProj(
-          SEApp("RequireObjectCoercible", List(x)),
-          ValueKey,
-        ) =>
+    case SEProj(SEApp("RequireObjectCoercible", List(x)), ValueKey) =>
       reduceExpr(x)
     case SEProj(SEApp("ToPropertyKey", List(x)), ValueKey) =>
       reduceExpr(x)
@@ -523,6 +477,8 @@ object RewriteRules {
         .orElse(rewriteCompletionValueExpr(r).map(FLt(l, _)))
     case FExists(b, k) =>
       rewriteCompletionValueExpr(b).map(FExists(_, k))
+    case FTypeCheck(e, ty) =>
+      rewriteCompletionValueExpr(e).map(FTypeCheck(_, ty))
 
   private def rewriteCompletionValueExpr(expr: SymExpr): Option[SymExpr] =
     expr match
@@ -581,7 +537,7 @@ object RewriteRules {
     ty: ValueTy,
   ): List[Formula] =
     val valueTy = (ty && NormalT).record("Value").value
-    if (valueTy.isTop) Nil else List(FEq(SETypeOf(value), SEType(valueTy)))
+    if (valueTy.isTop) Nil else List(FTypeCheck(value, valueTy))
 
   private val completionReturningOps: Set[String] = Set(
     "Call",
