@@ -22,9 +22,9 @@ class SolverTinyTest extends SolverTest {
 
     check("GetIterator normal keeps Call completion separate from its value") {
       val methodResult = SEApp("Get", List(xSym, SELit(EStr("iterator"))))
-      val method = SEProj(methodResult, SELit(EStr("Value")))
+      val method = SEField(methodResult, "Value")
       val call = SEApp("Call", List(method, xSym))
-      val value = SEProj(call, SELit(EStr("Value")))
+      val value = SEField(call, "Value")
       val rewritten =
         rewrite(List(isType(SEApp("GetIterator", List(xSym)), NormalT)))
 
@@ -44,7 +44,7 @@ class SolverTinyTest extends SolverTest {
         ),
       )
       val call = SEApp("Call", List(ySym, xSym))
-      val value = SEProj(call, SELit(EStr("Value")))
+      val value = SEField(call, "Value")
       val rewritten =
         rewrite(
           List(isType(SEApp("IteratorNext", List(iterRecord)), NormalT)),
@@ -57,7 +57,7 @@ class SolverTinyTest extends SolverTest {
 
     check("ToNumber value projection rewrites as a numeric input constraint") {
       val value =
-        SEProj(SEApp("ToNumber", List(xSym)), SELit(EStr("Value")))
+        SEField(SEApp("ToNumber", List(xSym)), "Value")
       val rewritten = rewrite(List(isValue(value, EMath(1))))
 
       assert(rewritten.contains(isValue(xSym, EMath(1))))
@@ -67,7 +67,7 @@ class SolverTinyTest extends SolverTest {
 
     check("ToNumber value projection type rewrites to the input type") {
       val value =
-        SEProj(SEApp("ToNumber", List(xSym)), SELit(EStr("Value")))
+        SEField(SEApp("ToNumber", List(xSym)), "Value")
       val rewritten = rewrite(List(isType(value, NumberIntT)))
 
       assert(rewritten.contains(isType(xSym, NumberIntT)))
@@ -76,7 +76,7 @@ class SolverTinyTest extends SolverTest {
 
     check("ToLength value projection delegates to ToNumber before rewriting") {
       val value =
-        SEProj(SEApp("ToLength", List(xSym)), SELit(EStr("Value")))
+        SEField(SEApp("ToLength", List(xSym)), "Value")
       val rewritten = rewrite(List(FLt(value, SELit(EMath(0)))))
 
       assert(rewritten.contains(FLt(xSym, SELit(EMath(0)))))
@@ -87,10 +87,7 @@ class SolverTinyTest extends SolverTest {
     checkParamWitness("Get value projection reifies as property value")(
       List(
         isValue(
-          SEProj(
-            SEApp("Get", List(xSym, SELit(EStr("p")))),
-            SELit(EStr("Value")),
-          ),
+          SEField(SEApp("Get", List(xSym, SELit(EStr("p")))), "Value"),
           EMath(1),
         ),
       ),
@@ -102,9 +99,9 @@ class SolverTinyTest extends SolverTest {
     checkParamWitness("HasProperty value projection reifies as property shape")(
       List(
         isValue(
-          SEProj(
+          SEField(
             SEApp("HasProperty", List(xSym, SELit(EStr("p")))),
-            SELit(EStr("Value")),
+            "Value",
           ),
           EBool(true),
         ),
@@ -113,11 +110,44 @@ class SolverTinyTest extends SolverTest {
       assert(js.contains("p"))
     }
 
+    check("unknown internal field existence is not a JS property witness") {
+      assert(solveAndReify(List(FExists(xSym, SELit(EStr("p"))))).isEmpty)
+    }
+
+    checkParamWitness("known internal field existence reifies by object shape")(
+      List(FExists(xSym, SELit(EStr("TypedArrayName")))),
+    ) { js =>
+      assert(js.contains("Int8Array"))
+      assert(!js.contains("TypedArrayName"))
+    }
+
+    checkParamWitness("internal field value reifies by object shape")(
+      List(
+        isValue(SEField(xSym, "TypedArrayName"), EStr("Int8Array")),
+      ),
+    ) { js =>
+      assert(js.contains("Int8Array"))
+      assert(!js.contains("TypedArrayName"))
+    }
+
+    check("generic projection is not an internal field witness") {
+      assert(
+        solveAndReify(
+          List(
+            isValue(
+              SEProj(xSym, SELit(EStr("TypedArrayName"))),
+              EStr("Int8Array"),
+            ),
+          ),
+        ).isEmpty,
+      )
+    }
+
     check(
       "value-level Call projection is not stripped into the Call completion",
     ) {
       val call = SEApp("Call", List(xSym, ySym))
-      val value = SEProj(call, SELit(EStr("Value")))
+      val value = SEField(call, "Value")
       val rewritten = rewrite(List(isValue(value, EMath(1))))
 
       assert(rewritten.contains(isValue(value, EMath(1))))
@@ -126,9 +156,9 @@ class SolverTinyTest extends SolverTest {
 
     check("Completion-wrapped Call value projection is preserved") {
       val call = SEApp("Call", List(xSym, ySym))
-      val value = SEProj(call, SELit(EStr("Value")))
+      val value = SEField(call, "Value")
       val wrappedValue =
-        SEProj(SEApp("Completion", List(call)), SELit(EStr("Value")))
+        SEField(SEApp("Completion", List(call)), "Value")
       val rewritten = rewrite(List(isValue(wrappedValue, EMath(1))))
 
       assert(rewritten.contains(isValue(value, EMath(1))))
@@ -137,8 +167,8 @@ class SolverTinyTest extends SolverTest {
 
     check("unknown Completion value projection is preserved") {
       val wrappedValue =
-        SEProj(SEApp("Completion", List(xSym)), SELit(EStr("Value")))
-      val bareValue = SEProj(xSym, SELit(EStr("Value")))
+        SEField(SEApp("Completion", List(xSym)), "Value")
+      val bareValue = SEField(xSym, "Value")
       val rewritten = rewrite(List(isValue(wrappedValue, EMath(1))))
 
       assert(rewritten.contains(isValue(wrappedValue, EMath(1))))
@@ -148,7 +178,7 @@ class SolverTinyTest extends SolverTest {
 
     check("NormalCompletion value projection rewrites to inner value") {
       val wrappedValue =
-        SEProj(SEApp("NormalCompletion", List(xSym)), SELit(EStr("Value")))
+        SEField(SEApp("NormalCompletion", List(xSym)), "Value")
       val rewritten = rewrite(List(isValue(wrappedValue, EMath(1))))
 
       assert(rewritten.contains(isValue(xSym, EMath(1))))
@@ -158,7 +188,7 @@ class SolverTinyTest extends SolverTest {
     check("Completion-wrapped ToNumber projection rewrites through value") {
       val toNumber = SEApp("ToNumber", List(xSym))
       val wrappedValue =
-        SEProj(SEApp("Completion", List(toNumber)), SELit(EStr("Value")))
+        SEField(SEApp("Completion", List(toNumber)), "Value")
       val rewritten = rewrite(List(isValue(wrappedValue, EMath(1))))
 
       assert(rewritten.contains(isValue(xSym, EMath(1))))
@@ -169,7 +199,7 @@ class SolverTinyTest extends SolverTest {
     check("unknown Completion Type check stays on wrapper") {
       val wrapped = SEApp("Completion", List(xSym))
       val typeCheck =
-        FEq(SEProj(wrapped, SELit(EStr("Type"))), SELit(EEnum("normal")))
+        FEq(SEField(wrapped, "Type"), SELit(EEnum("normal")))
       val rewritten = rewrite(List(typeCheck))
 
       assert(rewritten.contains(isType(wrapped, NormalT)))
@@ -179,7 +209,7 @@ class SolverTinyTest extends SolverTest {
     check("NormalCompletion Type check rewrites as known normal") {
       val wrapped = SEApp("NormalCompletion", List(xSym))
       val typeCheck =
-        FEq(SEProj(wrapped, SELit(EStr("Type"))), SELit(EEnum("normal")))
+        FEq(SEField(wrapped, "Type"), SELit(EEnum("normal")))
       val rewritten = rewrite(List(typeCheck))
 
       assert(rewritten.isEmpty)
@@ -195,7 +225,7 @@ class SolverTinyTest extends SolverTest {
         ),
       )
       val call = SEApp("Call", List(ySym, xSym))
-      val value = SEProj(call, SELit(EStr("Value")))
+      val value = SEField(call, "Value")
       val done = SEApp("Get", List(value, SELit(EStr("done"))))
       val bareDone = SEApp("Get", List(call, SELit(EStr("done"))))
       val rewritten =
@@ -225,7 +255,7 @@ class SolverTinyTest extends SolverTest {
         ),
       )
       val call = SEApp("Call", List(ySym, xSym))
-      val value = SEProj(call, SELit(EStr("Value")))
+      val value = SEField(call, "Value")
       val resultValue = SEApp("Get", List(value, SELit(EStr("value"))))
       val bareValue = SEApp("Get", List(call, SELit(EStr("value"))))
       val rewritten =

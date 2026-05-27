@@ -8,8 +8,6 @@ object RewriteRules {
   def rewriteFormula(f: Formula): List[Formula] =
     rewrite(stripCompletion(f)).map(normalizeExpr)
 
-  private val ValueKey = SELit(EStr("Value"))
-  private val TypeKey = SELit(EStr("Type"))
   private val Contradiction = FEq(SELit(EBool(true)), SELit(EBool(false)))
 
   private def rewrite(f: Formula): List[Formula] = f match
@@ -47,10 +45,10 @@ object RewriteRules {
         case _ if ty <= NormalT => List(guard, FNot(isSymbolOrBigInt))
         case _ if ty <= AbruptT => List(guard, isSymbolOrBigInt)
         case _                  => List(f)
-    case FTypeCheck(SEProj(SEApp("ToNumber", List(x)), ValueKey), ty)
+    case FTypeCheck(ValueField(SEApp("ToNumber", List(x))), ty)
         if ty <= NumberT =>
       List(FTypeCheck(x, ty))
-    case FNot(FTypeCheck(SEProj(SEApp("ToNumber", List(x)), ValueKey), ty))
+    case FNot(FTypeCheck(ValueField(SEApp("ToNumber", List(x))), ty))
         if ty <= NumberT =>
       List(FNot(FTypeCheck(x, ty)), FTypeCheck(x, NumberT))
 
@@ -61,28 +59,28 @@ object RewriteRules {
       List(FEq(x, v), FTypeCheck(x, NumberT))
     case FEq(v, SEApp("ToNumber", List(x))) =>
       List(FEq(x, v), FTypeCheck(x, NumberT))
-    case FEq(SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value"))), v) =>
+    case FEq(ValueField(SEApp("ToNumber", List(x))), v) =>
       List(FEq(x, v), FTypeCheck(x, NumberT))
-    case FEq(v, SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value")))) =>
+    case FEq(v, ValueField(SEApp("ToNumber", List(x)))) =>
       List(FEq(x, v), FTypeCheck(x, NumberT))
     case FLt(SEApp("ToNumber", List(x)), v) =>
       List(FLt(x, v), FTypeCheck(x, NumberT))
     case FLt(v, SEApp("ToNumber", List(x))) =>
       List(FLt(v, x), FTypeCheck(x, NumberT))
-    case FLt(SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value"))), v) =>
+    case FLt(ValueField(SEApp("ToNumber", List(x))), v) =>
       List(FLt(x, v), FTypeCheck(x, NumberT))
-    case FLt(v, SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value")))) =>
+    case FLt(v, ValueField(SEApp("ToNumber", List(x)))) =>
       List(FLt(v, x), FTypeCheck(x, NumberT))
     case FNot(FEq(SEApp("ToNumber", List(x)), v)) =>
       List(FNot(FEq(x, v)), FTypeCheck(x, NumberT))
     case FNot(FEq(v, SEApp("ToNumber", List(x)))) =>
       List(FNot(FEq(x, v)), FTypeCheck(x, NumberT))
     case FNot(
-          FEq(SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value"))), v),
+          FEq(ValueField(SEApp("ToNumber", List(x))), v),
         ) =>
       List(FNot(FEq(x, v)), FTypeCheck(x, NumberT))
     case FNot(
-          FEq(v, SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value")))),
+          FEq(v, ValueField(SEApp("ToNumber", List(x)))),
         ) =>
       List(FNot(FEq(x, v)), FTypeCheck(x, NumberT))
     case FNot(FLt(SEApp("ToNumber", List(x)), v)) =>
@@ -90,11 +88,11 @@ object RewriteRules {
     case FNot(FLt(v, SEApp("ToNumber", List(x)))) =>
       List(FNot(FLt(v, x)), FTypeCheck(x, NumberT))
     case FNot(
-          FLt(SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value"))), v),
+          FLt(ValueField(SEApp("ToNumber", List(x))), v),
         ) =>
       List(FNot(FLt(x, v)), FTypeCheck(x, NumberT))
     case FNot(
-          FLt(v, SEProj(SEApp("ToNumber", List(x)), SELit(EStr("Value")))),
+          FLt(v, ValueField(SEApp("ToNumber", List(x)))),
         ) =>
       List(FNot(FLt(v, x)), FTypeCheck(x, NumberT))
 
@@ -331,12 +329,12 @@ object RewriteRules {
     // https://tc39.es/ecma262/#sec-getiterator
     case FTypeCheck(SEApp("GetIterator", List(obj)), ty) if ty <= NormalT =>
       val methodResult = SEApp("Get", List(obj, SELit(EStr("iterator"))))
-      val method = SEProj(methodResult, SELit(EStr("Value")))
+      val method = SEField(methodResult, "Value")
       val callResult = SEApp("Call", List(method, obj))
       List(
         FTypeCheck(methodResult, NormalT),
         FTypeCheck(callResult, NormalT),
-        FTypeCheck(SEProj(callResult, SELit(EStr("Value"))), ObjectT),
+        FTypeCheck(SEField(callResult, "Value"), ObjectT),
       )
 
     // https://tc39.es/ecma262/#sec-getiteratorfrommethod
@@ -345,7 +343,7 @@ object RewriteRules {
       val callResult = SEApp("Call", List(method, obj))
       List(
         FTypeCheck(callResult, NormalT),
-        FTypeCheck(SEProj(callResult, SELit(EStr("Value"))), ObjectT),
+        FTypeCheck(SEField(callResult, "Value"), ObjectT),
       )
 
     // https://tc39.es/ecma262/#sec-iteratornext
@@ -356,7 +354,7 @@ object RewriteRules {
           val result = iteratorNextResult(iterRecord, args)
           List(
             FTypeCheck(result, NormalT),
-            FTypeCheck(SEProj(result, SELit(EStr("Value"))), ObjectT),
+            FTypeCheck(SEField(result, "Value"), ObjectT),
           )
         case None => List(f)
 
@@ -367,7 +365,7 @@ object RewriteRules {
         SEApp("Get", List(iteratorResultValue(result), SELit(EStr("done"))))
       List(
         FTypeCheck(doneResult, NormalT),
-        FTypeCheck(SEProj(doneResult, SELit(EStr("Value"))), BoolT),
+        FTypeCheck(SEField(doneResult, "Value"), BoolT),
       )
 
     // https://tc39.es/ecma262/#sec-iteratorvalue
@@ -383,10 +381,10 @@ object RewriteRules {
   // wrappers whose value semantics need explicit rewrite rules.
 
   private def stripCompletion(f: Formula): Formula = f match
-    case FEq(SEProj(base, TypeKey), SELit(EEnum(e))) =>
+    case FEq(TypeField(base), SELit(EEnum(e))) =>
       val ty = if (e == "normal") NormalT else AbruptT
       FTypeCheck(stripExpr(base), ty)
-    case FEq(SELit(EEnum(e)), SEProj(base, TypeKey)) =>
+    case FEq(SELit(EEnum(e)), TypeField(base)) =>
       val ty = if (e == "normal") NormalT else AbruptT
       FTypeCheck(stripExpr(base), ty)
     case FNot(inner)       => FNot(stripCompletion(inner))
@@ -396,10 +394,11 @@ object RewriteRules {
     case FTypeCheck(e, ty) => FTypeCheck(stripExpr(e), ty)
 
   private def stripExpr(t: SymExpr): SymExpr = t match
-    case SETypeOf(inner) => SETypeOf(stripExpr(inner))
-    case SEProj(base, k) => SEProj(stripExpr(base), stripExpr(k))
-    case SEApp(op, args) => SEApp(op, args.map(stripExpr))
-    case SEList(elems)   => SEList(elems.map(stripExpr))
+    case SETypeOf(inner)      => SETypeOf(stripExpr(inner))
+    case SEProj(base, k)      => SEProj(stripExpr(base), stripExpr(k))
+    case SEField(base, field) => SEField(stripExpr(base), field)
+    case SEApp(op, args)      => SEApp(op, args.map(stripExpr))
+    case SEList(elems)        => SEList(elems.map(stripExpr))
     case SERecord(tn, fields) =>
       SERecord(tn, fields.map((k, v) => k -> stripExpr(v)))
     case SEMap(entries) =>
@@ -409,10 +408,10 @@ object RewriteRules {
   // Normalizes value-level AO projections after rewrite.
 
   private def normalizeExpr(f: Formula): Formula = f match
-    case FEq(SEProj(base, TypeKey), SELit(EEnum(e))) =>
+    case FEq(TypeField(base), SELit(EEnum(e))) =>
       val ty = if (e == "normal") NormalT else AbruptT
       FTypeCheck(reduceExpr(base), ty)
-    case FEq(SELit(EEnum(e)), SEProj(base, TypeKey)) =>
+    case FEq(SELit(EEnum(e)), TypeField(base)) =>
       val ty = if (e == "normal") NormalT else AbruptT
       FTypeCheck(reduceExpr(base), ty)
     case FNot(inner)       => FNot(normalizeExpr(inner))
@@ -422,26 +421,28 @@ object RewriteRules {
     case FTypeCheck(e, ty) => FTypeCheck(reduceExpr(e), ty)
 
   private def reduceExpr(t: SymExpr): SymExpr = t match
-    case SEProj(SEApp("ToIntegerOrInfinity", List(x)), ValueKey) =>
-      SEProj(SEApp("ToNumber", List(reduceExpr(x))), ValueKey)
-    case SEProj(SEApp("ToLength", List(x)), ValueKey) =>
-      SEProj(SEApp("ToNumber", List(reduceExpr(x))), ValueKey)
-    case SEProj(SEApp("ToIndex", List(x)), ValueKey) =>
-      SEProj(SEApp("ToNumber", List(reduceExpr(x))), ValueKey)
-    case SEProj(SEApp("ToString", List(x)), ValueKey) =>
+    case ValueField(SEApp("ToIntegerOrInfinity", List(x))) =>
+      SEField(SEApp("ToNumber", List(reduceExpr(x))), "Value")
+    case ValueField(SEApp("ToLength", List(x))) =>
+      SEField(SEApp("ToNumber", List(reduceExpr(x))), "Value")
+    case ValueField(SEApp("ToIndex", List(x))) =>
+      SEField(SEApp("ToNumber", List(reduceExpr(x))), "Value")
+    case ValueField(SEApp("ToString", List(x))) =>
       reduceExpr(x)
-    case SEProj(SEApp("ToObject", List(x)), ValueKey) =>
+    case ValueField(SEApp("ToObject", List(x))) =>
       reduceExpr(x)
-    case SEProj(SEApp("RequireObjectCoercible", List(x)), ValueKey) =>
+    case ValueField(SEApp("RequireObjectCoercible", List(x))) =>
       reduceExpr(x)
-    case SEProj(SEApp("ToPropertyKey", List(x)), ValueKey) =>
+    case ValueField(SEApp("ToPropertyKey", List(x))) =>
       reduceExpr(x)
     case SEApp("LengthOfArrayLike", List(x)) =>
       SEApp("Get", List(reduceExpr(x), SELit(EStr("length"))))
     case SEApp("GetMethod", List(v, SELit(EStr(p)))) =>
       SEApp("Get", List(reduceExpr(v), SELit(EStr(p))))
     case SEApp("GetMethod", List(v, SEProj(_, p))) =>
-      SEApp("Get", List(reduceExpr(v), p))
+      SEApp("Get", List(reduceExpr(v), reduceExpr(p)))
+    case SEApp("GetMethod", List(v, SEField(SEApp("SYMBOL", Nil), p))) =>
+      SEApp("Get", List(reduceExpr(v), SELit(EStr(p))))
     case SEApp("__CLAMP__", List(x, _, _))        => reduceExpr(x)
     case SEApp("ToString", List(x))               => reduceExpr(x)
     case SEApp("ToObject", List(x))               => reduceExpr(x)
@@ -453,11 +454,12 @@ object RewriteRules {
       SEApp("ToIntegerOrInfinity", List(reduceExpr(x)))
     case SEApp("ToIndex", List(x)) =>
       SEApp("ToIntegerOrInfinity", List(reduceExpr(x)))
-    case SETypeOf(inner)         => SETypeOf(reduceExpr(inner))
-    case SEProj(inner, ValueKey) => SEProj(reduceExpr(inner), ValueKey)
-    case SEProj(base, k)         => SEProj(reduceExpr(base), reduceExpr(k))
-    case SEApp(op, args)         => SEApp(op, args.map(reduceExpr(_)))
-    case SEList(elems)           => SEList(elems.map(reduceExpr(_)))
+    case SETypeOf(inner)      => SETypeOf(reduceExpr(inner))
+    case ValueField(inner)    => SEField(reduceExpr(inner), "Value")
+    case SEProj(base, k)      => SEProj(reduceExpr(base), reduceExpr(k))
+    case SEField(base, field) => SEField(reduceExpr(base), field)
+    case SEApp(op, args)      => SEApp(op, args.map(reduceExpr(_)))
+    case SEList(elems)        => SEList(elems.map(reduceExpr(_)))
     case SERecord(tn, fields) =>
       SERecord(tn, fields.map((k, v) => k -> reduceExpr(v)))
     case SEMap(entries) =>
@@ -482,17 +484,19 @@ object RewriteRules {
 
   private def rewriteCompletionValueExpr(expr: SymExpr): Option[SymExpr] =
     expr match
-      case SEProj(SEApp("NormalCompletion", List(inner)), ValueKey) =>
+      case ValueField(SEApp("NormalCompletion", List(inner))) =>
         Some(reduceExpr(inner))
-      case SEProj(SEApp("Completion", List(inner)), ValueKey)
+      case ValueField(SEApp("Completion", List(inner)))
           if isKnownCompletionExpr(inner) =>
-        Some(SEProj(reduceExpr(inner), ValueKey))
+        Some(SEField(reduceExpr(inner), "Value"))
       case SETypeOf(inner) =>
         rewriteCompletionValueExpr(inner).map(SETypeOf(_))
       case SEProj(base, key) =>
         rewriteCompletionValueExpr(base)
           .map(SEProj(_, key))
           .orElse(rewriteCompletionValueExpr(key).map(SEProj(base, _)))
+      case SEField(base, field) =>
+        rewriteCompletionValueExpr(base).map(SEField(_, field))
       case SEApp(op, args) =>
         rewriteFirst(args, rewriteCompletionValueExpr).map(SEApp(op, _))
       case SEList(elems) =>
@@ -613,7 +617,7 @@ object RewriteRules {
   private def iteratorResultValue(result: SymExpr): SymExpr =
     reduceExpr(result) match
       case SEApp("IteratorNext", iterRecord :: args) =>
-        SEProj(iteratorNextResult(iterRecord, args), SELit(EStr("Value")))
-      case app @ SEApp("Call", _) => SEProj(app, SELit(EStr("Value")))
+        SEField(iteratorNextResult(iterRecord, args), "Value")
+      case app @ SEApp("Call", _) => SEField(app, "Value")
       case other                  => other
 }

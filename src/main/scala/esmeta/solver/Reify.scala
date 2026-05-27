@@ -55,12 +55,13 @@ object Reify {
     case Lower(lit: LiteralExpr, strict: Boolean)
     case Upper(lit: LiteralExpr, strict: Boolean)
     case Prop(key: String, fact: Fact)
-    case Has(key: String, exists: Boolean)
+    case PropExists(key: String, exists: Boolean)
     case Call(fact: Fact)
     case Extensible(value: Boolean)
     case Prototype(lit: LiteralExpr)
     case Trap(name: String, fact: Fact)
     case Field(name: String, fact: Fact)
+    case FieldExists(name: String, exists: Boolean)
 
   type FactMap = Map[Sym, Set[Fact]]
 
@@ -179,18 +180,10 @@ object Reify {
     field: String,
     exists: Boolean,
   ): Option[List[(Sym, Fact)]] =
-    base match
-      case SESym(_) =>
-        fieldToRecordTy.get(field) match
-          case Some(ty) =>
-            termFact(
-              base,
-              if (exists) Fact.Type(ty) else Fact.NotType(ty),
-            )
-          case None =>
-            termFact(base, Fact.Has(field, exists))
-      case _ =>
-        termFact(base, Fact.Has(field, exists))
+    val fact = fieldToRecordTy.get(field) match
+      case Some(ty) => if (exists) Fact.Type(ty) else Fact.NotType(ty)
+      case None     => Fact.FieldExists(field, exists)
+    termFact(base, fact)
 
   private def termFact(
     term: SymExpr,
@@ -198,43 +191,34 @@ object Reify {
   ): Option[List[(Sym, Fact)]] = term match
     case SESym(sym) =>
       Some(List(sym -> fact))
-    case SEProj(SEApp("Get", List(base, key)), SELit(EStr("Value"))) =>
+    case ValueField(SEApp("Get", List(base, key))) =>
       getFact(base, key, fact)
-    case SEProj(SEApp("Get", base :: _ :: key :: _), SELit(EStr("Value"))) =>
+    case ValueField(SEApp("Get", base :: _ :: key :: _)) =>
       getFact(base, key, fact)
-    case SEProj(SEApp("GetV", List(base, key)), SELit(EStr("Value"))) =>
+    case ValueField(SEApp("GetV", List(base, key))) =>
       getFact(base, key, fact)
-    case SEProj(SEApp("GetMethod", List(base, key)), SELit(EStr("Value"))) =>
+    case ValueField(SEApp("GetMethod", List(base, key))) =>
       getFact(base, key, fact)
-    case SEProj(
-          SEApp("HasProperty", List(base, key)),
-          SELit(EStr("Value")),
-        ) =>
+    case ValueField(SEApp("HasProperty", List(base, key))) =>
       hasPropertyFact(base, key, fact)
-    case SEProj(
-          SEApp("HasProperty", base :: _ :: key :: Nil),
-          SELit(EStr("Value")),
-        ) =>
+    case ValueField(SEApp("HasProperty", base :: _ :: key :: Nil)) =>
       hasPropertyFact(base, key, fact)
-    case SEProj(SEApp("Call", fn :: _), SELit(EStr("Value"))) =>
+    case ValueField(SEApp("Call", fn :: _)) =>
       termFact(fn, Fact.Call(fact))
-    case SEProj(SEApp("Construct", ctor :: _), SELit(EStr("Value"))) =>
+    case ValueField(SEApp("Construct", ctor :: _)) =>
       termFact(ctor, Fact.Trap("Construct", fact))
-    case SEProj(
-          SEApp("GetPrototypeOf", base :: _),
-          SELit(EStr("Value")),
-        ) =>
+    case ValueField(SEApp("GetPrototypeOf", base :: _)) =>
       fact match
         case Fact.Value(lit) => termFact(base, Fact.Prototype(lit))
         case _ => termFact(base, Fact.Trap("GetPrototypeOf", fact))
-    case SEProj(SEApp("IsExtensible", base :: _), SELit(EStr("Value"))) =>
+    case ValueField(SEApp("IsExtensible", base :: _)) =>
       fact match
         case Fact.Value(EBool(value)) =>
           termFact(base, Fact.Extensible(value))
         case Fact.NotValue(EBool(value)) =>
           termFact(base, Fact.Extensible(!value))
         case _ => termFact(base, Fact.Trap("IsExtensible", fact))
-    case SEProj(SEApp(fname: String, base :: _), SELit(EStr("Value")))
+    case ValueField(SEApp(fname: String, base :: _))
         if isTrapOnlyMethod(fname) =>
       termFact(base, Fact.Trap(fname, fact))
     case SEApp("Get", List(base, key)) =>
@@ -247,7 +231,7 @@ object Reify {
       termFact(ctor, Fact.Trap("Construct", fact))
     case SEApp(fname: String, base :: _) if isTrapOnlyMethod(fname) =>
       termFact(base, Fact.Trap(fname, fact))
-    case SEProj(base, SELit(EStr(field))) =>
+    case SEField(base, field) =>
       termFact(base, Fact.Field(field, fact))
     case _ => None
 
@@ -267,7 +251,7 @@ object Reify {
   ): Option[List[(Sym, Fact)]] =
     propKey(key) match
       case Some(k) if fact == Fact.Value(EBool(true)) =>
-        termFact(base, Fact.Has(k, exists = true))
+        termFact(base, Fact.PropExists(k, exists = true))
       case Some(k) =>
         termFact(
           base,
@@ -351,7 +335,7 @@ object Reify {
     parts: FactParts,
   ): Option[(String, FactParts, Map[String, Set[Fact]])] =
     val prototypeProps = parts.props.getOrElse("prototype", Set.empty)
-    val prototypeHas = parts.has.get("prototype")
+    val prototypeHas = parts.propExists.get("prototype")
     if (prototypeHas.exists(_.size > 1)) None
     else
       val prototypeGet =
@@ -368,7 +352,7 @@ object Reify {
             else rawBase
           val objectParts = parts.copy(
             props = parts.props - "prototype",
-            has = parts.has - "prototype",
+            propExists = parts.propExists - "prototype",
           )
           val getTrap =
             if (getBody.isDefined)
@@ -426,12 +410,13 @@ object Reify {
     parts.lowers.isEmpty &&
     parts.uppers.isEmpty &&
     parts.props.isEmpty &&
-    parts.has.isEmpty &&
+    parts.propExists.isEmpty &&
     parts.calls.isEmpty &&
     parts.extensible.isEmpty &&
     parts.prototypes.isEmpty &&
     parts.traps.isEmpty &&
-    parts.fields.isEmpty
+    parts.fields.isEmpty &&
+    parts.fieldExists.isEmpty
 
   private val abruptConversionObject: String =
     "{[Symbol.toPrimitive](){throw 0}}"
@@ -444,12 +429,13 @@ object Reify {
     types: Set[ValueTy],
     avoidedTypes: List[ValueTy],
     props: Map[String, Set[Fact]],
-    has: Map[String, Set[Boolean]],
+    propExists: Map[String, Set[Boolean]],
     calls: Set[Fact],
     extensible: Set[Boolean],
     prototypes: Set[LiteralExpr],
     traps: Map[String, Set[Fact]],
     fields: Map[String, Set[Fact]],
+    fieldExists: Map[String, Set[Boolean]],
   )
 
   private case class PropertyRender(entry: String, define: String)
@@ -468,8 +454,8 @@ object Reify {
         .view
         .mapValues(_.toSet)
         .toMap,
-      has = facts
-        .collect { case Fact.Has(key, exists) => key -> exists }
+      propExists = facts
+        .collect { case Fact.PropExists(key, exists) => key -> exists }
         .groupMap(_._1)(_._2)
         .view
         .mapValues(_.toSet)
@@ -485,6 +471,12 @@ object Reify {
         .toMap,
       fields = facts
         .collect { case Fact.Field(name, fact) => name -> fact }
+        .groupMap(_._1)(_._2)
+        .view
+        .mapValues(_.toSet)
+        .toMap,
+      fieldExists = facts
+        .collect { case Fact.FieldExists(name, exists) => name -> exists }
         .groupMap(_._1)(_._2)
         .view
         .mapValues(_.toSet)
@@ -505,10 +497,11 @@ object Reify {
       case None =>
         val requiredTy = requiredValueType(parts)
         val avoidedTys = avoidedValueTypes(parts)
-        if (requiredTy.isBottom) None
+        if (!validInternalFieldExistence(parts)) None
+        else if (requiredTy.isBottom) None
         else if (hasNumericBounds(parts))
           renderNumber(parts, requiredTy, avoidedTys)
-        else if (parts.fields.nonEmpty)
+        else if (parts.fields.nonEmpty || hasRequiredInternalFields(parts))
           renderFieldBackedTarget(parts, requiredTy, avoidedTys)
             .flatMap(renderObjectLike(_, parts))
         else if (parts.calls.nonEmpty)
@@ -543,10 +536,17 @@ object Reify {
 
   private def hasObjectShape(parts: FactParts): Boolean =
     parts.props.nonEmpty ||
-    parts.has.exists(_._2.contains(true)) ||
+    parts.propExists.exists(_._2.contains(true)) ||
     parts.extensible.nonEmpty ||
     parts.prototypes.nonEmpty ||
-    parts.fields.nonEmpty
+    parts.fields.nonEmpty ||
+    hasRequiredInternalFields(parts)
+
+  private def hasRequiredInternalFields(parts: FactParts): Boolean =
+    parts.fieldExists.values.exists(_.contains(true))
+
+  private def validInternalFieldExistence(parts: FactParts): Boolean =
+    parts.fieldExists.values.forall(_.size <= 1)
 
   private def requiredValueType(parts: FactParts): ValueTy =
     parts.types.filterNot(_ <= CompT).foldLeft(ESValueT)(_ && _)
@@ -573,7 +573,7 @@ object Reify {
     var failed = false
 
     for ((key, facts) <- parts.props.toList.sortBy(_._1) if !failed) {
-      val existsSet = parts.has.getOrElse(key, Set())
+      val existsSet = parts.propExists.getOrElse(key, Set())
       if (existsSet.contains(false)) failed = true
       renderProperty(key, facts) match
         case None => failed = true
@@ -583,7 +583,7 @@ object Reify {
         case Some(None) => ()
     }
 
-    for ((key, existsSet) <- parts.has.toList.sortBy(_._1) if !failed)
+    for ((key, existsSet) <- parts.propExists.toList.sortBy(_._1) if !failed)
       if (existsSet.size > 1) failed = true
       else if (existsSet.contains(true) && !renderedKeys(key))
         rendered += valueProperty(key, "0")
@@ -633,12 +633,13 @@ object Reify {
     parts.lowers.isEmpty &&
     parts.uppers.isEmpty &&
     parts.props.isEmpty &&
-    parts.has.isEmpty &&
+    parts.propExists.isEmpty &&
     parts.calls.isEmpty &&
     parts.extensible.isEmpty &&
     parts.prototypes.isEmpty &&
     parts.traps.isEmpty &&
     parts.fields.isEmpty &&
+    parts.fieldExists.isEmpty &&
     parts.types.nonEmpty &&
     parts.types.forall(_ <= NormalT) &&
     parts.avoidedTypes.isEmpty
@@ -866,13 +867,13 @@ object Reify {
     if (throws) Some(Some("throw 0;"))
     else if (parts.values.nonEmpty || parts.props.nonEmpty)
       renderTrapFacts(facts)
-    else if (parts.has.nonEmpty)
+    else if (parts.propExists.nonEmpty)
       renderPropertyDescriptor(parts).map(js => Some(s"return $js;"))
     else renderTrapFacts(facts)
 
   private def renderPropertyDescriptor(parts: FactParts): Option[String] =
     def has(field: String): Option[Boolean] =
-      parts.has.get(field) match
+      parts.propExists.get(field) match
         case Some(values) if values.size > 1 => None
         case Some(values)                    => Some(values.contains(true))
         case None                            => Some(false)
@@ -944,7 +945,9 @@ object Reify {
     val typedArrayRelevant =
       !(requiredTy && TypedArrayT).isBottom ||
       parts.fields.contains("TypedArrayName") ||
-      parts.fields.contains("ContentType")
+      parts.fields.contains("ContentType") ||
+      parts.fieldExists.get("TypedArrayName").exists(_.contains(true)) ||
+      parts.fieldExists.get("ContentType").exists(_.contains(true))
     typedArrayRelevant &&
     !(requiredTy && candidateTy).isBottom &&
     avoidedTys.forall(avoidTy => (candidateTy && avoidTy).isBottom) &&
@@ -954,6 +957,11 @@ object Reify {
       case ("ContentType", facts) =>
         literalFactsAllow(facts, EEnum(candidate.contentType))
       case _ => false
+    } &&
+    parts.fieldExists.forall {
+      case ("TypedArrayName", existsSet) => existsSet == Set(true)
+      case ("ContentType", existsSet)    => existsSet == Set(true)
+      case (_, existsSet)                => existsSet == Set(false)
     }
 
   private def literalFactsAllow(facts: Set[Fact], lit: LiteralExpr): Boolean =
@@ -963,12 +971,13 @@ object Reify {
     parts.lowers.isEmpty &&
     parts.uppers.isEmpty &&
     parts.props.isEmpty &&
-    parts.has.isEmpty &&
+    parts.propExists.isEmpty &&
     parts.calls.isEmpty &&
     parts.extensible.isEmpty &&
     parts.prototypes.isEmpty &&
     parts.traps.isEmpty &&
-    parts.fields.isEmpty
+    parts.fields.isEmpty &&
+    parts.fieldExists.isEmpty
 
   private def hasNumericBounds(parts: FactParts): Boolean =
     parts.lowers.nonEmpty || parts.uppers.nonEmpty
@@ -1316,7 +1325,8 @@ object Reify {
     def fromExpr(t: SymExpr): Set[String] = t match
       case SEApp(fname: String, args) => Set(fname) ++ args.flatMap(fromExpr)
       case SEApp(_, args)             => args.flatMap(fromExpr).toSet
-      case SEProj(base, _)            => fromExpr(base)
+      case SEProj(base, key)          => fromExpr(base) ++ fromExpr(key)
+      case SEField(base, _)           => fromExpr(base)
       case SEList(elems)              => elems.flatMap(fromExpr).toSet
       case SERecord(_, fs)            => fs.values.flatMap(fromExpr).toSet
       case SEMap(es) =>
@@ -1334,10 +1344,11 @@ object Reify {
   def outerAppNames(f: Formula): Set[String] =
     def fromExpr(t: SymExpr): Set[String] = t match
       case SEApp(fname: String, _) if !isKnownApp(fname) => Set(fname)
-      case SEApp(_, args)  => args.flatMap(fromExpr).toSet
-      case SEProj(base, _) => fromExpr(base)
-      case SEList(elems)   => elems.flatMap(fromExpr).toSet
-      case SERecord(_, fs) => fs.values.flatMap(fromExpr).toSet
+      case SEApp(_, args)    => args.flatMap(fromExpr).toSet
+      case SEProj(base, key) => fromExpr(base) ++ fromExpr(key)
+      case SEField(base, _)  => fromExpr(base)
+      case SEList(elems)     => elems.flatMap(fromExpr).toSet
+      case SERecord(_, fs)   => fs.values.flatMap(fromExpr).toSet
       case SEMap(es) =>
         es.flatMap((k, v) => fromExpr(k) ++ fromExpr(v)).toSet
       case SETypeOf(t) => fromExpr(t)

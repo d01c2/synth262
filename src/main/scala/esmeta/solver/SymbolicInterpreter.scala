@@ -360,7 +360,7 @@ class SymbolicInterpreter(
           es.collectFirst {
             case (SELit(EStr(`name`)), v) => v
           }.getOrElse(SEProj(SEMap(es), SELit(EStr(name))))
-        case t => SEProj(t, SELit(EStr(name)))
+        case t => SEField(t, name)
     case Field(base, idx) =>
       (eval(base), eval(idx)) match
         case (SEList(es), SELit(EMath(n)))
