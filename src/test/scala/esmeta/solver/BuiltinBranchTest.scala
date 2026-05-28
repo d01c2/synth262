@@ -6,7 +6,7 @@ import esmeta.es.util.Coverage
 import esmeta.es.util.Coverage.Cond
 import esmeta.ir.{EBool, EClo, ICall}
 import esmeta.phase.Solve
-import scala.collection.mutable.{Map => MMap, Set => MSet, Queue}
+import scala.collection.mutable.{Set => MSet, Queue}
 import scala.concurrent.{Future, Await, ExecutionContext}
 import scala.concurrent.duration.Duration
 import java.util.concurrent.Executors
@@ -68,18 +68,24 @@ class BuiltinBranchTest extends ESMetaTest {
       }
       futures.flatMap(Await.result(_, Duration.Inf))
     }
-    var verified = 0
+    val reachableByBuiltin: List[(Func, Set[Func])] = {
+      val futures = builtins.map { f =>
+        Future(f -> reachableFuncs(List(f)))
+      }
+      futures.map(Await.result(_, Duration.Inf)).toList
+    }
+    val builtinEntries = builtins.toSet
+    val reachableModelingAOs = reachableByBuiltin.flatMap(_._2).toSet
+    val builtinEntryAONames = builtinEntries.map(_.name).toList.sorted
+    val nonEntryAONames =
+      (reachableModelingAOs -- builtinEntries).map(_.name).toList.sorted
+    val modelingAOCount = reachableModelingAOs.size
 
     // collect unique (builtin, branch) pairs; each branch is solved once.
     val targets: List[(Func, Branch)] = {
-      val pairs = {
-        val futures = builtins.map { f =>
-          Future {
-            val reachable = reachableFuncs(List(f))
-            targetBranches(reachable).sortBy(_.id).map(f -> _)
-          }
-        }
-        futures.flatMap(Await.result(_, Duration.Inf))
+      val pairs = reachableByBuiltin.flatMap {
+        case (f, reachable) =>
+          targetBranches(reachable).sortBy(_.id).map(f -> _)
       }
       val seen = MSet[Int]()
       val buf = List.newBuilder[(Func, Branch)]
@@ -195,7 +201,8 @@ class BuiltinBranchTest extends ESMetaTest {
                   if (Reify.hasUninterpretableApp(fs))
                     val names = fs.flatMap(Reify.outerAppNames).toSet
                     blockingAOs = names
-                    reason = s"uninterp-app(${names.mkString(",")})"
+                    reason =
+                      s"uninterp-app(${names.toList.sorted.mkString(",")})"
                   else
                     Reify(fs, params).witness match
                       case None =>
@@ -234,26 +241,25 @@ class BuiltinBranchTest extends ESMetaTest {
         futures.map(Await.result(_, Duration.Inf))
       }
 
-      // aggregate
-      var solved = 0
-      var unsolved = 0
-      var verifyFailed = 0
-      var timings = List[(String, Int, Long)]()
-      val reasons = MMap[String, Int]()
-      for (r <- results) r.status match
-        case "ok" =>
-          solved += 1; verified += 1
-          timings ::= (r.fname, r.bid, r.elapsed)
-        case "miss" =>
-          solved += 1; verifyFailed += 1
-          timings ::= (r.fname, r.bid, r.elapsed)
-          println(
-            f"  [MISS] ${r.fname} Branch[${r.bid}]:T" +
-            f" (${r.elapsed / 1000.0}%.0f us)",
-          )
-        case _ =>
-          unsolved += 1
-          reasons(r.reason) = reasons.getOrElse(r.reason, 0) + 1
+      val verifiedResults = results.filter(_.status == "ok")
+      val missedResults = results.filter(_.status == "miss")
+      val unsolvedResults =
+        results.filter(r => r.status != "ok" && r.status != "miss")
+      val solved = verifiedResults.size + missedResults.size
+      val verified = verifiedResults.size
+      val verifyFailed = missedResults.size
+      val timings =
+        (verifiedResults ++ missedResults).map(r => (r.fname, r.bid, r.elapsed))
+      val reasons =
+        unsolvedResults.groupMapReduce(_.reason)(_ => 1)(_ + _)
+      val blockingAoFreq =
+        results.flatMap(_.blockingAOs).groupMapReduce(identity)(_ => 1)(_ + _)
+
+      for (r <- missedResults)
+        println(
+          f"  [MISS] ${r.fname} Branch[${r.bid}]:T" +
+          f" (${r.elapsed / 1000.0}%.0f us)",
+        )
 
       // timing summary
       if (timings.nonEmpty) {
@@ -267,30 +273,56 @@ class BuiltinBranchTest extends ESMetaTest {
 
       if (reasons.nonEmpty) {
         println(f"\n  Unsolved breakdown:")
-        var uninterpTotal = 0
-        val aoFreq = MMap[String, Int]()
-        val others = List.newBuilder[(String, Int)]
-        for ((reason, count) <- reasons.toList.sortBy(-_._2))
-          if (reason.startsWith("uninterp-app(")) {
-            uninterpTotal += count
-            val names = reason.stripPrefix("uninterp-app(").stripSuffix(")")
-            for (n <- names.split(","))
-              aoFreq(n.trim) = aoFreq.getOrElse(n.trim, 0) + count
-          } else others += (reason -> count)
-        if (uninterpTotal > 0)
-          others += ("uninterp-app" -> uninterpTotal)
-        for ((reason, count) <- others.result().sortBy(-_._2))
+        val uninterpTotal = reasons.iterator.collect {
+          case (reason, count) if reason.startsWith("uninterp-app(") => count
+        }.sum
+        val reasonSummary =
+          reasons.toList.filterNot(_._1.startsWith("uninterp-app(")) ++
+          Option.when(uninterpTotal > 0)("uninterp-app" -> uninterpTotal)
+        for ((reason, count) <- reasonSummary.sortBy(-_._2))
           println(f"    $count%4d  $reason")
-        if (aoFreq.nonEmpty) {
-          println(f"\n  Blocking AO frequency (top 30):")
-          for ((name, count) <- aoFreq.toList.sortBy(-_._2).take(30))
-            println(f"    $count%4d  $name")
-        }
+      }
+
+      println(f"\n  Modeling AO targets:")
+      println(f"    total unique:  $modelingAOCount%4d")
+      println(f"    entry:         ${builtinEntryAONames.size}%4d")
+      println(f"    non-entry:     ${nonEntryAONames.size}%4d")
+
+      if (blockingAoFreq.nonEmpty) {
+        println(f"\n  Blocking AO frequency (top 30):")
+        for (
+          (name, count) <- blockingAoFreq.toList
+            .sortBy((name, count) => (-count, name))
+            .take(30)
+        )
+          println(f"    $count%4d  $name")
       }
 
       // dump full diagnostics to file
       val dumpFile = new PrintWriter("solve-dump.log")
       try {
+        dumpFile.println("=" * 60)
+        dumpFile.println("Modeling AO targets")
+        dumpFile.println(s"  total unique: $modelingAOCount")
+        dumpFile.println(s"  entry: ${builtinEntryAONames.size}")
+        dumpFile.println(s"  non-entry: ${nonEntryAONames.size}")
+        dumpFile.println(s"  [entry] ${builtinEntryAONames.size}")
+        builtinEntryAONames.foreach(name => dumpFile.println(s"    $name"))
+        dumpFile.println(s"  [non-entry] ${nonEntryAONames.size}")
+        nonEntryAONames.foreach(name => dumpFile.println(s"    $name"))
+        dumpFile.println()
+
+        if (blockingAoFreq.nonEmpty) {
+          dumpFile.println("=" * 60)
+          dumpFile.println(s"Blocking AO frequency ${blockingAoFreq.size}")
+          for (
+            (name, count) <- blockingAoFreq.toList
+              .sortBy((name, count) => (-count, name))
+          )
+            dumpFile.println(f"    $count%4d  $name")
+        }
+        dumpFile.println()
+
         def dumpSolved(r: BranchResult): Unit = {
           dumpFile.println(
             s"=== ${r.fname} -> ${r.targetName} Branch[${r.bid}] === ${r.status.toUpperCase}",
@@ -319,7 +351,9 @@ class BuiltinBranchTest extends ESMetaTest {
             fs.foreach(f => dumpFile.println(s"    $f"))
           }
           if (r.blockingAOs.nonEmpty)
-            dumpFile.println(s"  [blocking] ${r.blockingAOs.mkString(", ")}")
+            dumpFile.println(
+              s"  [blocking] ${r.blockingAOs.toList.sorted.mkString(", ")}",
+            )
           dumpFile.println()
         }
       } finally dumpFile.close()
