@@ -1,5 +1,7 @@
 package esmeta.solver
 
+import esmeta.cfg.{Branch, BranchKind, CFG, Func as CFGFunc}
+import esmeta.es.util.Coverage.Cond
 import esmeta.ir.*
 import esmeta.ty.*
 import Formula.*, SymExpr.*
@@ -281,6 +283,58 @@ class SolverTinyTest extends SolverTest {
 
       assert(rewritten.contains(isType(resultValue, NormalT)))
       assert(!rewritten.contains(isType(bareValue, NormalT)))
+    }
+
+    check("symbolic interpreter explores both disjunctive path constraints") {
+      val xLocal = Name("x")
+      val yLocal = Name("y")
+      val xExpr = ERef(xLocal)
+      val yExpr = ERef(yLocal)
+      val guard = Branch(
+        0,
+        BranchKind.If,
+        EBinary(
+          BOp.Or,
+          EBinary(BOp.Eq, xExpr, EMath(BigDecimal(0))),
+          EBinary(BOp.Eq, xExpr, EMath(BigDecimal(1))),
+        ),
+      )
+      val target = Branch(
+        1,
+        BranchKind.If,
+        EBinary(BOp.Eq, yExpr, EMath(BigDecimal(2))),
+      )
+      guard.thenNode = Some(target)
+      val irFunc = Func(
+        true,
+        FuncKind.AbsOp,
+        "dnf",
+        List(
+          Param(xLocal, Type(NumberT), false),
+          Param(yLocal, Type(NumberT), false),
+        ),
+        Type(NormalT),
+        INop(),
+      )
+      val func = CFGFunc(0, irFunc, guard)
+      val cfg = CFG(List(func))
+      given CFG = cfg
+
+      val goals =
+        SymbolicInterpreter(func, Cond(target, true)).result.take(3).toList
+      val expected = Set(
+        List(
+          isValue(SESym(Sym.Arg(0)), EMath(BigDecimal(0))),
+          isValue(SESym(Sym.Arg(1)), EMath(BigDecimal(2))),
+        ),
+        List(
+          isValue(SESym(Sym.Arg(0)), EMath(BigDecimal(1))),
+          isValue(SESym(Sym.Arg(1)), EMath(BigDecimal(2))),
+        ),
+      )
+
+      assert(goals.size == 2)
+      assert(goals.toSet == expected)
     }
 
   }

@@ -19,6 +19,7 @@
   "generic projection is not an internal field witness" : true,
   "internal field value reifies by object shape" : true,
   "known internal field existence reifies by object shape" : true,
+  "symbolic interpreter explores both disjunctive path constraints" : true,
   "unknown Completion Type check stays on wrapper" : true,
   "unknown Completion value projection is preserved" : true,
   "unknown internal field existence is not a JS property witness" : true,

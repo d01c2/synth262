@@ -67,7 +67,7 @@ class SymbolicInterpreter(
   lazy val result: LazyList[Goal] =
     if (whitelist(entryFunc).isEmpty) { whitelistEmpty = true; LazyList() }
     else {
-      var stack = List[(Cond, Goal, State)]()
+      var stack = List[(Cond, List[Goal], State)]()
 
       // env, call context initialization
       env = entryFunc.head match
@@ -87,25 +87,36 @@ class SymbolicInterpreter(
       callCtxt = None
 
       // path constraint
-      def pc: Goal = stack.reverseIterator.flatMap(_._2).toList
+      def convertDNF(lhs: List[Goal], rhs: List[Goal]): List[Goal] =
+        for {
+          l <- lhs
+          r <- rhs
+          goal = l ++ r
+          if !Solver.hasContradiction(goal)
+        } yield goal
+
+      def pc: List[Goal] =
+        stack.reverseIterator.foldLeft(List(List()): List[Goal]) {
+          (goals, frame) => convertDNF(goals, frame._2)
+        }
 
       // try certain branch side and push constraints onto the stack
       def tryBranch(br: Branch, side: Boolean): Option[Node] =
         val nextNode = if (side) br.thenNode else br.elseNode
-        val constraint =
-          if (br.isFiltered) Some(List()) // skip extraction for filtered
-          else getConstraint(br.cond, side)
-        (for {
-          node <- nextNode.filter(feasible)
-          cs <- constraint
-        } yield (node, cs)) match
-          case Some((node, cs)) if Solver.hasContradiction(pc ++ cs) =>
-            pathContradiction = true; None
-          case Some((node, cs)) =>
-            stack ::= (Cond(br, side), cs, State(env, callCtxt))
+        val constraints =
+          if (br.isFiltered) List(List()) // skip extraction for filtered
+          else getConstraints(br.cond, side)
+        nextNode.filter(feasible).flatMap { node =>
+          val goals = convertDNF(pc, constraints)
+          if (goals.nonEmpty) {
+            stack ::= (Cond(br, side), constraints, State(env, callCtxt))
             propagateEnv(br.cond, side)
             Some(node)
-          case None => None
+          } else {
+            if (constraints.nonEmpty) pathContradiction = true
+            None
+          }
+        }
 
       def feasible(n: Node): Boolean =
         whitelist(cfg.funcOf(n)).contains(n) && // prune unreachable nodes
@@ -174,11 +185,15 @@ class SymbolicInterpreter(
               case _ => env -= ret; call.next.filter(feasible)
 
       // collect path constraints
-      def collectGoal(node: Node): Option[Goal] =
+      def collectGoal(node: Node): Option[List[Goal]] =
         try {
           node match
             case b: Branch if b.id == branch.id =>
-              getConstraint(b.cond, side).map(pc ++ _)
+              val constraints = getConstraints(b.cond, side)
+              val goals = convertDNF(pc, constraints)
+              if (constraints.nonEmpty && goals.isEmpty)
+                targetContradiction = true
+              Some(goals)
             case _ => step(node).flatMap(collectGoal)
         } catch {
           case e: NotImplementedError =>
@@ -207,23 +222,26 @@ class SymbolicInterpreter(
         }
 
       var cur: Option[Node] = Some(entryFunc.entry)
-      def nextGoal(): Option[Goal] = cur match
-        case None => None
+      def solveGoals(goals: List[Goal]): LazyList[Goal] = goals match
+        case Nil =>
+          cur = backtrack()
+          nextGoals
+        case goal :: rest =>
+          solveGoal(goal) match
+            case Some(solved) => solved #:: solveGoals(rest)
+            case None =>
+              targetContradiction = true
+              solveGoals(rest)
+
+      def nextGoals: LazyList[Goal] = cur match
+        case None => LazyList()
         case Some(node) =>
           collectGoal(node) match
-            case Some(goal) =>
-              solveGoal(goal) match
-                case Some(solved) =>
-                  cur = backtrack(); Some(solved)
-                case None =>
-                  targetContradiction = true
-                  cur = backtrack(); nextGoal()
+            case Some(goals) => solveGoals(goals)
             case None =>
-              cur = backtrack(); nextGoal()
-      def goals: LazyList[Goal] = nextGoal() match
-        case Some(goal) => goal #:: goals
-        case None       => LazyList()
-      goals
+              cur = backtrack()
+              nextGoals
+      nextGoals
     }
 
   private def propagateEnv(cond: Expr, side: Boolean): Unit =
@@ -371,64 +389,64 @@ class SymbolicInterpreter(
             .getOrElse(SEProj(SEMap(es), k))
         case (b, k) => SEProj(b, k)
 
-  private def getConstraint(expr: Expr, pos: Boolean): Option[Goal] =
+  private def getConstraints(expr: Expr, pos: Boolean): List[Goal] =
     expr match
-      case EUnary(UOp.Not, inner) => getConstraint(inner, !pos)
+      case EUnary(UOp.Not, inner) => getConstraints(inner, !pos)
       case ETypeCheck(base, ty) =>
         val f = FTypeCheck(eval(base), ty.toValue)
-        Some(List(if (pos) f else FNot(f)))
+        List(List(if (pos) f else FNot(f)))
       case EBinary(BOp.Eq | BOp.Equal, lhs, rhs) =>
         (lhs, rhs) match
-          case (_, EBool(b)) => getConstraint(lhs, if (pos) b else !b)
-          case (EBool(b), _) => getConstraint(rhs, if (pos) b else !b)
+          case (_, EBool(b)) => getConstraints(lhs, if (pos) b else !b)
+          case (EBool(b), _) => getConstraints(rhs, if (pos) b else !b)
           case _ =>
             val f = FEq(eval(lhs), eval(rhs))
-            Some(List(if (pos) f else FNot(f)))
+            List(List(if (pos) f else FNot(f)))
       case EBinary(BOp.Lt, lhs, rhs) =>
         val f = FLt(eval(lhs), eval(rhs))
-        Some(List(if (pos) f else FNot(f)))
+        List(List(if (pos) f else FNot(f)))
       case EBinary(BOp.And, lhs, rhs) if pos =>
         for {
-          l <- getConstraint(lhs, true)
-          r <- getConstraint(rhs, true)
+          l <- getConstraints(lhs, true)
+          r <- getConstraints(rhs, true)
         } yield l ++ r
       case EBinary(BOp.Or, lhs, rhs) if !pos =>
         for {
-          l <- getConstraint(lhs, false)
-          r <- getConstraint(rhs, false)
+          l <- getConstraints(lhs, false)
+          r <- getConstraints(rhs, false)
         } yield l ++ r
       case EBinary(BOp.And, lhs, rhs) =>
-        getConstraint(lhs, false).orElse(getConstraint(rhs, false))
+        getConstraints(lhs, false) ++ getConstraints(rhs, false)
       case EBinary(BOp.Or, lhs, rhs) =>
-        getConstraint(lhs, true).orElse(getConstraint(rhs, true))
+        getConstraints(lhs, true) ++ getConstraints(rhs, true)
       case EExists(x: Local) =>
-        if (env.contains(x) == pos) Some(List()) else None
+        if (env.contains(x) == pos) List(List()) else Nil
       case EExists(Field(base, key)) =>
         val k = eval(key)
         (eval(base), k) match
           case (SERecord(_, fs), SELit(EStr(field))) if fs.contains(field) =>
-            if (pos) Some(List()) else None
+            if (pos) List(List()) else Nil
           case (t, _) =>
             val f = FExists(t, k)
-            Some(List(if (pos) f else FNot(f)))
+            List(List(if (pos) f else FNot(f)))
       case EContains(list, elem) =>
         (eval(list), eval(elem)) match
           case (SEList(elems), t) =>
-            if (pos) elems.headOption.map(e => List(FEq(t, e)))
-            else Some(elems.map(e => FNot(FEq(t, e))))
+            if (pos) elems.map(e => List(FEq(t, e)))
+            else List(elems.map(e => FNot(FEq(t, e))))
           case (SELit(EStr(s)), SELit(EStr(sub))) =>
-            if (s.contains(sub) == pos) Some(List()) else None
+            if (s.contains(sub) == pos) List(List()) else Nil
           case (l, r) =>
             val f = FEq(SEApp("[ir:contains]", List(l, r)), SELit(EBool(true)))
-            Some(List(if (pos) f else FNot(f)))
+            List(List(if (pos) f else FNot(f)))
       case ERef(ref) =>
         eval(ref) match
-          case SELit(EBool(b)) if b != pos => None
-          case v => Some(List(FEq(v, SELit(EBool(pos)))))
-      case _: EYet => None
+          case SELit(EBool(b)) if b != pos => Nil
+          case v => List(List(FEq(v, SELit(EBool(pos)))))
+      case _: EYet => Nil
       case e =>
         throw NotImplementedError(
-          s"getConstraint: ${e.getClass.getSimpleName}",
+          s"getConstraints: ${e.getClass.getSimpleName}",
         )
 
   // constant folding for literals
