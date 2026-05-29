@@ -30,8 +30,10 @@ object RewriteRules {
       thisValueModel(x, call, StrT, "StringData")
     case SEApp("ThisBooleanValue", List(x)) =>
       thisValueModel(x, call, BoolT, "BooleanData")
-    case SEApp("IsArray", List(x)) => isArrayModel(x, call)
-    case _                         => Nil
+    case SEApp("IsArray", List(x))       => isArrayModel(x, call)
+    case SEApp("IsCallable", List(x))    => isCallableModel(x, call)
+    case SEApp("IsConstructor", List(x)) => isConstructorModel(x, call)
+    case _                               => Nil
 
   def isModeledCall(expr: SymExpr): Boolean = expr match
     case SEApp("ToNumber", List(_))               => true
@@ -46,6 +48,8 @@ object RewriteRules {
     case SEApp("ThisStringValue", List(_))        => true
     case SEApp("ThisBooleanValue", List(_))       => true
     case SEApp("IsArray", List(_))                => true
+    case SEApp("IsCallable", List(_))             => true
+    case SEApp("IsConstructor", List(_))          => true
     case _                                        => false
 
   private def toBooleanModel(x: SymExpr, ret: SymExpr): List[AoCase] =
@@ -127,6 +131,33 @@ object RewriteRules {
       AoCase(
         List(FNot(FTypeCheck(x, primTy)), FNot(FExists(x, SELit(EStr(slot))))),
         List(FTypeCheck(ret, ThrowT)),
+      ),
+    )
+
+  private def isCallableModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+    val t = SELit(EBool(true))
+    val f = SELit(EBool(false))
+    val hasCall = FExists(x, SELit(EStr("Call")))
+    // 3 return nodes, all modeled. Returns Boolean directly (not a completion).
+    // CFG checks `exists argument.Call`
+    List(
+      AoCase(List(FNot(FTypeCheck(x, ObjectT))), List(FEq(ret, f))),
+      AoCase(List(FTypeCheck(x, ObjectT), hasCall), List(FEq(ret, t))),
+      AoCase(List(FTypeCheck(x, ObjectT), FNot(hasCall)), List(FEq(ret, f))),
+    )
+
+  private def isConstructorModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+    val t = SELit(EBool(true))
+    val f = SELit(EBool(false))
+    val hasConstruct = FExists(x, SELit(EStr("Construct")))
+    // 3 return nodes, all modeled. Returns Boolean directly (not a completion).
+    // CFG checks `exists argument.Construct`
+    List(
+      AoCase(List(FNot(FTypeCheck(x, ObjectT))), List(FEq(ret, f))),
+      AoCase(List(FTypeCheck(x, ObjectT), hasConstruct), List(FEq(ret, t))),
+      AoCase(
+        List(FTypeCheck(x, ObjectT), FNot(hasConstruct)),
+        List(FEq(ret, f)),
       ),
     )
 
@@ -285,14 +316,10 @@ object RewriteRules {
     // IsArray is modeled point-wise as implication facts.
 
     // https://tc39.es/ecma262/#sec-iscallable
-    case FEq(SEApp("IsCallable", List(x)), SELit(EBool(b))) =>
-      val eq = FTypeCheck(x, FunctionT)
-      List(if (b) eq else FNot(eq))
+    // IsCallable is modeled point-wise as implication facts.
 
     // https://tc39.es/ecma262/#sec-isconstructor
-    case FEq(SEApp("IsConstructor", List(x)), SELit(EBool(b))) =>
-      val eq = FTypeCheck(x, ConstructorT)
-      List(if (b) eq else FNot(eq))
+    // IsConstructor is modeled point-wise as implication facts.
 
     // https://tc39.es/ecma262/#sec-isregexp
     // NOTE: IsRegExp returns true if has [[RegExpMatcher]], and false if non-object
