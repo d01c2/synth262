@@ -14,18 +14,19 @@ object RewriteRules {
   def aoModel(call: SymExpr): List[AoCase] = call match
     case SEApp("ToNumber", List(x))  => toNumberModel(x, call)
     case SEApp("ToBoolean", List(x)) => toBooleanModel(x, call)
+    case SEApp("ToObject", List(x))  => toObjectModel(x, call)
     case _                           => Nil
 
   def isModeledCall(expr: SymExpr): Boolean = expr match
     case SEApp("ToNumber", List(_))  => true
     case SEApp("ToBoolean", List(_)) => true
+    case SEApp("ToObject", List(_))  => true
     case _                           => false
 
-  // https://tc39.es/ecma262/#sec-toboolean
-  // return values cannot be inferred from detailed-types, so checked CFG
   private def toBooleanModel(x: SymExpr, ret: SymExpr): List[AoCase] =
     val t = SELit(EBool(true))
     val f = SELit(EBool(false))
+    // return values cannot be inferred from detailed-types, so checked CFG
     List(
       AoCase(List(FTypeCheck(x, UndefT)), List(FEq(ret, f))),
       AoCase(List(FTypeCheck(x, NullT)), List(FEq(ret, f))),
@@ -61,11 +62,30 @@ object RewriteRules {
       AoCase(List(FTypeCheck(x, ObjectT)), List(FEq(ret, t))),
     )
 
+  private def toObjectModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+    val abrupt = List(FTypeCheck(ret, ThrowT))
+    val normal = List(FTypeCheck(ret, NormalT))
+    // Wrapper cases return new objects whose internal fields (e.g., Prototype,
+    // BooleanData) are visible in CFG but not expressible as type constraints.
+    // ret.Value only constrained for Object (identity).
+    List(
+      AoCase(List(FTypeCheck(x, UndefT)), abrupt),
+      AoCase(List(FTypeCheck(x, NullT)), abrupt),
+      AoCase(List(FTypeCheck(x, BoolT)), normal),
+      AoCase(List(FTypeCheck(x, NumberT)), normal),
+      AoCase(List(FTypeCheck(x, StrT)), normal),
+      AoCase(List(FTypeCheck(x, SymbolT)), normal),
+      AoCase(List(FTypeCheck(x, BigIntT)), normal),
+      AoCase(
+        List(FTypeCheck(x, ObjectT)),
+        List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), x)),
+      ),
+    )
+
   private def toNumberModel(x: SymExpr, ret: SymExpr): List[AoCase] =
-    // Open dependency: dropped 4 cases which require other function summary.
-    // dropped 4 cases: 1070, 1075, 1081, 1082
     def normal(v: SymExpr): Goal =
       List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
+    // Open dependency: dropped 4 cases which require other function summary.
     List(
       AoCase(List(FTypeCheck(x, NumberT)), normal(x)),
       AoCase(
@@ -129,12 +149,7 @@ object RewriteRules {
         case _                  => List(f)
 
     // https://tc39.es/ecma262/#sec-toobject
-    case FTypeCheck(SEApp("ToObject", List(x)), ty) if ty <= CompT =>
-      val isUndefOrNull = FTypeCheck(x, UndefT || NullT)
-      ty match
-        case _ if ty <= NormalT => List(FNot(isUndefOrNull))
-        case _ if ty <= AbruptT => List(isUndefOrNull)
-        case _                  => List(f)
+    // ToObject is modeled point-wise as implication facts.
 
     // https://tc39.es/ecma262/#sec-tolength
     // NOTE: delegates to ToIntegerOrInfinity
@@ -432,8 +447,6 @@ object RewriteRules {
       SEField(SEApp("ToNumber", List(reduceExpr(x))), "Value")
     case ValueField(SEApp("ToString", List(x))) =>
       reduceExpr(x)
-    case ValueField(SEApp("ToObject", List(x))) =>
-      reduceExpr(x)
     case ValueField(SEApp("RequireObjectCoercible", List(x))) =>
       reduceExpr(x)
     case ValueField(SEApp("ToPropertyKey", List(x))) =>
@@ -448,7 +461,6 @@ object RewriteRules {
       SEApp("Get", List(reduceExpr(v), SELit(EStr(p))))
     case SEApp("__CLAMP__", List(x, _, _))        => reduceExpr(x)
     case SEApp("ToString", List(x))               => reduceExpr(x)
-    case SEApp("ToObject", List(x))               => reduceExpr(x)
     case SEApp("RequireObjectCoercible", List(x)) => reduceExpr(x)
     case SEApp("ToPropertyKey", List(x))          => reduceExpr(x)
     case SEApp("ToIntegerOrInfinity", List(x)) =>
