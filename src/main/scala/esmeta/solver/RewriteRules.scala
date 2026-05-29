@@ -2,6 +2,7 @@ package esmeta.solver
 
 import esmeta.ir.*
 import esmeta.ty.*
+import esmeta.util.*
 import Formula.*, SymExpr.*
 
 object RewriteRules {
@@ -11,15 +12,58 @@ object RewriteRules {
   case class AoCase(when: Goal, thenF: Goal)
 
   def aoModel(call: SymExpr): List[AoCase] = call match
-    case SEApp("ToNumber", List(x)) => toNumberModel(x, call)
-    case _                          => Nil
+    case SEApp("ToNumber", List(x))  => toNumberModel(x, call)
+    case SEApp("ToBoolean", List(x)) => toBooleanModel(x, call)
+    case _                           => Nil
 
   def isModeledCall(expr: SymExpr): Boolean = expr match
-    case SEApp("ToNumber", List(_)) => true
-    case _                          => false
+    case SEApp("ToNumber", List(_))  => true
+    case SEApp("ToBoolean", List(_)) => true
+    case _                           => false
+
+  // https://tc39.es/ecma262/#sec-toboolean
+  // return values cannot be inferred from detailed-types, so checked CFG
+  private def toBooleanModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+    val t = SELit(EBool(true))
+    val f = SELit(EBool(false))
+    List(
+      AoCase(List(FTypeCheck(x, UndefT)), List(FEq(ret, f))),
+      AoCase(List(FTypeCheck(x, NullT)), List(FEq(ret, f))),
+      AoCase(List(FTypeCheck(x, BoolT)), List(FEq(ret, x))),
+      // detailed-types has no value-level BigInt; split via CFG branch `= argument 0n`
+      AoCase(
+        List(FTypeCheck(x, BigIntT), FEq(x, SELit(EBigInt(BigInt(0))))),
+        List(FEq(ret, f)),
+      ),
+      AoCase(
+        List(FTypeCheck(x, BigIntT), FNot(FEq(x, SELit(EBigInt(BigInt(0)))))),
+        List(FEq(ret, t)),
+      ),
+      AoCase(
+        List(FTypeCheck(x, ValueTy(number = NumberIntTy(IntTy.Zero, true)))),
+        List(FEq(ret, f)),
+      ),
+      AoCase(
+        List(
+          FTypeCheck(
+            x,
+            ValueTy(number = NumberSignTy(Sign.Neg || Sign.Pos, false)),
+          ),
+        ),
+        List(FEq(ret, t)),
+      ),
+      AoCase(
+        List(FTypeCheck(x, ValueTy(str = Fin(Set(""))))),
+        List(FEq(ret, f)),
+      ),
+      AoCase(List(FTypeCheck(x, StrT)), List(FEq(ret, t))),
+      AoCase(List(FTypeCheck(x, SymbolT)), List(FEq(ret, t))),
+      AoCase(List(FTypeCheck(x, ObjectT)), List(FEq(ret, t))),
+    )
 
   private def toNumberModel(x: SymExpr, ret: SymExpr): List[AoCase] =
     // Open dependency: dropped 4 cases which require other function summary.
+    // dropped 4 cases: 1070, 1075, 1081, 1082
     def normal(v: SymExpr): Goal =
       List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
     List(
@@ -50,22 +94,10 @@ object RewriteRules {
     // 7.1 Type Conversion
 
     // https://tc39.es/ecma262/#sec-toboolean
-    case FEq(SEApp("ToBoolean", List(x)), SELit(EBool(expected))) =>
-      x match
-        case SELit(_: EBool) => List(FEq(x, SELit(EBool(expected))))
-        case SELit(lit) =>
-          val isFalsy = lit match
-            case EUndef() | ENull() => true
-            case ENumber(d)         => d == 0.0 || d.isNaN
-            case EBigInt(n)         => n == BigInt(0)
-            case EStr(s)            => s.isEmpty
-            case _                  => false
-          if (isFalsy) List(FEq(x, SELit(EBool(false))))
-          else List(FEq(x, SELit(EBool(true))))
-        case _ => List(f)
+    // ToBoolean is modeled point-wise as implication facts.
 
     // https://tc39.es/ecma262/#sec-tonumber
-    // ToNumber is modeled point-wise as implication facts, not summarized here.
+    // ToNumber is modeled point-wise as implication facts.
 
     // https://tc39.es/ecma262/#sec-tointegerorinfinity
     // NOTE: delegates to ToNumber
