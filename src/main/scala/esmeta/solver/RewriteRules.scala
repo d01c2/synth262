@@ -18,15 +18,18 @@ object RewriteRules {
     case SEApp("ToObject", List(x))  => toObjectModel(x, call)
     case SEApp("ToBigInt", List(x))  => toBigIntModel(x, call)
     case SEApp("ToString", List(x))  => toStringModel(x, call)
-    case _                           => Nil
+    case SEApp("RequireObjectCoercible", List(x)) =>
+      requireObjectCoercibleModel(x, call)
+    case _ => Nil
 
   def isModeledCall(expr: SymExpr): Boolean = expr match
-    case SEApp("ToNumber", List(_))  => true
-    case SEApp("ToBoolean", List(_)) => true
-    case SEApp("ToObject", List(_))  => true
-    case SEApp("ToBigInt", List(_))  => true
-    case SEApp("ToString", List(_))  => true
-    case _                           => false
+    case SEApp("ToNumber", List(_))               => true
+    case SEApp("ToBoolean", List(_))              => true
+    case SEApp("ToObject", List(_))               => true
+    case SEApp("ToBigInt", List(_))               => true
+    case SEApp("ToString", List(_))               => true
+    case SEApp("RequireObjectCoercible", List(_)) => true
+    case _                                        => false
 
   private def toBooleanModel(x: SymExpr, ret: SymExpr): List[AoCase] =
     val t = SELit(EBool(true))
@@ -83,6 +86,20 @@ object RewriteRules {
       AoCase(List(FTypeCheck(x, BigIntT)), normal),
       AoCase(
         List(FTypeCheck(x, ObjectT)),
+        List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), x)),
+      ),
+    )
+
+  private def requireObjectCoercibleModel(
+    x: SymExpr,
+    ret: SymExpr,
+  ): List[AoCase] =
+    // 3 return nodes, all modeled.
+    List(
+      AoCase(List(FTypeCheck(x, UndefT)), List(FTypeCheck(ret, ThrowT))),
+      AoCase(List(FTypeCheck(x, NullT)), List(FTypeCheck(ret, ThrowT))),
+      AoCase(
+        List(FNot(FTypeCheck(x, UndefT || NullT))),
         List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), x)),
       ),
     )
@@ -199,13 +216,7 @@ object RewriteRules {
     // 7.2 Testing and Comparison Operations
 
     // https://tc39.es/ecma262/#sec-requireobjectcoercible
-    case FTypeCheck(SEApp("RequireObjectCoercible", List(x)), ty)
-        if ty <= CompT =>
-      val isUndefOrNull = FTypeCheck(x, UndefT || NullT)
-      ty match
-        case _ if ty <= NormalT => List(FNot(isUndefOrNull))
-        case _ if ty <= AbruptT => List(isUndefOrNull)
-        case _                  => List(f)
+    // RequireObjectCoercible is modeled point-wise as implication facts.
 
     // https://tc39.es/ecma262/#sec-isarray
     // NOTE: true for Array exotic, false otherwise; Proxy recurses via ValidateNonRevokedProxy
@@ -472,8 +483,6 @@ object RewriteRules {
       SEField(SEApp("ToNumber", List(reduceExpr(x))), "Value")
     case ValueField(SEApp("ToIndex", List(x))) =>
       SEField(SEApp("ToNumber", List(reduceExpr(x))), "Value")
-    case ValueField(SEApp("RequireObjectCoercible", List(x))) =>
-      reduceExpr(x)
     case ValueField(SEApp("ToPropertyKey", List(x))) =>
       reduceExpr(x)
     case SEApp("LengthOfArrayLike", List(x)) =>
@@ -484,9 +493,8 @@ object RewriteRules {
       SEApp("Get", List(reduceExpr(v), reduceExpr(p)))
     case SEApp("GetMethod", List(v, SEField(SEApp("SYMBOL", Nil), p))) =>
       SEApp("Get", List(reduceExpr(v), SELit(EStr(p))))
-    case SEApp("__CLAMP__", List(x, _, _))        => reduceExpr(x)
-    case SEApp("RequireObjectCoercible", List(x)) => reduceExpr(x)
-    case SEApp("ToPropertyKey", List(x))          => reduceExpr(x)
+    case SEApp("__CLAMP__", List(x, _, _)) => reduceExpr(x)
+    case SEApp("ToPropertyKey", List(x))   => reduceExpr(x)
     case SEApp("ToIntegerOrInfinity", List(x)) =>
       SEApp("ToNumber", List(reduceExpr(x)))
     case SEApp("ToLength", List(x)) =>
