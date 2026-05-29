@@ -33,6 +33,7 @@ object RewriteRules {
     case SEApp("IsArray", List(x))       => isArrayModel(x, call)
     case SEApp("IsCallable", List(x))    => isCallableModel(x, call)
     case SEApp("IsConstructor", List(x)) => isConstructorModel(x, call)
+    case SEApp("IsRegExp", List(x))      => isRegExpModel(x, call)
     case _                               => Nil
 
   def isModeledCall(expr: SymExpr): Boolean = expr match
@@ -50,6 +51,7 @@ object RewriteRules {
     case SEApp("IsArray", List(_))                => true
     case SEApp("IsCallable", List(_))             => true
     case SEApp("IsConstructor", List(_))          => true
+    case SEApp("IsRegExp", List(_))               => true
     case _                                        => false
 
   private def toBooleanModel(x: SymExpr, ret: SymExpr): List[AoCase] =
@@ -158,6 +160,31 @@ object RewriteRules {
       AoCase(
         List(FTypeCheck(x, ObjectT), FNot(hasConstruct)),
         List(FEq(ret, f)),
+      ),
+    )
+
+  private def isRegExpModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+    def normal(v: SymExpr): Goal =
+      List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
+    val t = SELit(EBool(true))
+    val f = SELit(EBool(false))
+    val symMatch = SEProj(SEApp("SYMBOL", List()), SELit(EStr("match")))
+    // 6 return nodes; dropped 2 inter-proc (1532,1537 via ToBoolean);
+    // 1 analysis dropped (1530).
+    // RegExpMatcher case (1535) is reachable only when Get(@@match)=undefined;
+    // when condition omits this check — imprecise for @@match-overriding objects.
+    List(
+      AoCase(List(FNot(FTypeCheck(x, ObjectT))), normal(f)),
+      AoCase(
+        List(
+          FTypeCheck(x, ObjectT),
+          FTypeCheck(SEApp("Get", List(x, symMatch)), AbruptT),
+        ),
+        List(FTypeCheck(ret, ThrowT)),
+      ),
+      AoCase(
+        List(FTypeCheck(x, ObjectT), FExists(x, SELit(EStr("RegExpMatcher")))),
+        normal(t),
       ),
     )
 
@@ -322,20 +349,7 @@ object RewriteRules {
     // IsConstructor is modeled point-wise as implication facts.
 
     // https://tc39.es/ecma262/#sec-isregexp
-    // NOTE: IsRegExp returns true if has [[RegExpMatcher]], and false if non-object
-    // @@match check should be considered, but chose simple path now
-    case FEq(SEApp("IsRegExp", List(x)), SELit(EBool(b))) =>
-      if (b)
-        List(FTypeCheck(x, ObjectT), FExists(x, SELit(EStr("RegExpMatcher"))))
-      else List(FNot(FTypeCheck(x, ObjectT)))
-    case FTypeCheck(SEApp("IsRegExp", List(x)), ty) if ty <= CompT =>
-      val symMatch = SEProj(SEApp("SYMBOL", List()), SELit(EStr("match")))
-      val getMatch = SEApp("Get", List(x, symMatch))
-      ty match
-        case _ if ty <= NormalT => List()
-        case _ if ty <= AbruptT =>
-          List(FTypeCheck(x, ObjectT), FTypeCheck(getMatch, ty))
-        case _ => List(f)
+    // IsRegExp is modeled point-wise as implication facts.
 
     // https://tc39.es/ecma262/#sec-samevalue
     // NOTE: strict - +0 != -0, NaN == NaN
