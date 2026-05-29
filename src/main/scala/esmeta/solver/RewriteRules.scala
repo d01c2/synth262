@@ -20,6 +20,16 @@ object RewriteRules {
     case SEApp("ToString", List(x))  => toStringModel(x, call)
     case SEApp("RequireObjectCoercible", List(x)) =>
       requireObjectCoercibleModel(x, call)
+    case SEApp("ThisSymbolValue", List(x)) =>
+      thisValueModel(x, call, SymbolT, "SymbolData")
+    case SEApp("ThisNumberValue", List(x)) =>
+      thisValueModel(x, call, NumberT, "NumberData")
+    case SEApp("ThisBigIntValue", List(x)) =>
+      thisValueModel(x, call, BigIntT, "BigIntData")
+    case SEApp("ThisStringValue", List(x)) =>
+      thisValueModel(x, call, StrT, "StringData")
+    case SEApp("ThisBooleanValue", List(x)) =>
+      thisValueModel(x, call, BoolT, "BooleanData")
     case _ => Nil
 
   def isModeledCall(expr: SymExpr): Boolean = expr match
@@ -29,6 +39,11 @@ object RewriteRules {
     case SEApp("ToBigInt", List(_))               => true
     case SEApp("ToString", List(_))               => true
     case SEApp("RequireObjectCoercible", List(_)) => true
+    case SEApp("ThisSymbolValue", List(_))        => true
+    case SEApp("ThisNumberValue", List(_))        => true
+    case SEApp("ThisBigIntValue", List(_))        => true
+    case SEApp("ThisStringValue", List(_))        => true
+    case SEApp("ThisBooleanValue", List(_))       => true
     case _                                        => false
 
   private def toBooleanModel(x: SymExpr, ret: SymExpr): List[AoCase] =
@@ -90,6 +105,29 @@ object RewriteRules {
       ),
     )
 
+  // Shared model for ThisSymbolValue, ThisNumberValue, ThisBigIntValue,
+  // ThisStringValue, ThisBooleanValue — 5 return nodes each; 2 analysis dropped.
+  private def thisValueModel(
+    x: SymExpr,
+    ret: SymExpr,
+    primTy: ValueTy,
+    slot: String,
+  ): List[AoCase] =
+    List(
+      AoCase(
+        List(FTypeCheck(x, primTy)),
+        List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), x)),
+      ),
+      AoCase(
+        List(FTypeCheck(x, ObjectT), FExists(x, SELit(EStr(slot)))),
+        List(FTypeCheck(ret, NormalT)),
+      ),
+      AoCase(
+        List(FNot(FTypeCheck(x, primTy)), FNot(FExists(x, SELit(EStr(slot))))),
+        List(FTypeCheck(ret, ThrowT)),
+      ),
+    )
+
   private def requireObjectCoercibleModel(
     x: SymExpr,
     ret: SymExpr,
@@ -108,7 +146,8 @@ object RewriteRules {
     def normal(v: SymExpr): Goal =
       List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
     // Open dependency: dropped 7 inter-proc (1412,1414,1418,1420,1425,1431,1432
-    // via Number::toString/BigInt::toString/ToPrimitive); 1 analysis dropped (1390).
+    // via Number::toString/BigInt::toString/ToPrimitive); 1 analysis dropped (1390)
+    // due to infeasible Completion check.
     List(
       AoCase(List(FTypeCheck(x, StrT)), normal(x)),
       AoCase(List(FTypeCheck(x, SymbolT)), List(FTypeCheck(ret, ThrowT))),
@@ -293,45 +332,8 @@ object RewriteRules {
 
     // ThisXXXValue series (around 20.XX)
 
-    // https://tc39.es/ecma262/#sec-thissymbolvalue
-    case FTypeCheck(SEApp("ThisSymbolValue", List(x)), ty) if ty <= CompT =>
-      val isSymbol = FTypeCheck(x, SymbolT)
-      ty match
-        case _ if ty <= NormalT => List(isSymbol)
-        case _ if ty <= AbruptT => List(FNot(isSymbol))
-        case _                  => List(f)
-
-    // https://tc39.es/ecma262/#sec-thisnumbervalue
-    case FTypeCheck(SEApp("ThisNumberValue", List(x)), ty) if ty <= CompT =>
-      val isNumber = FTypeCheck(x, NumberT)
-      ty match
-        case _ if ty <= NormalT => List(isNumber)
-        case _ if ty <= AbruptT => List(FNot(isNumber))
-        case _                  => List(f)
-
-    // https://tc39.es/ecma262/#sec-thisbigintvalue
-    case FTypeCheck(SEApp("ThisBigIntValue", List(x)), ty) if ty <= CompT =>
-      val isBigInt = FTypeCheck(x, BigIntT)
-      ty match
-        case _ if ty <= NormalT => List(isBigInt)
-        case _ if ty <= AbruptT => List(FNot(isBigInt))
-        case _                  => List(f)
-
-    // https://tc39.es/ecma262/#sec-thisstringvalue
-    case FTypeCheck(SEApp("ThisStringValue", List(x)), ty) if ty <= CompT =>
-      val isString = FTypeCheck(x, StrT)
-      ty match
-        case _ if ty <= NormalT => List(isString)
-        case _ if ty <= AbruptT => List(FNot(isString))
-        case _                  => List(f)
-
-    // https://tc39.es/ecma262/#sec-thisbooleanvalue
-    case FTypeCheck(SEApp("ThisBooleanValue", List(x)), ty) if ty <= CompT =>
-      val isBoolean = FTypeCheck(x, BoolT)
-      ty match
-        case _ if ty <= NormalT => List(isBoolean)
-        case _ if ty <= AbruptT => List(FNot(isBoolean))
-        case _                  => List(f)
+    // ThisXXXValue series (ThisSymbolValue, ThisNumberValue, ThisBigIntValue,
+    // ThisStringValue, ThisBooleanValue) are modeled point-wise as implication facts.
 
     // https://tc39.es/ecma262/#sec-ordinarycreatefromconstructor
     // NOTE: delegates to Get(constructor, "prototype") via GetPrototypeFromConstructor
