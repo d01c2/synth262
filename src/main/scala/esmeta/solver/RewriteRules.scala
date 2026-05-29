@@ -16,12 +16,14 @@ object RewriteRules {
     case SEApp("ToNumber", List(x))  => toNumberModel(x, call)
     case SEApp("ToBoolean", List(x)) => toBooleanModel(x, call)
     case SEApp("ToObject", List(x))  => toObjectModel(x, call)
+    case SEApp("ToBigInt", List(x))  => toBigIntModel(x, call)
     case _                           => Nil
 
   def isModeledCall(expr: SymExpr): Boolean = expr match
     case SEApp("ToNumber", List(_))  => true
     case SEApp("ToBoolean", List(_)) => true
     case SEApp("ToObject", List(_))  => true
+    case SEApp("ToBigInt", List(_))  => true
     case _                           => false
 
   private def toBooleanModel(x: SymExpr, ret: SymExpr): List[AoCase] =
@@ -83,6 +85,28 @@ object RewriteRules {
       ),
     )
 
+  private def toBigIntModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+    def normal(v: SymExpr): Goal =
+      List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
+    val abrupt = List(FTypeCheck(ret, ThrowT))
+    // Open dependency: dropped 3 inter-proc (91,121,123 via ToPrimitive/StringToBigInt).
+    // detailed-types has no value-level Boolean; split via CFG branch `if prim`
+    List(
+      AoCase(List(FTypeCheck(x, UndefT)), abrupt),
+      AoCase(List(FTypeCheck(x, NullT)), abrupt),
+      AoCase(List(FTypeCheck(x, NumberT)), abrupt),
+      AoCase(List(FTypeCheck(x, SymbolT)), abrupt),
+      AoCase(
+        List(FTypeCheck(x, BoolT), FEq(x, SELit(EBool(true)))),
+        normal(SELit(EBigInt(BigInt(1)))),
+      ),
+      AoCase(
+        List(FTypeCheck(x, BoolT), FEq(x, SELit(EBool(false)))),
+        normal(SELit(EBigInt(BigInt(0)))),
+      ),
+      AoCase(List(FTypeCheck(x, BigIntT)), normal(x)),
+    )
+
   private def toNumberModel(x: SymExpr, ret: SymExpr): List[AoCase] =
     def normal(v: SymExpr): Goal =
       List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
@@ -130,14 +154,7 @@ object RewriteRules {
         case _ => List(f)
 
     // https://tc39.es/ecma262/#sec-tobigint
-    // NOTE: only handles non-object case; object case not modeled (delegate to ToPrimitive)
-    case FTypeCheck(SEApp("ToBigInt", List(x)), ty) if ty <= CompT =>
-      val guard = FNot(FTypeCheck(x, ObjectT))
-      val isThrowTy = FTypeCheck(x, UndefT || NullT || NumberT || SymbolT)
-      ty match
-        case _ if ty <= NormalT => List(guard, FNot(isThrowTy))
-        case _ if ty <= AbruptT => List(guard, isThrowTy)
-        case _                  => List(f)
+    // ToBigInt is modeled point-wise as implication facts.
 
     // https://tc39.es/ecma262/#sec-tostring
     // NOTE: only handles non-object case; object case not modeled (delegate to ToPrimitive)
