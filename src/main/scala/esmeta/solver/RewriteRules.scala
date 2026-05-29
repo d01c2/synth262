@@ -30,7 +30,8 @@ object RewriteRules {
       thisValueModel(x, call, StrT, "StringData")
     case SEApp("ThisBooleanValue", List(x)) =>
       thisValueModel(x, call, BoolT, "BooleanData")
-    case _ => Nil
+    case SEApp("IsArray", List(x)) => isArrayModel(x, call)
+    case _                         => Nil
 
   def isModeledCall(expr: SymExpr): Boolean = expr match
     case SEApp("ToNumber", List(_))               => true
@@ -44,6 +45,7 @@ object RewriteRules {
     case SEApp("ThisBigIntValue", List(_))        => true
     case SEApp("ThisStringValue", List(_))        => true
     case SEApp("ThisBooleanValue", List(_))       => true
+    case SEApp("IsArray", List(_))                => true
     case _                                        => false
 
   private def toBooleanModel(x: SymExpr, ret: SymExpr): List[AoCase] =
@@ -125,6 +127,28 @@ object RewriteRules {
       AoCase(
         List(FNot(FTypeCheck(x, primTy)), FNot(FExists(x, SELit(EStr(slot))))),
         List(FTypeCheck(ret, ThrowT)),
+      ),
+    )
+
+  private def isArrayModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+    def normal(v: SymExpr): Goal =
+      List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
+    val t = SELit(EBool(true))
+    val f = SELit(EBool(false))
+    // 6 return nodes; dropped 3 inter-proc (1493,1499,1500 via
+    // ValidateNonRevokedProxy/recursive IsArray on ProxyExoticObject).
+    // Third case: detailed-types only knows `#0: Record[Object]` at node 1501;
+    // the "not Array, not Proxy" narrowing comes from CFG control flow, not
+    // from occurrence typing — detailed-types cannot express prior-branch exclusion.
+    List(
+      AoCase(List(FNot(FTypeCheck(x, ObjectT))), normal(f)),
+      AoCase(List(FTypeCheck(x, RecordT("Array"))), normal(t)),
+      AoCase( // This case cannot be inferred only from detailed-types
+        List(
+          FTypeCheck(x, ObjectT),
+          FNot(FTypeCheck(x, RecordT("Array") || RecordT("ProxyExoticObject"))),
+        ),
+        normal(f),
       ),
     )
 
@@ -258,17 +282,7 @@ object RewriteRules {
     // RequireObjectCoercible is modeled point-wise as implication facts.
 
     // https://tc39.es/ecma262/#sec-isarray
-    // NOTE: true for Array exotic, false otherwise; Proxy recurses via ValidateNonRevokedProxy
-    case FEq(SEApp("IsArray", List(x)), SELit(EBool(b))) =>
-      if (b) List(FTypeCheck(x, RecordT("Array")))
-      else List(FNot(FTypeCheck(x, RecordT("Array"))))
-    case FTypeCheck(SEApp("IsArray", List(x)), ty) if ty <= CompT =>
-      ty match
-        case _ if ty <= NormalT =>
-          List(FNot(FTypeCheck(x, RecordT("ProxyExoticObject"))))
-        case _ if ty <= AbruptT =>
-          List(FTypeCheck(SEApp("ValidateNonRevokedProxy", List(x)), ty))
-        case _ => List(f)
+    // IsArray is modeled point-wise as implication facts.
 
     // https://tc39.es/ecma262/#sec-iscallable
     case FEq(SEApp("IsCallable", List(x)), SELit(EBool(b))) =>
