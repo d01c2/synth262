@@ -376,7 +376,9 @@ class SolverTinyTest extends SolverTest {
       given CFG = cfg
 
       val goals =
-        SymbolicInterpreter(func, Cond(target, true)).result.take(3).toList
+        SymbolicInterpreter(func, Cond(target, true), Solver.solveAll).result
+          .take(3)
+          .toList
       val expected = Set(
         List(
           isValue(SESym(Sym.Arg(0)), EMath(BigDecimal(0))),

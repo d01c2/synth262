@@ -1,12 +1,14 @@
 package esmeta.solver
 
 import esmeta.ESMetaTest
+import esmeta.cfg.CFG
 import esmeta.ir.*
 import esmeta.ty.*
 import Formula.*, SymExpr.*, Sym.*
 
 /** test support for solver */
 trait SolverTest extends ESMetaTest {
+  given CFG = CFG()
   def category: String = "solver"
 
   def solveAndReify(

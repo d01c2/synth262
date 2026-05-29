@@ -11,7 +11,7 @@ import scala.collection.mutable.{Set => MSet, Queue}
 class SymbolicInterpreter(
   entryFunc: Func,
   target: Cond,
-  solveGoal: Goal => LazyList[Goal] = Solver.solveAll,
+  solveGoal: Goal => LazyList[Goal],
 )(using cfg: CFG) {
   import SymbolicInterpreter.*, Formula.*, SymExpr.*
   private val Cond(branch, side) = target
@@ -495,7 +495,7 @@ object SymbolicInterpreter {
   def apply(
     entryFunc: Func,
     target: Cond,
-    solveGoal: Goal => LazyList[Goal] = Solver.solveAll,
+    solveGoal: Goal => LazyList[Goal],
   )(using CFG): SymbolicInterpreter =
     new SymbolicInterpreter(entryFunc, target, solveGoal)
 

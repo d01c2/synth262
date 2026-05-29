@@ -1,5 +1,6 @@
 package esmeta.solver
 
+import esmeta.cfg.CFG
 import esmeta.ir.*
 import esmeta.ty.*
 import Formula.*, SymExpr.*
@@ -8,9 +9,9 @@ type Goal = List[Formula]
 type Witness = Map[Sym, String]
 
 object Solver {
-  def solve(goal: Goal): Option[Goal] = solveAll(goal).headOption
+  def solve(goal: Goal)(using CFG): Option[Goal] = solveAll(goal).headOption
 
-  def solveAll(goal: Goal): LazyList[Goal] =
+  def solveAll(goal: Goal)(using CFG): LazyList[Goal] =
     val rewritten = rewrite(goal)
     val calls = modeledCalls(rewritten).toList.sortBy(_.toString)
     solveCases(rewritten, calls).flatMap { solved =>
@@ -19,7 +20,7 @@ object Solver {
         .to(LazyList)
     }
 
-  def rewrite(goal: Goal): Goal =
+  def rewrite(goal: Goal)(using CFG): Goal =
     val next = goal
       .map(normalize)
       .flatMap(RewriteRules.rewriteFormula)
@@ -64,7 +65,7 @@ object Solver {
       // otherwise, identity
       case _ => f
 
-  def hasContradiction(fs: Goal): Boolean =
+  def hasContradiction(fs: Goal)(using CFG): Boolean =
     simplify(rewrite(fs)).isEmpty
 
   private def modeledCalls(goal: Goal): Set[SymExpr] =
@@ -73,7 +74,7 @@ object Solver {
   private def solveCases(
     base: Goal,
     calls: List[SymExpr],
-  ): LazyList[Goal] =
+  )(using CFG): LazyList[Goal] =
     calls match
       case Nil => LazyList(base)
       case call :: rest =>

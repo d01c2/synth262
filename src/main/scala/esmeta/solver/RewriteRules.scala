@@ -1,12 +1,13 @@
 package esmeta.solver
 
+import esmeta.cfg.CFG
 import esmeta.ir.*
 import esmeta.ty.*
 import esmeta.util.*
 import Formula.*, SymExpr.*
 
 object RewriteRules {
-  def rewriteFormula(f: Formula): List[Formula] =
+  def rewriteFormula(f: Formula)(using CFG): List[Formula] =
     rewrite(stripCompletion(f)).map(normalizeExpr)
 
   case class AoCase(when: Goal, thenF: Goal)
@@ -102,13 +103,13 @@ object RewriteRules {
 
   private val Contradiction = FEq(SELit(EBool(true)), SELit(EBool(false)))
 
-  private def rewrite(f: Formula): List[Formula] = f match
+  private def rewrite(f: Formula)(using CFG): List[Formula] = f match
     // Completion record wrappers
     case FTypeCheck(SEApp("NormalCompletion", List(x)), ty) if ty <= CompT =>
       if (ty <= AbruptT) List(Contradiction)
       else normalCompletionTypeConstraints(x, ty)
     case FTypeCheck(SEApp("Completion", List(x)), ty)
-        if ty <= CompT && isKnownCompletionExpr(x) =>
+        if ty <= CompT && isCompletionExpr(x) =>
       List(FTypeCheck(x, ty))
 
     // 7.1 Type Conversion
@@ -481,9 +482,10 @@ object RewriteRules {
       SEMap(entries.map((k, v) => reduceExpr(k) -> reduceExpr(v)))
     case _ => t
 
-  private def rewriteCompletionValues(f: Formula): Option[Formula] = f match
-    case FNot(inner) =>
-      rewriteCompletionValues(inner).map(FNot(_))
+  private def rewriteCompletionValues(
+    f: Formula,
+  )(using CFG): Option[Formula] = f match
+    case FNot(inner) => rewriteCompletionValues(inner).map(FNot(_))
     case FEq(l, r) =>
       rewriteCompletionValueExpr(l)
         .map(FEq(_, r))
@@ -492,17 +494,18 @@ object RewriteRules {
       rewriteCompletionValueExpr(l)
         .map(FLt(_, r))
         .orElse(rewriteCompletionValueExpr(r).map(FLt(l, _)))
-    case FExists(b, k) =>
-      rewriteCompletionValueExpr(b).map(FExists(_, k))
+    case FExists(b, k) => rewriteCompletionValueExpr(b).map(FExists(_, k))
     case FTypeCheck(e, ty) =>
       rewriteCompletionValueExpr(e).map(FTypeCheck(_, ty))
 
-  private def rewriteCompletionValueExpr(expr: SymExpr): Option[SymExpr] =
+  private def rewriteCompletionValueExpr(
+    expr: SymExpr,
+  )(using CFG): Option[SymExpr] =
     expr match
       case ValueField(SEApp("NormalCompletion", List(inner))) =>
         Some(reduceExpr(inner))
       case ValueField(SEApp("Completion", List(inner)))
-          if isKnownCompletionExpr(inner) =>
+          if isCompletionExpr(inner) =>
         Some(SEField(reduceExpr(inner), "Value"))
       case SETypeOf(inner) =>
         rewriteCompletionValueExpr(inner).map(SETypeOf(_))
@@ -558,53 +561,12 @@ object RewriteRules {
     val valueTy = (ty && NormalT).record("Value").value
     if (valueTy.isTop) Nil else List(FTypeCheck(value, valueTy))
 
-  private val completionReturningOps: Set[String] = Set(
-    "Call",
-    "Construct",
-    "DefineOwnProperty",
-    "Delete",
-    "Get",
-    "GetIterator",
-    "GetIteratorFromMethod",
-    "GetMethod",
-    "GetOwnProperty",
-    "GetPrototypeOf",
-    "GetV",
-    "HasProperty",
-    "InstallErrorCause",
-    "IsArray",
-    "IsExtensible",
-    "IsRegExp",
-    "IteratorComplete",
-    "IteratorNext",
-    "IteratorValue",
-    "OrdinaryCreateFromConstructor",
-    "OwnPropertyKeys",
-    "PreventExtensions",
-    "RequireInternalSlot",
-    "RequireObjectCoercible",
-    "Set",
-    "SetPrototypeOf",
-    "ThisBigIntValue",
-    "ThisBooleanValue",
-    "ThisNumberValue",
-    "ThisStringValue",
-    "ThisSymbolValue",
-    "ToBigInt",
-    "ToIndex",
-    "ToIntegerOrInfinity",
-    "ToLength",
-    "ToNumber",
-    "ToObject",
-    "ToString",
-    "ValidateNonRevokedProxy",
-    "ValidateTypedArray",
-  )
-
-  private def isKnownCompletionExpr(expr: SymExpr): Boolean = expr match
-    case SEApp("Completion" | "NormalCompletion", List(_)) => true
-    case SEApp(op: String, _) => completionReturningOps(op)
-    case _                    => false
+  private def isCompletionExpr(
+    expr: SymExpr,
+  )(using cfg: CFG): Boolean = expr match
+    case SEApp(name: String, _) =>
+      cfg.fnameMap.get(name).forall(_.retTy.isCompletion)
+    case _ => false
 
   private def iteratorParts(
     iterRecord: SymExpr,
