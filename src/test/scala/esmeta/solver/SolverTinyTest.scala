@@ -65,23 +65,73 @@ class SolverTinyTest extends SolverTest {
       assert(!rewritten.contains(isType(call, ObjectT)))
     }
 
-    check("ToNumber value projection rewrites as a numeric input constraint") {
+    check("ToNumber value projection is not rewritten into its input") {
       val value =
         SEField(SEApp("ToNumber", List(xSym)), "Value")
       val rewritten = rewrite(List(isValue(value, EMath(1))))
 
-      assert(rewritten.contains(isValue(xSym, EMath(1))))
-      assert(rewritten.contains(isType(xSym, NumberT)))
-      assert(!rewritten.contains(isValue(value, EMath(1))))
+      assert(rewritten.contains(isValue(value, EMath(1))))
+      assert(!rewritten.contains(isValue(xSym, EMath(1))))
+      assert(!rewritten.contains(isType(xSym, NumberT)))
     }
 
-    check("ToNumber value projection type rewrites to the input type") {
-      val value =
-        SEField(SEApp("ToNumber", List(xSym)), "Value")
-      val rewritten = rewrite(List(isType(value, NumberIntT)))
+    check("ToNumber model has five point-wise cases") {
+      val toNumber = SEApp("ToNumber", List(xSym))
+      val value = SEField(toNumber, "Value")
+      val cases = RewriteRules.aoModel(toNumber)
 
-      assert(rewritten.contains(isType(xSym, NumberIntT)))
-      assert(!rewritten.contains(isType(value, NumberIntT)))
+      assert(cases.size == 5)
+      assert(
+        cases.exists(c =>
+          c.when == List(isType(xSym, NumberT)) &&
+          c.thenF == List(isType(toNumber, NormalT), FEq(value, xSym)),
+        ),
+      )
+      assert(
+        cases.exists(c =>
+          c.when == List(isType(xSym, UndefT)) &&
+          c.thenF == List(
+            isType(toNumber, NormalT),
+            FEq(value, SELit(ENumber(Double.NaN))),
+          ),
+        ),
+      )
+    }
+
+    check("ToNumber value requirement is solved by implication cases") {
+      val toNumber = SEApp("ToNumber", List(xSym))
+      val solved = Solver
+        .solve(List(isValue(SEField(toNumber, "Value"), ENumber(1.0))))
+        .getOrElse(fail("expected satisfiable ToNumber goal"))
+
+      assert(solved.contains(isType(xSym, NumberT)))
+      assert(solved.contains(isValue(xSym, ENumber(1.0))))
+      assert(!solved.exists(_.toString.contains("ToNumber")))
+    }
+
+    check("ToNumber model does not activate from input-only constraints") {
+      val solved = Solver
+        .solve(List(isType(xSym, NumberT)))
+        .getOrElse(fail("expected satisfiable input-only goal"))
+
+      assert(solved == List(isType(xSym, NumberT)))
+    }
+
+    check("ToNumber undefined can satisfy a NaN result") {
+      val toNumber = SEApp("ToNumber", List(xSym))
+      val solved = Solver
+        .solve(
+          List(
+            isType(xSym, UndefT),
+            isValue(SEField(toNumber, "Value"), ENumber(Double.NaN)),
+          ),
+        )
+        .getOrElse(fail("expected satisfiable ToNumber undefined goal"))
+
+      val witness =
+        Reify(solved, List(SolverTest.x)).witness
+          .getOrElse(fail("expected ToNumber undefined witness"))
+      assert(witness(SolverTest.x) == "undefined")
     }
 
     check("ToLength value projection delegates to ToNumber before rewriting") {
@@ -89,9 +139,15 @@ class SolverTinyTest extends SolverTest {
         SEField(SEApp("ToLength", List(xSym)), "Value")
       val rewritten = rewrite(List(FLt(value, SELit(EMath(0)))))
 
-      assert(rewritten.contains(FLt(xSym, SELit(EMath(0)))))
-      assert(rewritten.contains(isType(xSym, NumberT)))
-      assert(!rewritten.contains(FLt(value, SELit(EMath(0)))))
+      assert(
+        rewritten.contains(
+          FLt(
+            SEField(SEApp("ToNumber", List(xSym)), "Value"),
+            SELit(EMath(0)),
+          ),
+        ),
+      )
+      assert(!rewritten.contains(FLt(xSym, SELit(EMath(0)))))
     }
 
     checkParamWitness("Get value projection reifies as property value")(
@@ -195,15 +251,14 @@ class SolverTinyTest extends SolverTest {
       assert(!rewritten.contains(isValue(wrappedValue, EMath(1))))
     }
 
-    check("Completion-wrapped ToNumber projection rewrites through value") {
+    check("ToNumber abrupt requirement selects throwing implication case") {
       val toNumber = SEApp("ToNumber", List(xSym))
-      val wrappedValue =
-        SEField(SEApp("Completion", List(toNumber)), "Value")
-      val rewritten = rewrite(List(isValue(wrappedValue, EMath(1))))
+      val solved = Solver
+        .solve(List(isType(toNumber, AbruptT)))
+        .getOrElse(fail("expected satisfiable ToNumber goal"))
 
-      assert(rewritten.contains(isValue(xSym, EMath(1))))
-      assert(rewritten.contains(isType(xSym, NumberT)))
-      assert(!rewritten.contains(isValue(wrappedValue, EMath(1))))
+      assert(solved.contains(isType(xSym, SymbolT || BigIntT)))
+      assert(!solved.exists(_.toString.contains("ToNumber")))
     }
 
     check("unknown Completion Type check stays on wrapper") {

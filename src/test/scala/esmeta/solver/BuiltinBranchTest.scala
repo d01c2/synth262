@@ -121,11 +121,7 @@ class BuiltinBranchTest extends ESMetaTest {
             val candidates =
               try {
                 val params = Solve.paramIds(f)
-                SymbolicInterpreter(
-                  f,
-                  cond,
-                  goal => Solver.solve(goal),
-                ).result
+                SymbolicInterpreter(f, cond, Solver.solveAll).result
                   .flatMap { fs =>
                     Reify(fs, params).witness.flatMap { w =>
                       Reify.toJsCall(f, params, w).map(Candidate(_, fs))
@@ -179,7 +175,7 @@ class BuiltinBranchTest extends ESMetaTest {
               var blockingAOs: Set[String] = Set()
               try {
                 val interp =
-                  SymbolicInterpreter(f, cond, goal => Solver.solve(goal))
+                  SymbolicInterpreter(f, cond, Solver.solveAll)
                 val goals = interp.result
                 if (goals.isEmpty)
                   reason =

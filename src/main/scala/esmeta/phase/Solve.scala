@@ -69,14 +69,16 @@ case object Solve extends Phase[CFG, String] {
         val rw = Solver.rewrite(goal)
         println(s"--- Goal $goalIdx [rewritten] ---")
         rw.foreach(f => println(s"  $f"))
-        Solver.simplify(rw) match
-          case None =>
-            println(s"--- Goal $goalIdx => CONTRADICTION ---")
-            None
-          case Some(fs) =>
-            println(s"--- Goal $goalIdx [simplified] ---")
-            fs.foreach(f => println(s"  $f"))
-            Some(fs)
+        val solved = Solver.solveAll(goal)
+        if (solved.isEmpty) {
+          println(s"--- Goal $goalIdx => CONTRADICTION ---")
+          LazyList.empty
+        } else {
+          val first = solved.head
+          println(s"--- Goal $goalIdx [simplified] ---")
+          first.foreach(f => println(s"  $f"))
+          solved
+        }
       },
     ).result
     goals.flatMap { solved =>

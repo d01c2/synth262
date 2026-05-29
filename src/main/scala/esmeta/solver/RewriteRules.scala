@@ -8,6 +8,34 @@ object RewriteRules {
   def rewriteFormula(f: Formula): List[Formula] =
     rewrite(stripCompletion(f)).map(normalizeExpr)
 
+  case class AoCase(when: Goal, thenF: Goal)
+
+  def aoModel(call: SymExpr): List[AoCase] = call match
+    case SEApp("ToNumber", List(x)) => toNumberModel(x, call)
+    case _                          => Nil
+
+  def isModeledCall(expr: SymExpr): Boolean = expr match
+    case SEApp("ToNumber", List(_)) => true
+    case _                          => false
+
+  private def toNumberModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+    // Open dependency: dropped 4 cases which require other function summary.
+    def normal(v: SymExpr): Goal =
+      List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
+    List(
+      AoCase(List(FTypeCheck(x, NumberT)), normal(x)),
+      AoCase(
+        List(FTypeCheck(x, SymbolT || BigIntT)),
+        List(FTypeCheck(ret, ThrowT)),
+      ),
+      AoCase(List(FTypeCheck(x, UndefT)), normal(SELit(ENumber(Double.NaN)))),
+      AoCase(
+        List(FTypeCheck(x, NullT || FalseT)),
+        normal(SELit(ENumber(0.0))),
+      ),
+      AoCase(List(FTypeCheck(x, TrueT)), normal(SELit(ENumber(1.0)))),
+    )
+
   private val Contradiction = FEq(SELit(EBool(true)), SELit(EBool(false)))
 
   private def rewrite(f: Formula): List[Formula] = f match
@@ -37,64 +65,7 @@ object RewriteRules {
         case _ => List(f)
 
     // https://tc39.es/ecma262/#sec-tonumber
-    // NOTE: only handles non-object case; object case not modeled (delegate to ToPrimitive)
-    case FTypeCheck(SEApp("ToNumber", List(x)), ty) if ty <= CompT =>
-      val guard = FNot(FTypeCheck(x, ObjectT))
-      val isSymbolOrBigInt = FTypeCheck(x, SymbolT || BigIntT)
-      ty match
-        case _ if ty <= NormalT => List(guard, FNot(isSymbolOrBigInt))
-        case _ if ty <= AbruptT => List(guard, isSymbolOrBigInt)
-        case _                  => List(f)
-    case FTypeCheck(ValueField(SEApp("ToNumber", List(x))), ty)
-        if ty <= NumberT =>
-      List(FTypeCheck(x, ty))
-    case FNot(FTypeCheck(ValueField(SEApp("ToNumber", List(x))), ty))
-        if ty <= NumberT =>
-      List(FNot(FTypeCheck(x, ty)), FTypeCheck(x, NumberT))
-
-    // FIXME: After application, return value should be treated as number
-    // but in this model, we cannot handle that behavior
-    // so we have to rewrite while symbolic interpretation and update environment accordingly
-    case FEq(SEApp("ToNumber", List(x)), v) =>
-      List(FEq(x, v), FTypeCheck(x, NumberT))
-    case FEq(v, SEApp("ToNumber", List(x))) =>
-      List(FEq(x, v), FTypeCheck(x, NumberT))
-    case FEq(ValueField(SEApp("ToNumber", List(x))), v) =>
-      List(FEq(x, v), FTypeCheck(x, NumberT))
-    case FEq(v, ValueField(SEApp("ToNumber", List(x)))) =>
-      List(FEq(x, v), FTypeCheck(x, NumberT))
-    case FLt(SEApp("ToNumber", List(x)), v) =>
-      List(FLt(x, v), FTypeCheck(x, NumberT))
-    case FLt(v, SEApp("ToNumber", List(x))) =>
-      List(FLt(v, x), FTypeCheck(x, NumberT))
-    case FLt(ValueField(SEApp("ToNumber", List(x))), v) =>
-      List(FLt(x, v), FTypeCheck(x, NumberT))
-    case FLt(v, ValueField(SEApp("ToNumber", List(x)))) =>
-      List(FLt(v, x), FTypeCheck(x, NumberT))
-    case FNot(FEq(SEApp("ToNumber", List(x)), v)) =>
-      List(FNot(FEq(x, v)), FTypeCheck(x, NumberT))
-    case FNot(FEq(v, SEApp("ToNumber", List(x)))) =>
-      List(FNot(FEq(x, v)), FTypeCheck(x, NumberT))
-    case FNot(
-          FEq(ValueField(SEApp("ToNumber", List(x))), v),
-        ) =>
-      List(FNot(FEq(x, v)), FTypeCheck(x, NumberT))
-    case FNot(
-          FEq(v, ValueField(SEApp("ToNumber", List(x)))),
-        ) =>
-      List(FNot(FEq(x, v)), FTypeCheck(x, NumberT))
-    case FNot(FLt(SEApp("ToNumber", List(x)), v)) =>
-      List(FNot(FLt(x, v)), FTypeCheck(x, NumberT))
-    case FNot(FLt(v, SEApp("ToNumber", List(x)))) =>
-      List(FNot(FLt(v, x)), FTypeCheck(x, NumberT))
-    case FNot(
-          FLt(ValueField(SEApp("ToNumber", List(x))), v),
-        ) =>
-      List(FNot(FLt(x, v)), FTypeCheck(x, NumberT))
-    case FNot(
-          FLt(v, ValueField(SEApp("ToNumber", List(x)))),
-        ) =>
-      List(FNot(FLt(v, x)), FTypeCheck(x, NumberT))
+    // ToNumber is modeled point-wise as implication facts, not summarized here.
 
     // https://tc39.es/ecma262/#sec-tointegerorinfinity
     // NOTE: delegates to ToNumber
@@ -375,7 +346,7 @@ object RewriteRules {
         SEApp("Get", List(iteratorResultValue(result), SELit(EStr("value"))))
       List(FTypeCheck(valueResult, NormalT))
 
-    case _ => rewriteCompletionValues(f).getOrElse(f) :: Nil
+    case _ => List(rewriteCompletionValues(f).getOrElse(f))
 
   // Converts .Type comparisons before rewrite while preserving completion
   // wrappers whose value semantics need explicit rewrite rules.

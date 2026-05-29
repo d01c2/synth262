@@ -1319,7 +1319,8 @@ object Reify {
   private def normalizeEq(f: Formula): Formula = f match
     case FEq(l: SELit, r) if !r.isInstanceOf[SELit]       => FEq(r, l)
     case FNot(FEq(l: SELit, r)) if !r.isInstanceOf[SELit] => FNot(FEq(r, l))
-    case _                                                => f
+    case FNot(inner) => FNot(normalizeEq(inner))
+    case _           => f
 
   def hasUninterpretableApp(fs: List[Formula]): Boolean =
     def fromExpr(t: SymExpr): Set[String] = t match

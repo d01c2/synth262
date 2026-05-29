@@ -11,7 +11,7 @@ import scala.collection.mutable.{Set => MSet, Queue}
 class SymbolicInterpreter(
   entryFunc: Func,
   target: Cond,
-  solveGoal: Goal => Option[Goal] = Some(_),
+  solveGoal: Goal => LazyList[Goal] = Solver.solveAll,
 )(using cfg: CFG) {
   import SymbolicInterpreter.*, Formula.*, SymExpr.*
   private val Cond(branch, side) = target
@@ -227,11 +227,11 @@ class SymbolicInterpreter(
           cur = backtrack()
           nextGoals
         case goal :: rest =>
-          solveGoal(goal) match
-            case Some(solved) => solved #:: solveGoals(rest)
-            case None =>
-              targetContradiction = true
-              solveGoals(rest)
+          val solved = solveGoal(goal)
+          if (solved.isEmpty) {
+            targetContradiction = true
+            solveGoals(rest)
+          } else solved #::: solveGoals(rest)
 
       def nextGoals: LazyList[Goal] = cur match
         case None => LazyList()
@@ -495,7 +495,7 @@ object SymbolicInterpreter {
   def apply(
     entryFunc: Func,
     target: Cond,
-    solveGoal: Goal => Option[Goal] = Some(_),
+    solveGoal: Goal => LazyList[Goal] = Solver.solveAll,
   )(using CFG): SymbolicInterpreter =
     new SymbolicInterpreter(entryFunc, target, solveGoal)
 

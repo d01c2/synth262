@@ -8,14 +8,27 @@ type Goal = List[Formula]
 type Witness = Map[Sym, String]
 
 object Solver {
-  def solve(goal: Goal): Option[Goal] = simplify(rewrite(goal))
+  def solve(goal: Goal): Option[Goal] = solveAll(goal).headOption
+
+  def solveAll(goal: Goal): LazyList[Goal] =
+    val rewritten = rewrite(goal)
+    val calls = modeledCalls(rewritten).toList.sortBy(_.toString)
+    solveCases(rewritten, calls).flatMap { solved =>
+      simplify(rewrite(solved))
+        .map(stripCallFacts(_, calls.toSet))
+        .to(LazyList)
+    }
 
   def rewrite(goal: Goal): Goal =
-    val next = goal.map(normalize).flatMap(RewriteRules.rewriteFormula)
-    if (next == goal) goal.map(normalize) else rewrite(next)
+    val next = goal
+      .map(normalize)
+      .flatMap(RewriteRules.rewriteFormula)
+      .map(normalize)
+      .distinct
+    if (next == goal) next else rewrite(next)
 
   def simplify(formulas: Goal): Option[Goal] =
-    val norm = removeTautologies(formulas)
+    val norm = removeTautologies(propagateEqualities(formulas))
     if (hasContradictionRaw(norm)) None else Some(norm)
 
   private def normalize(f: Formula): Formula =
@@ -52,7 +65,134 @@ object Solver {
       case _ => f
 
   def hasContradiction(fs: Goal): Boolean =
-    hasContradictionRaw(removeTautologies(rewrite(fs)))
+    simplify(rewrite(fs)).isEmpty
+
+  private def modeledCalls(goal: Goal): Set[SymExpr] =
+    collectExprs(goal, e => RewriteRules.isModeledCall(e))
+
+  private def solveCases(
+    base: Goal,
+    calls: List[SymExpr],
+  ): LazyList[Goal] =
+    calls match
+      case Nil => LazyList(base)
+      case call :: rest =>
+        val cases = RewriteRules.aoModel(call)
+        if (cases.isEmpty) solveCases(base, rest)
+        else
+          LazyList.from(cases).flatMap { c =>
+            simplify(rewrite(base ++ c.when ++ c.thenF)) match
+              case None         => LazyList.empty
+              case Some(solved) => solveCases(solved, rest)
+          }
+
+  private def stripCallFacts(goal: Goal, calls: Set[SymExpr]): Goal =
+    goal.filterNot(f => calls.exists(existsExpr(f, _)))
+
+  private def collectExprs(
+    goal: Goal,
+    pred: SymExpr => Boolean,
+  ): Set[SymExpr] =
+    def fromExpr(e: SymExpr): Set[SymExpr] =
+      val self = if (pred(e)) Set(e) else Set.empty[SymExpr]
+      self ++ children(e).flatMap(fromExpr)
+    def fromFormula(f: Formula): Set[SymExpr] =
+      exprsOf(f).flatMap(fromExpr).toSet
+    goal.flatMap(fromFormula).toSet
+
+  private def existsExpr(f: Formula, target: SymExpr): Boolean =
+    def check(e: SymExpr): Boolean =
+      e == target || children(e).exists(check)
+    exprsOf(f).exists(check)
+
+  private def exprsOf(f: Formula): List[SymExpr] = f match
+    case FNot(inner)      => exprsOf(inner)
+    case FEq(l, r)        => List(l, r)
+    case FLt(l, r)        => List(l, r)
+    case FExists(b, k)    => List(b, k)
+    case FTypeCheck(e, _) => List(e)
+
+  private def children(e: SymExpr): List[SymExpr] = e match
+    case SEField(base, _)    => List(base)
+    case SEProj(base, k)     => List(base, k)
+    case SEApp(_, args)      => args
+    case SEList(es)          => es
+    case SERecord(_, fields) => fields.values.toList
+    case SEMap(entries)      => entries.flatMap((k, v) => List(k, v))
+    case SETypeOf(t)         => List(t)
+    case _                   => Nil
+
+  private def propagateEqualities(fs: Goal): Goal =
+    var facts = fs
+    var seen = facts.toSet
+    var changed = true
+
+    def add(f: Formula): Unit =
+      if (!seen(f)) {
+        facts :+= f
+        seen += f
+        changed = true
+      }
+
+    def addType(term: SymExpr, ty: ValueTy, positive: Boolean): Unit =
+      term match
+        case SELit(_) => ()
+        case _ =>
+          add(
+            if (positive) FTypeCheck(term, ty) else FNot(FTypeCheck(term, ty)),
+          )
+
+    while (changed) {
+      changed = false
+      val litBindings: Map[SymExpr, LiteralExpr] =
+        facts.collect {
+          case FEq(t, SELit(v)) => t -> v
+          case FEq(SELit(v), t) => t -> v
+        }.toMap
+      val negLitBindings: Map[SymExpr, Set[LiteralExpr]] =
+        facts
+          .collect {
+            case FNot(FEq(t, SELit(v))) => t -> v
+            case FNot(FEq(SELit(v), t)) => t -> v
+          }
+          .groupMap(_._1)(_._2)
+          .view
+          .mapValues(_.toSet)
+          .toMap
+
+      facts.foreach {
+        case FEq(l, r) =>
+          litBindings.get(l).foreach(v => add(FEq(r, SELit(v))))
+          litBindings.get(r).foreach(v => add(FEq(l, SELit(v))))
+          negLitBindings
+            .getOrElse(l, Set.empty)
+            .foreach(v => add(FNot(FEq(r, SELit(v)))))
+          negLitBindings
+            .getOrElse(r, Set.empty)
+            .foreach(v => add(FNot(FEq(l, SELit(v)))))
+          facts.foreach {
+            case FLt(a, b) =>
+              if (a == l) add(FLt(r, b))
+              if (a == r) add(FLt(l, b))
+              if (b == l) add(FLt(a, r))
+              if (b == r) add(FLt(a, l))
+            case FNot(FLt(a, b)) =>
+              if (a == l) add(FNot(FLt(r, b)))
+              if (a == r) add(FNot(FLt(l, b)))
+              if (b == l) add(FNot(FLt(a, r)))
+              if (b == r) add(FNot(FLt(a, l)))
+            case FTypeCheck(t, ty) =>
+              if (t == l) addType(r, ty, positive = true)
+              if (t == r) addType(l, ty, positive = true)
+            case FNot(FTypeCheck(t, ty)) =>
+              if (t == l) addType(r, ty, positive = false)
+              if (t == r) addType(l, ty, positive = false)
+            case _ =>
+          }
+        case _ =>
+      }
+    }
+    facts
 
   private def hasContradictionRaw(fs: Goal): Boolean =
     val eqSet = fs.collect { case f: FEq => f }.toSet
@@ -64,11 +204,11 @@ object Solver {
       }.toMap
     val tyBindings: Map[SymExpr, List[ValueTy]] =
       fs.collect {
-        case FTypeCheck(t, ty) if !(ty <= CompT) => (t, ty)
+        case FTypeCheck(t, ty) => (t, ty)
       }.groupMap(_._1)(_._2)
     val negTyBindings: Map[SymExpr, List[ValueTy]] =
       fs.collect {
-        case FNot(FTypeCheck(t, ty)) if !(ty <= CompT) => (t, ty)
+        case FNot(FTypeCheck(t, ty)) => (t, ty)
       }.groupMap(_._1)(_._2)
     val literalTypeContradiction = litBindings.exists { (t, lit) =>
       val litTy = literalTy(lit)
