@@ -17,6 +17,7 @@ object RewriteRules {
     case SEApp("ToBoolean", List(x)) => toBooleanModel(x, call)
     case SEApp("ToObject", List(x))  => toObjectModel(x, call)
     case SEApp("ToBigInt", List(x))  => toBigIntModel(x, call)
+    case SEApp("ToString", List(x))  => toStringModel(x, call)
     case _                           => Nil
 
   def isModeledCall(expr: SymExpr): Boolean = expr match
@@ -24,6 +25,7 @@ object RewriteRules {
     case SEApp("ToBoolean", List(_)) => true
     case SEApp("ToObject", List(_))  => true
     case SEApp("ToBigInt", List(_))  => true
+    case SEApp("ToString", List(_))  => true
     case _                           => false
 
   private def toBooleanModel(x: SymExpr, ret: SymExpr): List[AoCase] =
@@ -83,6 +85,20 @@ object RewriteRules {
         List(FTypeCheck(x, ObjectT)),
         List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), x)),
       ),
+    )
+
+  private def toStringModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+    def normal(v: SymExpr): Goal =
+      List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
+    // Open dependency: dropped 7 inter-proc (1412,1414,1418,1420,1425,1431,1432
+    // via Number::toString/BigInt::toString/ToPrimitive); 1 analysis dropped (1390).
+    List(
+      AoCase(List(FTypeCheck(x, StrT)), normal(x)),
+      AoCase(List(FTypeCheck(x, SymbolT)), List(FTypeCheck(ret, ThrowT))),
+      AoCase(List(FTypeCheck(x, UndefT)), normal(SELit(EStr("undefined")))),
+      AoCase(List(FTypeCheck(x, NullT)), normal(SELit(EStr("null")))),
+      AoCase(List(FTypeCheck(x, TrueT)), normal(SELit(EStr("true")))),
+      AoCase(List(FTypeCheck(x, FalseT)), normal(SELit(EStr("false")))),
     )
 
   private def toBigIntModel(x: SymExpr, ret: SymExpr): List[AoCase] =
@@ -157,14 +173,7 @@ object RewriteRules {
     // ToBigInt is modeled point-wise as implication facts.
 
     // https://tc39.es/ecma262/#sec-tostring
-    // NOTE: only handles non-object case; object case not modeled (delegate to ToPrimitive)
-    case FTypeCheck(SEApp("ToString", List(x)), ty) if ty <= CompT =>
-      val guard = FNot(FTypeCheck(x, ObjectT))
-      val isSymbol = FTypeCheck(x, SymbolT)
-      ty match
-        case _ if ty <= NormalT => List(FNot(isSymbol))
-        case _ if ty <= AbruptT => List(guard, isSymbol)
-        case _                  => List(f)
+    // ToString is modeled point-wise as implication facts.
 
     // https://tc39.es/ecma262/#sec-toobject
     // ToObject is modeled point-wise as implication facts.
@@ -463,8 +472,6 @@ object RewriteRules {
       SEField(SEApp("ToNumber", List(reduceExpr(x))), "Value")
     case ValueField(SEApp("ToIndex", List(x))) =>
       SEField(SEApp("ToNumber", List(reduceExpr(x))), "Value")
-    case ValueField(SEApp("ToString", List(x))) =>
-      reduceExpr(x)
     case ValueField(SEApp("RequireObjectCoercible", List(x))) =>
       reduceExpr(x)
     case ValueField(SEApp("ToPropertyKey", List(x))) =>
@@ -478,7 +485,6 @@ object RewriteRules {
     case SEApp("GetMethod", List(v, SEField(SEApp("SYMBOL", Nil), p))) =>
       SEApp("Get", List(reduceExpr(v), SELit(EStr(p))))
     case SEApp("__CLAMP__", List(x, _, _))        => reduceExpr(x)
-    case SEApp("ToString", List(x))               => reduceExpr(x)
     case SEApp("RequireObjectCoercible", List(x)) => reduceExpr(x)
     case SEApp("ToPropertyKey", List(x))          => reduceExpr(x)
     case SEApp("ToIntegerOrInfinity", List(x)) =>
