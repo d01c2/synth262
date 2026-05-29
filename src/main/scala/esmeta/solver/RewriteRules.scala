@@ -30,11 +30,12 @@ object RewriteRules {
       thisValueModel(x, call, StrT, "StringData")
     case SEApp("ThisBooleanValue", List(x)) =>
       thisValueModel(x, call, BoolT, "BooleanData")
-    case SEApp("IsArray", List(x))       => isArrayModel(x, call)
-    case SEApp("IsCallable", List(x))    => isCallableModel(x, call)
-    case SEApp("IsConstructor", List(x)) => isConstructorModel(x, call)
-    case SEApp("IsRegExp", List(x))      => isRegExpModel(x, call)
-    case _                               => Nil
+    case SEApp("IsArray", List(x))         => isArrayModel(x, call)
+    case SEApp("IsCallable", List(x))      => isCallableModel(x, call)
+    case SEApp("IsConstructor", List(x))   => isConstructorModel(x, call)
+    case SEApp("IsRegExp", List(x))        => isRegExpModel(x, call)
+    case SEApp("CanBeHeldWeakly", List(x)) => canBeHeldWeaklyModel(x, call)
+    case _                                 => Nil
 
   def isModeledCall(expr: SymExpr): Boolean = expr match
     case SEApp("ToNumber", List(_))               => true
@@ -52,6 +53,7 @@ object RewriteRules {
     case SEApp("IsCallable", List(_))             => true
     case SEApp("IsConstructor", List(_))          => true
     case SEApp("IsRegExp", List(_))               => true
+    case SEApp("CanBeHeldWeakly", List(_))        => true
     case _                                        => false
 
   private def toBooleanModel(x: SymExpr, ret: SymExpr): List[AoCase] =
@@ -159,6 +161,22 @@ object RewriteRules {
       AoCase(List(FTypeCheck(x, ObjectT), hasConstruct), List(FEq(ret, t))),
       AoCase(
         List(FTypeCheck(x, ObjectT), FNot(hasConstruct)),
+        List(FEq(ret, f)),
+      ),
+    )
+
+  private def canBeHeldWeaklyModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+    val t = SELit(EBool(true))
+    val f = SELit(EBool(false))
+    // 3 return nodes; dropped 1 inter-proc (5738 via KeyForSymbol).
+    // Returns Boolean directly (not a completion).
+    // Symbol case (registered vs unregistered) requires KeyForSymbol summary.
+    // Second case: detailed-types only knows `#0: Symbol|...|Null` at node 5739;
+    // the Symbol exclusion comes from CFG control flow (prior-branch narrowing).
+    List(
+      AoCase(List(FTypeCheck(x, ObjectT)), List(FEq(ret, t))),
+      AoCase(
+        List(FNot(FTypeCheck(x, ObjectT || SymbolT))),
         List(FEq(ret, f)),
       ),
     )
@@ -368,9 +386,7 @@ object RewriteRules {
     // 9 Executable Code and Execution Contexts
 
     // https://tc39.es/ecma262/#sec-canbeheldweakly
-    case FEq(SEApp("CanBeHeldWeakly", List(x)), SELit(EBool(b))) =>
-      if (b) List(FTypeCheck(x, ObjectT))
-      else List(FNot(FTypeCheck(x, ObjectT)), FNot(FTypeCheck(x, SymbolT)))
+    // CanBeHeldWeakly is modeled point-wise as implication facts.
 
     // 10.1 Ordinary Object Internal Methods and Internal Slots
 
