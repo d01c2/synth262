@@ -35,26 +35,41 @@ object RewriteRules {
     case SEApp("IsConstructor", List(x))   => isConstructorModel(x, call)
     case SEApp("IsRegExp", List(x))        => isRegExpModel(x, call)
     case SEApp("CanBeHeldWeakly", List(x)) => canBeHeldWeaklyModel(x, call)
-    case _                                 => Nil
+    case SEApp("RequireInternalSlot", List(x, slot)) =>
+      requireInternalSlotModel(x, slot, call)
+    case SEApp("ValidateNonRevokedProxy", List(proxy)) =>
+      validateNonRevokedProxyModel(proxy, call)
+    case SEApp("OrdinaryCreateFromConstructor", List(ctor, _*)) =>
+      ordinaryCreateFromConstructorModel(ctor, call)
+    case SEApp("InstallErrorCause", List(_, options)) =>
+      installErrorCauseModel(options, call)
+    case SEApp("ValidateTypedArray", List(o, _)) =>
+      validateTypedArrayModel(o, call)
+    case _ => Nil
 
   def isModeledCall(expr: SymExpr): Boolean = expr match
-    case SEApp("ToNumber", List(_))               => true
-    case SEApp("ToBoolean", List(_))              => true
-    case SEApp("ToObject", List(_))               => true
-    case SEApp("ToBigInt", List(_))               => true
-    case SEApp("ToString", List(_))               => true
-    case SEApp("RequireObjectCoercible", List(_)) => true
-    case SEApp("ThisSymbolValue", List(_))        => true
-    case SEApp("ThisNumberValue", List(_))        => true
-    case SEApp("ThisBigIntValue", List(_))        => true
-    case SEApp("ThisStringValue", List(_))        => true
-    case SEApp("ThisBooleanValue", List(_))       => true
-    case SEApp("IsArray", List(_))                => true
-    case SEApp("IsCallable", List(_))             => true
-    case SEApp("IsConstructor", List(_))          => true
-    case SEApp("IsRegExp", List(_))               => true
-    case SEApp("CanBeHeldWeakly", List(_))        => true
-    case _                                        => false
+    case SEApp("ToNumber", List(_))                => true
+    case SEApp("ToBoolean", List(_))               => true
+    case SEApp("ToObject", List(_))                => true
+    case SEApp("ToBigInt", List(_))                => true
+    case SEApp("ToString", List(_))                => true
+    case SEApp("RequireObjectCoercible", List(_))  => true
+    case SEApp("ThisSymbolValue", List(_))         => true
+    case SEApp("ThisNumberValue", List(_))         => true
+    case SEApp("ThisBigIntValue", List(_))         => true
+    case SEApp("ThisStringValue", List(_))         => true
+    case SEApp("ThisBooleanValue", List(_))        => true
+    case SEApp("IsArray", List(_))                 => true
+    case SEApp("IsCallable", List(_))              => true
+    case SEApp("IsConstructor", List(_))           => true
+    case SEApp("IsRegExp", List(_))                => true
+    case SEApp("CanBeHeldWeakly", List(_))         => true
+    case SEApp("RequireInternalSlot", List(_, _))  => true
+    case SEApp("ValidateNonRevokedProxy", List(_)) => true
+    case SEApp("OrdinaryCreateFromConstructor", _) => true
+    case SEApp("InstallErrorCause", List(_, _))    => true
+    case SEApp("ValidateTypedArray", List(_, _))   => true
+    case _                                         => false
 
   private def toBooleanModel(x: SymExpr, ret: SymExpr): List[AoCase] =
     val t = SELit(EBool(true))
@@ -297,6 +312,123 @@ object RewriteRules {
       AoCase(List(FTypeCheck(x, TrueT)), normal(SELit(ENumber(1.0)))),
     )
 
+  // 3 return nodes, all modeled.
+  private def requireInternalSlotModel(
+    x: SymExpr,
+    slot: SymExpr,
+    ret: SymExpr,
+  ): List[AoCase] =
+    List(
+      AoCase(List(FNot(FTypeCheck(x, ObjectT))), List(FTypeCheck(ret, ThrowT))),
+      AoCase(
+        List(FTypeCheck(x, ObjectT), FNot(FExists(x, slot))),
+        List(FTypeCheck(ret, ThrowT)),
+      ),
+      AoCase(
+        List(FTypeCheck(x, ObjectT), FExists(x, slot)),
+        List(FTypeCheck(ret, NormalT)),
+      ),
+    )
+
+  // 2 return nodes, all modeled.
+  private def validateNonRevokedProxyModel(
+    proxy: SymExpr,
+    ret: SymExpr,
+  ): List[AoCase] =
+    val hasHandler = FExists(proxy, SELit(EStr("ProxyHandler")))
+    List(
+      AoCase(List(FNot(hasHandler)), List(FTypeCheck(ret, ThrowT))),
+      AoCase(List(hasHandler), List(FTypeCheck(ret, NormalT))),
+    )
+
+  // 2 effective return nodes; dropped 1 structural (OrdinaryObjectCreate).
+  // Get is an internal method wrapper understood by reify.
+  private def ordinaryCreateFromConstructorModel(
+    ctor: SymExpr,
+    ret: SymExpr,
+  ): List[AoCase] =
+    val getProto = SEApp("Get", List(ctor, SELit(EStr("prototype"))))
+    List(
+      AoCase(
+        List(FTypeCheck(getProto, AbruptT)),
+        List(FTypeCheck(ret, ThrowT)),
+      ),
+      AoCase(
+        List(FTypeCheck(getProto, NormalT)),
+        List(FTypeCheck(ret, NormalT)),
+      ),
+    )
+
+  // 5 return paths; modeled 5. HasProperty and Get are internal method
+  // wrappers understood by reify. CreateNonEnumerableDataPropertyOrThrow
+  // throw is unreachable for OrdinaryObject receivers.
+  private def installErrorCauseModel(
+    options: SymExpr,
+    ret: SymExpr,
+  ): List[AoCase] =
+    val hasCause =
+      SEApp("HasProperty", List(options, SELit(EStr("cause"))))
+    val getCause =
+      SEApp("Get", List(options, SELit(EStr("cause"))))
+    val t = SELit(EBool(true))
+    val f = SELit(EBool(false))
+    List(
+      AoCase(
+        List(FNot(FTypeCheck(options, ObjectT))),
+        List(FTypeCheck(ret, NormalT)),
+      ),
+      AoCase(
+        List(FTypeCheck(options, ObjectT), FTypeCheck(hasCause, AbruptT)),
+        List(FTypeCheck(ret, ThrowT)),
+      ),
+      AoCase(
+        List(
+          FTypeCheck(options, ObjectT),
+          FTypeCheck(hasCause, NormalT),
+          FEq(SEField(hasCause, "Value"), f),
+        ),
+        List(FTypeCheck(ret, NormalT)),
+      ),
+      AoCase(
+        List(
+          FTypeCheck(options, ObjectT),
+          FTypeCheck(hasCause, NormalT),
+          FEq(SEField(hasCause, "Value"), t),
+          FTypeCheck(getCause, AbruptT),
+        ),
+        List(FTypeCheck(ret, ThrowT)),
+      ),
+      AoCase(
+        List(
+          FTypeCheck(options, ObjectT),
+          FTypeCheck(hasCause, NormalT),
+          FEq(SEField(hasCause, "Value"), t),
+          FTypeCheck(getCause, NormalT),
+        ),
+        List(FTypeCheck(ret, NormalT)),
+      ),
+    )
+
+  // 3 return nodes; dropped 1 inter-proc (IsTypedArrayOutOfBounds throw).
+  // RequireInternalSlot is modeled; composition requires solveCases re-scan
+  // (not yet implemented — modeledCalls computed once before solveCases).
+  private def validateTypedArrayModel(
+    o: SymExpr,
+    ret: SymExpr,
+  ): List[AoCase] =
+    val reqSlot =
+      SEApp("RequireInternalSlot", List(o, SELit(EStr("TypedArrayName"))))
+    List(
+      AoCase(
+        List(FTypeCheck(reqSlot, AbruptT)),
+        List(FTypeCheck(ret, ThrowT)),
+      ),
+      AoCase(
+        List(FTypeCheck(reqSlot, NormalT)),
+        List(FTypeCheck(ret, NormalT)),
+      ),
+    )
+
   private val Contradiction = FEq(SELit(EBool(true)), SELit(EBool(false)))
 
   private def rewrite(f: Formula)(using CFG): List[Formula] = f match
@@ -391,15 +523,7 @@ object RewriteRules {
     // 10.1 Ordinary Object Internal Methods and Internal Slots
 
     // https://tc39.es/ecma262/#sec-requireinternalslot
-    case FTypeCheck(
-          SEApp("RequireInternalSlot", List(x, SELit(EStr(slot)))),
-          ty,
-        ) if ty <= CompT =>
-      ty match
-        case _ if ty <= NormalT =>
-          List(FTypeCheck(x, ObjectT), FExists(x, SELit(EStr(slot))))
-        case _ if ty <= AbruptT => List(FNot(FTypeCheck(x, ObjectT)))
-        case _                  => List(f)
+    // RequireInternalSlot is modeled point-wise as implication facts.
 
     // ThisXXXValue series (around 20.XX)
 
@@ -407,51 +531,16 @@ object RewriteRules {
     // ThisStringValue, ThisBooleanValue) are modeled point-wise as implication facts.
 
     // https://tc39.es/ecma262/#sec-ordinarycreatefromconstructor
-    // NOTE: delegates to Get(constructor, "prototype") via GetPrototypeFromConstructor
-    case FTypeCheck(SEApp("OrdinaryCreateFromConstructor", List(ctor, _*)), ty)
-        if ty <= CompT =>
-      val getProto = SEApp("Get", List(ctor, SELit(EStr("prototype"))))
-      ty match
-        case _ if ty <= NormalT || ty <= AbruptT =>
-          List(FTypeCheck(getProto, ty))
-        case _ => List(f)
+    // OrdinaryCreateFromConstructor is modeled point-wise as implication facts.
 
     // https://tc39.es/ecma262/#sec-installerrorcause
-    // NOTE: delegates to HasProperty(options, "cause")
-    case FTypeCheck(SEApp("InstallErrorCause", List(_, options)), ty)
-        if ty <= CompT =>
-      val hasCause = SEApp("HasProperty", List(options, SELit(EStr("cause"))))
-      ty match
-        case _ if ty <= NormalT || ty <= AbruptT =>
-          List(FTypeCheck(hasCause, ty))
-        case _ => List(f)
+    // InstallErrorCause is modeled point-wise as implication facts.
 
     // https://tc39.es/ecma262/#sec-validatenonrevokedproxy
-    // NOTE: throws TypeError only if proxy is revoked (handler is null)
-    case FTypeCheck(SEApp("ValidateNonRevokedProxy", List(o)), ty)
-        if ty <= CompT =>
-      val hasHandler = FExists(o, SELit(EStr("ProxyHandler")))
-      ty match
-        case _ if ty <= NormalT => List(hasHandler)
-        case _ if ty <= AbruptT => List(FNot(hasHandler))
-        case _                  => List(f)
+    // ValidateNonRevokedProxy is modeled point-wise as implication facts.
 
     // https://tc39.es/ecma262/#sec-validatetypedarray
-    // NOTE: delegates to RequireInternalSlot(typedArray, "TypedArrayName")
-    case FTypeCheck(SEApp("ValidateTypedArray", List(o, _)), ty)
-        if ty <= CompT =>
-      ty match
-        case _ if ty <= NormalT || ty <= AbruptT =>
-          List(
-            FTypeCheck(
-              SEApp(
-                "RequireInternalSlot",
-                List(o, SELit(EStr("TypedArrayName"))),
-              ),
-              ty,
-            ),
-          )
-        case _ => List(f)
+    // ValidateTypedArray is modeled point-wise as implication facts.
 
     // 27.1 Iteration
 
