@@ -13,10 +13,11 @@ object Solver {
 
   def solveAll(goal: Goal)(using CFG): LazyList[Goal] =
     val rewritten = rewrite(goal)
-    val calls = modeledCalls(rewritten).toList.sortBy(_.toString)
-    solveCases(rewritten, calls).flatMap { solved =>
+    val initCalls = modeledCalls(rewritten)
+    val calls = initCalls.toList.sortBy(_.toString)
+    solveCases(rewritten, calls, initCalls).flatMap { (solved, allCalls) =>
       simplify(rewrite(solved))
-        .map(stripCallFacts(_, calls.toSet))
+        .map(stripCallFacts(_, allCalls))
         .to(LazyList)
     }
 
@@ -74,17 +75,21 @@ object Solver {
   private def solveCases(
     base: Goal,
     calls: List[SymExpr],
-  )(using CFG): LazyList[Goal] =
+    seen: Set[SymExpr],
+  )(using CFG): LazyList[(Goal, Set[SymExpr])] =
     calls match
-      case Nil => LazyList(base)
+      case Nil => LazyList((base, seen))
       case call :: rest =>
         val cases = RewriteRules.aoModel(call)
-        if (cases.isEmpty) solveCases(base, rest)
+        if (cases.isEmpty) solveCases(base, rest, seen)
         else
           LazyList.from(cases).flatMap { c =>
             simplify(rewrite(base ++ c.when ++ c.thenF)) match
-              case None         => LazyList.empty
-              case Some(solved) => solveCases(solved, rest)
+              case None => LazyList.empty
+              case Some(solved) =>
+                val newCalls = modeledCalls(solved) -- seen
+                val nextCalls = rest ++ newCalls.toList.sortBy(_.toString)
+                solveCases(solved, nextCalls, seen ++ newCalls)
           }
 
   private def stripCallFacts(goal: Goal, calls: Set[SymExpr]): Goal =
