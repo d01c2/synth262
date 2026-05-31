@@ -11,7 +11,7 @@
   "ToLength value projection delegates to ToNumber before rewriting" : true,
   "ToNumber abrupt requirement selects throwing implication case" : true,
   "ToNumber model does not activate from input-only constraints" : true,
-  "ToNumber model has five point-wise cases" : true,
+  "ToNumber model has six point-wise cases" : true,
   "ToNumber undefined can satisfy a NaN result" : true,
   "ToNumber value projection is not rewritten into its input" : true,
   "ToNumber value requirement is solved by implication cases" : true,

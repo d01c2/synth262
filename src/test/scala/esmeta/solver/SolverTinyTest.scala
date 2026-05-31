@@ -75,12 +75,12 @@ class SolverTinyTest extends SolverTest {
       assert(!rewritten.contains(isType(xSym, NumberT)))
     }
 
-    check("ToNumber model has five point-wise cases") {
+    check("ToNumber model has six point-wise cases") {
       val toNumber = SEApp("ToNumber", List(xSym))
       val value = SEField(toNumber, "Value")
       val cases = RewriteRules.aoModel(toNumber)
 
-      assert(cases.size == 5)
+      assert(cases.size == 6)
       assert(
         cases.exists(c =>
           c.when == List(isType(xSym, NumberT)) &&

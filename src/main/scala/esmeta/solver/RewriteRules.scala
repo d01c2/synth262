@@ -45,6 +45,10 @@ object RewriteRules {
       installErrorCauseModel(options, call)
     case SEApp("ValidateTypedArray", List(o, _)) =>
       validateTypedArrayModel(o, call)
+    case SEApp("ToPrimitive", List(x, _*)) =>
+      toPrimitiveModel(x, call)
+    case SEApp("IsTypedArrayOutOfBounds", List(_)) =>
+      isTypedArrayOutOfBoundsModel(call)
     case _ => Nil
 
   def isModeledCall(expr: SymExpr): Boolean = expr match
@@ -69,6 +73,8 @@ object RewriteRules {
     case SEApp("OrdinaryCreateFromConstructor", _) => true
     case SEApp("InstallErrorCause", List(_, _))    => true
     case SEApp("ValidateTypedArray", List(_, _))   => true
+    case SEApp("ToPrimitive", _)                   => true
+    case SEApp("IsTypedArrayOutOfBounds", List(_)) => true
     case _                                         => false
 
   private def toBooleanModel(x: SymExpr, ret: SymExpr): List[AoCase] =
@@ -260,9 +266,10 @@ object RewriteRules {
   private def toStringModel(x: SymExpr, ret: SymExpr): List[AoCase] =
     def normal(v: SymExpr): Goal =
       List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
-    // Open dependency: dropped 7 inter-proc (1412,1414,1418,1420,1425,1431,1432
-    // via Number::toString/BigInt::toString/ToPrimitive); 1 analysis dropped (1390)
-    // due to infeasible Completion check.
+    // Dropped inter-proc: Number::toString, BigInt::toString (IR ops);
+    // 1 analysis dropped (1390) due to infeasible Completion check.
+    // Object case: ToPrimitive throw propagated; normal path depends on
+    // recursive ToString(prim) which may still throw (e.g., Symbol).
     List(
       AoCase(List(FTypeCheck(x, StrT)), normal(x)),
       AoCase(List(FTypeCheck(x, SymbolT)), List(FTypeCheck(ret, ThrowT))),
@@ -270,14 +277,22 @@ object RewriteRules {
       AoCase(List(FTypeCheck(x, NullT)), normal(SELit(EStr("null")))),
       AoCase(List(FTypeCheck(x, TrueT)), normal(SELit(EStr("true")))),
       AoCase(List(FTypeCheck(x, FalseT)), normal(SELit(EStr("false")))),
+      AoCase(
+        List(
+          FTypeCheck(x, ObjectT),
+          FTypeCheck(SEApp("ToPrimitive", List(x)), AbruptT),
+        ),
+        List(FTypeCheck(ret, ThrowT)),
+      ),
     )
 
   private def toBigIntModel(x: SymExpr, ret: SymExpr): List[AoCase] =
     def normal(v: SymExpr): Goal =
       List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
     val abrupt = List(FTypeCheck(ret, ThrowT))
-    // Open dependency: dropped 3 inter-proc (91,121,123 via ToPrimitive/StringToBigInt).
-    // detailed-types has no value-level Boolean; split via CFG branch `if prim`
+    // Dropped inter-proc: StringToBigInt (IR ops).
+    // Object case: ToPrimitive throw propagated; normal path depends on
+    // recursive ToBigInt(prim) which may still throw (e.g., Number).
     List(
       AoCase(List(FTypeCheck(x, UndefT)), abrupt),
       AoCase(List(FTypeCheck(x, NullT)), abrupt),
@@ -292,12 +307,21 @@ object RewriteRules {
         normal(SELit(EBigInt(BigInt(0)))),
       ),
       AoCase(List(FTypeCheck(x, BigIntT)), normal(x)),
+      AoCase(
+        List(
+          FTypeCheck(x, ObjectT),
+          FTypeCheck(SEApp("ToPrimitive", List(x)), AbruptT),
+        ),
+        abrupt,
+      ),
     )
 
   private def toNumberModel(x: SymExpr, ret: SymExpr): List[AoCase] =
     def normal(v: SymExpr): Goal =
       List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
-    // Open dependency: dropped 4 cases which require other function summary.
+    // Dropped inter-proc: StringToNumber (IR ops).
+    // Object case: ToPrimitive throw propagated; normal path depends on
+    // recursive ToNumber(prim) which may still throw (e.g., Symbol/BigInt).
     List(
       AoCase(List(FTypeCheck(x, NumberT)), normal(x)),
       AoCase(
@@ -310,6 +334,13 @@ object RewriteRules {
         normal(SELit(ENumber(0.0))),
       ),
       AoCase(List(FTypeCheck(x, TrueT)), normal(SELit(ENumber(1.0)))),
+      AoCase(
+        List(
+          FTypeCheck(x, ObjectT),
+          FTypeCheck(SEApp("ToPrimitive", List(x)), AbruptT),
+        ),
+        List(FTypeCheck(ret, ThrowT)),
+      ),
     )
 
   // 3 return nodes, all modeled.
@@ -427,6 +458,36 @@ object RewriteRules {
         List(FTypeCheck(reqSlot, NormalT)),
         List(FTypeCheck(ret, NormalT)),
       ),
+    )
+
+  // 9 return nodes; modeled 2, dropped 7 inter-proc (Call to exotic
+  // @@toPrimitive, OrdinaryToPrimitive loop+Get+IsCallable+Call chain).
+  // Get is an internal method wrapper understood by reify.
+  private def toPrimitiveModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+    val symToPrimitive =
+      SEProj(SEApp("SYMBOL", List()), SELit(EStr("toPrimitive")))
+    val getExotic = SEApp("Get", List(x, symToPrimitive))
+    List(
+      AoCase(
+        List(FNot(FTypeCheck(x, ObjectT))),
+        List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), x)),
+      ),
+      AoCase(
+        List(FTypeCheck(x, ObjectT), FTypeCheck(getExotic, AbruptT)),
+        List(FTypeCheck(ret, ThrowT)),
+      ),
+    )
+
+  // 3 return nodes; conditions (buffer detachment, byte offsets) not
+  // expressible in formula system. Returns Boolean directly.
+  private def isTypedArrayOutOfBoundsModel(
+    ret: SymExpr,
+  ): List[AoCase] =
+    val t = SELit(EBool(true))
+    val f = SELit(EBool(false))
+    List(
+      AoCase(Nil, List(FEq(ret, t))),
+      AoCase(Nil, List(FEq(ret, f))),
     )
 
   private val Contradiction = FEq(SELit(EBool(true)), SELit(EBool(false)))
