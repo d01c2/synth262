@@ -49,6 +49,10 @@ object RewriteRules {
       toPrimitiveModel(x, call)
     case SEApp("IsTypedArrayOutOfBounds", List(_)) =>
       isTypedArrayOutOfBoundsModel(call)
+    case SEApp("SameValue", List(x, y)) =>
+      sameValueModel(x, y, call)
+    case SEApp("SameValueZero", List(x, y)) =>
+      sameValueModel(x, y, call)
     case _ => Nil
 
   def isModeledCall(expr: SymExpr): Boolean = expr match
@@ -75,6 +79,8 @@ object RewriteRules {
     case SEApp("ValidateTypedArray", List(_, _))   => true
     case SEApp("ToPrimitive", _)                   => true
     case SEApp("IsTypedArrayOutOfBounds", List(_)) => true
+    case SEApp("SameValue", List(_, _))            => true
+    case SEApp("SameValueZero", List(_, _))        => true
     case _                                         => false
 
   private def toBooleanModel(x: SymExpr, ret: SymExpr): List[AoCase] =
@@ -490,6 +496,23 @@ object RewriteRules {
       AoCase(Nil, List(FEq(ret, f))),
     )
 
+  // 11 return nodes across SameValue + SameValueNonNumber;
+  // all modeled cases reduce to equality check. 2 inter-proc dropped
+  // (Number::sameValue, BigInt::equal — IR ops).
+  // SameValueZero shares the same model (solver FEq does not
+  // distinguish +0/-0 semantics).
+  private def sameValueModel(
+    x: SymExpr,
+    y: SymExpr,
+    ret: SymExpr,
+  ): List[AoCase] =
+    val t = SELit(EBool(true))
+    val f = SELit(EBool(false))
+    List(
+      AoCase(List(FEq(x, y)), List(FEq(ret, t))),
+      AoCase(List(FNot(FEq(x, y))), List(FEq(ret, f))),
+    )
+
   private val Contradiction = FEq(SELit(EBool(true)), SELit(EBool(false)))
 
   private def rewrite(f: Formula)(using CFG): List[Formula] = f match
@@ -563,18 +586,10 @@ object RewriteRules {
     // IsRegExp is modeled point-wise as implication facts.
 
     // https://tc39.es/ecma262/#sec-samevalue
-    // NOTE: strict - +0 != -0, NaN == NaN
-    case FEq(SEApp("SameValue", List(x, y)), SELit(EBool(b))) =>
-      if (b) List(FEq(x, y)) else List(FNot(FEq(x, y)))
-    case FEq(SELit(EBool(b)), SEApp("SameValue", List(x, y))) =>
-      if (b) List(FEq(x, y)) else List(FNot(FEq(x, y)))
+    // SameValue is modeled point-wise as implication facts.
 
     // https://tc39.es/ecma262/#sec-samevaluezero
-    // NOTE: lenient - +0 == -0, NaN == NaN
-    case FEq(SEApp("SameValueZero", List(x, y)), SELit(EBool(b))) =>
-      if (b) List(FEq(x, y)) else List(FNot(FEq(x, y)))
-    case FEq(SELit(EBool(b)), SEApp("SameValueZero", List(x, y))) =>
-      if (b) List(FEq(x, y)) else List(FNot(FEq(x, y)))
+    // SameValueZero is modeled point-wise as implication facts.
 
     // 9 Executable Code and Execution Contexts
 
