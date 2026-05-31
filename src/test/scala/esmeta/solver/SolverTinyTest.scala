@@ -149,7 +149,9 @@ class SolverTinyTest extends SolverTest {
       assert(
         cases.exists(c =>
           c.when.contains(FTypeCheck(inner, NormalT)) &&
-          c.thenF.contains(FEq(SEField(toLength, "Value"), SELit(EMath(0)))),
+          c.thenF.contains(
+            FEq(SEField(toLength, "Value"), SELit(ENumber(0.0))),
+          ),
         ),
       )
       assert(

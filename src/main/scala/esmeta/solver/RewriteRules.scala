@@ -59,6 +59,12 @@ object RewriteRules {
       toLengthModel(x, call)
     case SEApp("ToIndex", List(x)) =>
       toIndexModel(x, call)
+    case SEApp("ToPropertyKey", List(x)) =>
+      toPropertyKeyModel(x, call)
+    case SEApp("LengthOfArrayLike", List(x)) =>
+      lengthOfArrayLikeModel(x, call)
+    case SEApp("GetMethod", List(v, p)) =>
+      getMethodModel(v, p, call)
     case _ => Nil
 
   def isModeledCall(expr: SymExpr): Boolean = expr match
@@ -90,6 +96,9 @@ object RewriteRules {
     case SEApp("ToIntegerOrInfinity", List(_))     => true
     case SEApp("ToLength", List(_))                => true
     case SEApp("ToIndex", List(_))                 => true
+    case SEApp("ToPropertyKey", List(_))           => true
+    case SEApp("LengthOfArrayLike", List(_))       => true
+    case SEApp("GetMethod", List(_, _))            => true
     case _                                         => false
 
   private def toBooleanModel(x: SymExpr, ret: SymExpr): List[AoCase] =
@@ -126,7 +135,10 @@ object RewriteRules {
         List(FTypeCheck(x, ValueTy(str = Fin(Set(""))))),
         List(FEq(ret, f)),
       ),
-      AoCase(List(FTypeCheck(x, StrT)), List(FEq(ret, t))),
+      AoCase(
+        List(FTypeCheck(x, StrT), FNot(FEq(x, SELit(EStr(""))))),
+        List(FEq(ret, t)),
+      ),
       AoCase(List(FTypeCheck(x, SymbolT)), List(FEq(ret, t))),
       AoCase(List(FTypeCheck(x, ObjectT)), List(FEq(ret, t))),
     )
@@ -223,10 +235,8 @@ object RewriteRules {
     val t = SELit(EBool(true))
     val f = SELit(EBool(false))
     val symMatch = SEProj(SEApp("SYMBOL", List()), SELit(EStr("match")))
-    // 6 return nodes; dropped 2 inter-proc (1532,1537 via ToBoolean);
+    // 6 return nodes; dropped 1 inter-proc (1532 via ToBoolean);
     // 1 analysis dropped (1530).
-    // RegExpMatcher case (1535) is reachable only when Get(@@match)=undefined;
-    // when condition omits this check — imprecise for @@match-overriding objects.
     List(
       AoCase(List(FNot(FTypeCheck(x, ObjectT))), normal(f)),
       AoCase(
@@ -239,6 +249,14 @@ object RewriteRules {
       AoCase(
         List(FTypeCheck(x, ObjectT), FExists(x, SELit(EStr("RegExpMatcher")))),
         normal(t),
+      ),
+      // node 1537: Object, no RegExpMatcher → false
+      AoCase(
+        List(
+          FTypeCheck(x, ObjectT),
+          FNot(FExists(x, SELit(EStr("RegExpMatcher")))),
+        ),
+        normal(f),
       ),
     )
 
@@ -381,10 +399,10 @@ object RewriteRules {
     proxy: SymExpr,
     ret: SymExpr,
   ): List[AoCase] =
-    val hasHandler = FExists(proxy, SELit(EStr("ProxyHandler")))
+    val hasTarget = FExists(proxy, SELit(EStr("ProxyTarget")))
     List(
-      AoCase(List(FNot(hasHandler)), List(FTypeCheck(ret, ThrowT))),
-      AoCase(List(hasHandler), List(FTypeCheck(ret, NormalT))),
+      AoCase(List(FNot(hasTarget)), List(FTypeCheck(ret, ThrowT))),
+      AoCase(List(hasTarget), List(FTypeCheck(ret, NormalT))),
     )
 
   // 2 effective return nodes; dropped 1 structural (OrdinaryObjectCreate).
@@ -458,6 +476,8 @@ object RewriteRules {
   // 3 return nodes; dropped 1 inter-proc (IsTypedArrayOutOfBounds throw).
   // RequireInternalSlot is modeled; composition requires solveCases re-scan
   // (not yet implemented — modeledCalls computed once before solveCases).
+  // 4 return nodes: 1 throw (RequireInternalSlot abrupt), 1 throw
+  // (IsTypedArrayOutOfBounds true), 1 normal, 1 structural.
   private def validateTypedArrayModel(
     o: SymExpr,
     ret: SymExpr,
@@ -473,6 +493,10 @@ object RewriteRules {
         List(FTypeCheck(reqSlot, NormalT)),
         List(FTypeCheck(ret, NormalT)),
       ),
+      AoCase(
+        List(FTypeCheck(reqSlot, NormalT)),
+        List(FTypeCheck(ret, ThrowT)),
+      ),
     )
 
   // 9 return nodes; modeled 2, dropped 7 inter-proc (Call to exotic
@@ -481,7 +505,7 @@ object RewriteRules {
   private def toPrimitiveModel(x: SymExpr, ret: SymExpr): List[AoCase] =
     val symToPrimitive =
       SEProj(SEApp("SYMBOL", List()), SELit(EStr("toPrimitive")))
-    val getExotic = SEApp("Get", List(x, symToPrimitive))
+    val getExotic = SEApp("GetMethod", List(x, symToPrimitive))
     List(
       AoCase(
         List(FNot(FTypeCheck(x, ObjectT))),
@@ -579,7 +603,7 @@ object RewriteRules {
         ),
         List(
           FTypeCheck(ret, NormalT),
-          FEq(SEField(ret, "Value"), SELit(EMath(0))),
+          FEq(SEField(ret, "Value"), SELit(ENumber(0.0))),
         ),
       ),
       // node 1459: general → Normal (min(len, 2^53-1), clamp not expressible)
@@ -610,6 +634,110 @@ object RewriteRules {
       AoCase(
         List(FTypeCheck(toIntOrInf, NormalT)),
         List(FTypeCheck(ret, ThrowT)),
+      ),
+    )
+
+  // 4 return nodes: 1 throw (ToPrimitive abrupt), 1 normal (Symbol
+  // identity), 1 normal (ToString), 1 structural.
+  private def toPropertyKeyModel(
+    x: SymExpr,
+    ret: SymExpr,
+  ): List[AoCase] =
+    val toPrim = SEApp("ToPrimitive", List(x, SELit(EEnum("string"))))
+    val primVal = SEField(toPrim, "Value")
+    List(
+      // node 1436: ToPrimitive abrupt
+      AoCase(List(FTypeCheck(toPrim, AbruptT)), List(FTypeCheck(ret, ThrowT))),
+      // node 1443: key is Symbol → ret.Value = key
+      AoCase(
+        List(FTypeCheck(toPrim, NormalT), FTypeCheck(primVal, SymbolT)),
+        List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), primVal)),
+      ),
+      // node 1445: key is not Symbol → ToString(key)
+      AoCase(
+        List(FTypeCheck(toPrim, NormalT), FNot(FTypeCheck(primVal, SymbolT))),
+        List(
+          FTypeCheck(ret, NormalT),
+          FEq(
+            SEField(ret, "Value"),
+            SEField(SEApp("ToString", List(primVal)), "Value"),
+          ),
+        ),
+      ),
+    )
+
+  // 4 return nodes: 1 throw (Get abrupt), 1 throw (ToLength abrupt),
+  // 1 normal, 1 structural.
+  private def lengthOfArrayLikeModel(
+    obj: SymExpr,
+    ret: SymExpr,
+  ): List[AoCase] =
+    val getLength = SEApp("Get", List(obj, SELit(EStr("length"))))
+    val toLength = SEApp("ToLength", List(SEField(getLength, "Value")))
+    List(
+      // node 2020: Get abrupt
+      AoCase(
+        List(FTypeCheck(getLength, AbruptT)),
+        List(FTypeCheck(ret, ThrowT)),
+      ),
+      // node 2025: ToLength abrupt
+      AoCase(
+        List(FTypeCheck(getLength, NormalT), FTypeCheck(toLength, AbruptT)),
+        List(FTypeCheck(ret, ThrowT)),
+      ),
+      // node 2031: Normal[Int[0+]]
+      AoCase(
+        List(FTypeCheck(getLength, NormalT), FTypeCheck(toLength, NormalT)),
+        List(
+          FTypeCheck(ret, NormalT),
+          FEq(SEField(ret, "Value"), SEField(toLength, "Value")),
+        ),
+      ),
+    )
+
+  // 5 return nodes: 1 throw (GetV abrupt), 1 normal (undefined/null →
+  // undefined), 1 throw (not callable), 1 normal (callable func),
+  // 1 structural.
+  private def getMethodModel(
+    v: SymExpr,
+    p: SymExpr,
+    ret: SymExpr,
+  ): List[AoCase] =
+    val getResult = SEApp("Get", List(v, p))
+    val getVal = SEField(getResult, "Value")
+    List(
+      // node 1870: GetV abrupt
+      AoCase(
+        List(FTypeCheck(getResult, AbruptT)),
+        List(FTypeCheck(ret, ThrowT)),
+      ),
+      // node 1875: func is undefined or null → Normal[Undefined]
+      AoCase(
+        List(
+          FTypeCheck(getResult, NormalT),
+          FTypeCheck(getVal, UndefT || NullT),
+        ),
+        List(
+          FTypeCheck(ret, NormalT),
+          FEq(SEField(ret, "Value"), SELit(EUndef())),
+        ),
+      ),
+      // node 1880: func not callable → Throw (TypeError)
+      AoCase(
+        List(
+          FTypeCheck(getResult, NormalT),
+          FNot(FTypeCheck(getVal, UndefT || NullT)),
+          FEq(SEApp("IsCallable", List(getVal)), SELit(EBool(false))),
+        ),
+        List(FTypeCheck(ret, ThrowT)),
+      ),
+      // node 1884: func is callable → Normal, Value = func
+      AoCase(
+        List(
+          FTypeCheck(getResult, NormalT),
+          FEq(SEApp("IsCallable", List(getVal)), SELit(EBool(true))),
+        ),
+        List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), getVal)),
       ),
     )
 
@@ -814,18 +942,7 @@ object RewriteRules {
     case FTypeCheck(e, ty) => FTypeCheck(reduceExpr(e), ty)
 
   private def reduceExpr(t: SymExpr): SymExpr = t match
-    case ValueField(SEApp("ToPropertyKey", List(x))) =>
-      reduceExpr(x)
-    case SEApp("LengthOfArrayLike", List(x)) =>
-      SEApp("Get", List(reduceExpr(x), SELit(EStr("length"))))
-    case SEApp("GetMethod", List(v, SELit(EStr(p)))) =>
-      SEApp("Get", List(reduceExpr(v), SELit(EStr(p))))
-    case SEApp("GetMethod", List(v, SEProj(_, p))) =>
-      SEApp("Get", List(reduceExpr(v), reduceExpr(p)))
-    case SEApp("GetMethod", List(v, SEField(SEApp("SYMBOL", Nil), p))) =>
-      SEApp("Get", List(reduceExpr(v), SELit(EStr(p))))
     case SEApp("__CLAMP__", List(x, _, _)) => reduceExpr(x)
-    case SEApp("ToPropertyKey", List(x))   => reduceExpr(x)
     case SETypeOf(inner)                   => SETypeOf(reduceExpr(inner))
     case ValueField(inner)    => SEField(reduceExpr(inner), "Value")
     case SEProj(base, k)      => SEProj(reduceExpr(base), reduceExpr(k))
