@@ -134,20 +134,30 @@ class SolverTinyTest extends SolverTest {
       assert(witness(SolverTest.x) == "undefined")
     }
 
-    check("ToLength value projection delegates to ToNumber before rewriting") {
-      val value =
-        SEField(SEApp("ToLength", List(xSym)), "Value")
-      val rewritten = rewrite(List(FLt(value, SELit(EMath(0)))))
+    check("ToLength delegates to ToIntegerOrInfinity via AoCase") {
+      val toLength = SEApp("ToLength", List(xSym))
+      val inner = SEApp("ToIntegerOrInfinity", List(xSym))
+      val cases = RewriteRules.aoModel(toLength)
 
+      assert(cases.size == 3)
       assert(
-        rewritten.contains(
-          FLt(
-            SEField(SEApp("ToNumber", List(xSym)), "Value"),
-            SELit(EMath(0)),
-          ),
+        cases.exists(c =>
+          c.when == List(FTypeCheck(inner, AbruptT)) &&
+          c.thenF == List(FTypeCheck(toLength, ThrowT)),
         ),
       )
-      assert(!rewritten.contains(FLt(xSym, SELit(EMath(0)))))
+      assert(
+        cases.exists(c =>
+          c.when.contains(FTypeCheck(inner, NormalT)) &&
+          c.thenF.contains(FEq(SEField(toLength, "Value"), SELit(EMath(0)))),
+        ),
+      )
+      assert(
+        cases.exists(c =>
+          c.when.contains(FLt(SELit(EMath(0)), SEField(inner, "Value"))) &&
+          c.thenF == List(FTypeCheck(toLength, NormalT)),
+        ),
+      )
     }
 
     checkParamWitness("Get value projection reifies as property value")(

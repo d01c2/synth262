@@ -8,7 +8,7 @@
   "IteratorValue reads value from IteratorNext value" : true,
   "NormalCompletion Type check rewrites as known normal" : true,
   "NormalCompletion value projection rewrites to inner value" : true,
-  "ToLength value projection delegates to ToNumber before rewriting" : true,
+  "ToLength delegates to ToIntegerOrInfinity via AoCase" : true,
   "ToNumber abrupt requirement selects throwing implication case" : true,
   "ToNumber model does not activate from input-only constraints" : true,
   "ToNumber model has six point-wise cases" : true,

@@ -53,6 +53,12 @@ object RewriteRules {
       sameValueModel(x, y, call)
     case SEApp("SameValueZero", List(x, y)) =>
       sameValueModel(x, y, call)
+    case SEApp("ToIntegerOrInfinity", List(x)) =>
+      toIntegerOrInfinityModel(x, call)
+    case SEApp("ToLength", List(x)) =>
+      toLengthModel(x, call)
+    case SEApp("ToIndex", List(x)) =>
+      toIndexModel(x, call)
     case _ => Nil
 
   def isModeledCall(expr: SymExpr): Boolean = expr match
@@ -81,6 +87,9 @@ object RewriteRules {
     case SEApp("IsTypedArrayOutOfBounds", List(_)) => true
     case SEApp("SameValue", List(_, _))            => true
     case SEApp("SameValueZero", List(_, _))        => true
+    case SEApp("ToIntegerOrInfinity", List(_))     => true
+    case SEApp("ToLength", List(_))                => true
+    case SEApp("ToIndex", List(_))                 => true
     case _                                         => false
 
   private def toBooleanModel(x: SymExpr, ret: SymExpr): List[AoCase] =
@@ -496,6 +505,114 @@ object RewriteRules {
       AoCase(Nil, List(FEq(ret, f))),
     )
 
+  // 6 return nodes: 1 throw, 4 normal, 1 structural.
+  private def toIntegerOrInfinityModel(
+    x: SymExpr,
+    ret: SymExpr,
+  ): List[AoCase] =
+    val toNumber = SEApp("ToNumber", List(x))
+    val numVal = SEField(toNumber, "Value")
+    def normal(v: SymExpr): Goal =
+      List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
+    List(
+      // node 1187: ToNumber abrupt
+      AoCase(
+        List(FTypeCheck(toNumber, AbruptT)),
+        List(FTypeCheck(ret, ThrowT)),
+      ),
+      // node 1192: number is NaN → 0
+      AoCase(
+        List(
+          FTypeCheck(toNumber, NormalT),
+          FEq(numVal, SELit(ENumber(Double.NaN))),
+        ),
+        normal(SELit(EMath(0))),
+      ),
+      // node 1192: number is +0 → 0
+      AoCase(
+        List(FTypeCheck(toNumber, NormalT), FEq(numVal, SELit(ENumber(0.0)))),
+        normal(SELit(EMath(0))),
+      ),
+      // node 1192: number is -0 → 0
+      AoCase(
+        List(FTypeCheck(toNumber, NormalT), FEq(numVal, SELit(ENumber(-0.0)))),
+        normal(SELit(EMath(0))),
+      ),
+      // node 1195: number is +INF → +INF
+      AoCase(
+        List(
+          FTypeCheck(toNumber, NormalT),
+          FEq(numVal, SELit(ENumber(Double.PositiveInfinity))),
+        ),
+        normal(SELit(EInfinity(true))),
+      ),
+      // node 1198: number is -INF → -INF
+      AoCase(
+        List(
+          FTypeCheck(toNumber, NormalT),
+          FEq(numVal, SELit(ENumber(Double.NegativeInfinity))),
+        ),
+        normal(SELit(EInfinity(false))),
+      ),
+      // node 1206: general finite → Normal (floor, value not expressible)
+      AoCase(
+        List(FTypeCheck(toNumber, NormalT)),
+        List(FTypeCheck(ret, NormalT)),
+      ),
+    )
+
+  // 4 return nodes: 1 throw, 2 normal, 1 structural.
+  private def toLengthModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+    val toIntOrInf = SEApp("ToIntegerOrInfinity", List(x))
+    val innerVal = SEField(toIntOrInf, "Value")
+    List(
+      // node 1449: ToIntegerOrInfinity abrupt
+      AoCase(
+        List(FTypeCheck(toIntOrInf, AbruptT)),
+        List(FTypeCheck(ret, ThrowT)),
+      ),
+      // node 1454: len ≤ 0 → 0
+      AoCase(
+        List(
+          FTypeCheck(toIntOrInf, NormalT),
+          FNot(FLt(SELit(EMath(0)), innerVal)),
+        ),
+        List(
+          FTypeCheck(ret, NormalT),
+          FEq(SEField(ret, "Value"), SELit(EMath(0))),
+        ),
+      ),
+      // node 1459: general → Normal (min(len, 2^53-1), clamp not expressible)
+      AoCase(
+        List(FTypeCheck(toIntOrInf, NormalT), FLt(SELit(EMath(0)), innerVal)),
+        List(FTypeCheck(ret, NormalT)),
+      ),
+    )
+
+  // 4 return nodes: 1 throw (ToIntegerOrInfinity abrupt), 1 throw
+  // (RangeError for out-of-range), 1 normal, 1 structural.
+  // Normal case: ret.Value = toIntOrInf.Value (no value transformation,
+  // only range check — value is identity when in range).
+  private def toIndexModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+    val toIntOrInf = SEApp("ToIntegerOrInfinity", List(x))
+    List(
+      AoCase(
+        List(FTypeCheck(toIntOrInf, AbruptT)),
+        List(FTypeCheck(ret, ThrowT)),
+      ),
+      AoCase(
+        List(FTypeCheck(toIntOrInf, NormalT)),
+        List(
+          FTypeCheck(ret, NormalT),
+          FEq(SEField(ret, "Value"), SEField(toIntOrInf, "Value")),
+        ),
+      ),
+      AoCase(
+        List(FTypeCheck(toIntOrInf, NormalT)),
+        List(FTypeCheck(ret, ThrowT)),
+      ),
+    )
+
   // 11 return nodes across SameValue + SameValueNonNumber;
   // all modeled cases reduce to equality check. 2 inter-proc dropped
   // (Number::sameValue, BigInt::equal — IR ops).
@@ -533,13 +650,7 @@ object RewriteRules {
     // ToNumber is modeled point-wise as implication facts.
 
     // https://tc39.es/ecma262/#sec-tointegerorinfinity
-    // NOTE: delegates to ToNumber
-    case FTypeCheck(SEApp("ToIntegerOrInfinity", List(x)), ty) if ty <= CompT =>
-      val toNumber = SEApp("ToNumber", List(x))
-      ty match
-        case _ if ty <= NormalT || ty <= AbruptT =>
-          List(FTypeCheck(toNumber, ty))
-        case _ => List(f)
+    // ToIntegerOrInfinity is modeled point-wise as implication facts.
 
     // https://tc39.es/ecma262/#sec-tobigint
     // ToBigInt is modeled point-wise as implication facts.
@@ -551,22 +662,10 @@ object RewriteRules {
     // ToObject is modeled point-wise as implication facts.
 
     // https://tc39.es/ecma262/#sec-tolength
-    // NOTE: delegates to ToIntegerOrInfinity
-    case FTypeCheck(SEApp("ToLength", List(x)), ty) if ty <= CompT =>
-      val toIntegerOrInfinity = SEApp("ToIntegerOrInfinity", List(x))
-      ty match
-        case _ if ty <= NormalT || ty <= AbruptT =>
-          List(FTypeCheck(toIntegerOrInfinity, ty))
-        case _ => List(f)
+    // ToLength is modeled point-wise as implication facts.
 
     // https://tc39.es/ecma262/#sec-toindex
-    // NOTE: delegates to ToIntegerOrInfinity
-    case FTypeCheck(SEApp("ToIndex", List(x)), ty) if ty <= CompT =>
-      val toIntegerOrInfinity = SEApp("ToIntegerOrInfinity", List(x))
-      ty match
-        case _ if ty <= NormalT || ty <= AbruptT =>
-          List(FTypeCheck(toIntegerOrInfinity, ty))
-        case _ => List(f)
+    // ToIndex is modeled point-wise as implication facts.
 
     // 7.2 Testing and Comparison Operations
 
@@ -715,12 +814,6 @@ object RewriteRules {
     case FTypeCheck(e, ty) => FTypeCheck(reduceExpr(e), ty)
 
   private def reduceExpr(t: SymExpr): SymExpr = t match
-    case ValueField(SEApp("ToIntegerOrInfinity", List(x))) =>
-      SEField(SEApp("ToNumber", List(reduceExpr(x))), "Value")
-    case ValueField(SEApp("ToLength", List(x))) =>
-      SEField(SEApp("ToNumber", List(reduceExpr(x))), "Value")
-    case ValueField(SEApp("ToIndex", List(x))) =>
-      SEField(SEApp("ToNumber", List(reduceExpr(x))), "Value")
     case ValueField(SEApp("ToPropertyKey", List(x))) =>
       reduceExpr(x)
     case SEApp("LengthOfArrayLike", List(x)) =>
@@ -733,13 +826,7 @@ object RewriteRules {
       SEApp("Get", List(reduceExpr(v), SELit(EStr(p))))
     case SEApp("__CLAMP__", List(x, _, _)) => reduceExpr(x)
     case SEApp("ToPropertyKey", List(x))   => reduceExpr(x)
-    case SEApp("ToIntegerOrInfinity", List(x)) =>
-      SEApp("ToNumber", List(reduceExpr(x)))
-    case SEApp("ToLength", List(x)) =>
-      SEApp("ToIntegerOrInfinity", List(reduceExpr(x)))
-    case SEApp("ToIndex", List(x)) =>
-      SEApp("ToIntegerOrInfinity", List(reduceExpr(x)))
-    case SETypeOf(inner)      => SETypeOf(reduceExpr(inner))
+    case SETypeOf(inner)                   => SETypeOf(reduceExpr(inner))
     case ValueField(inner)    => SEField(reduceExpr(inner), "Value")
     case SEProj(base, k)      => SEProj(reduceExpr(base), reduceExpr(k))
     case SEField(base, field) => SEField(reduceExpr(base), field)
