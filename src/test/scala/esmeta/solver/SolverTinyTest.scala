@@ -192,6 +192,23 @@ class SolverTinyTest extends SolverTest {
       assert(solveAndReify(List(FExists(xSym, SELit(EStr("p"))))).isEmpty)
     }
 
+    check("global refs are not treated as zero-argument applications") {
+      val symIterator = SEProj(SEGlobal("SYMBOL"), SELit(EStr("iterator")))
+      val formula = isType(symIterator, SymbolT)
+
+      assert(!Reify.hasUninterpretableApp(List(formula)))
+      assert(Reify.outerAppNames(formula).isEmpty)
+    }
+
+    check("zero-argument applications remain uninterpretable calls") {
+      val oldGlobalShape =
+        SEProj(SEApp("SYMBOL", List()), SELit(EStr("iterator")))
+      val formula = isType(oldGlobalShape, SymbolT)
+
+      assert(Reify.hasUninterpretableApp(List(formula)))
+      assert(Reify.outerAppNames(formula) == Set("SYMBOL"))
+    }
+
     checkParamWitness("known internal field existence reifies by object shape")(
       List(FExists(xSym, SELit(EStr("TypedArrayName")))),
     ) { js =>

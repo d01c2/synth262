@@ -20,11 +20,13 @@
   "contradiction: x == undefined and x is not Undefined" : true,
   "contradiction: x == x and NOT(x == x)" : true,
   "generic projection is not an internal field witness" : true,
+  "global refs are not treated as zero-argument applications" : true,
   "internal field value reifies by object shape" : true,
   "known internal field existence reifies by object shape" : true,
   "symbolic interpreter explores both disjunctive path constraints" : true,
   "unknown Completion Type check stays on wrapper" : true,
   "unknown Completion value projection is preserved" : true,
   "unknown internal field existence is not a JS property witness" : true,
-  "value-level Call projection is not stripped into the Call completion" : true
+  "value-level Call projection is not stripped into the Call completion" : true,
+  "zero-argument applications remain uninterpretable calls" : true
 }

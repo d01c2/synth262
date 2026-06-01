@@ -17,6 +17,7 @@ enum Sym:
 
 enum SymExpr:
   case SESym(id: Sym)
+  case SEGlobal(name: String)
   case SELit(value: LiteralExpr)
   case SEProj(base: SymExpr, key: SymExpr)
   case SEField(base: SymExpr, field: String)
@@ -29,6 +30,7 @@ enum SymExpr:
 
   def freeVars: Set[Sym] = this match
     case SESym(id)        => Set(id)
+    case SEGlobal(_)      => Set.empty
     case SELit(_)         => Set.empty
     case SEProj(base, k)  => base.freeVars ++ k.freeVars
     case SEField(base, _) => base.freeVars
@@ -43,6 +45,7 @@ enum SymExpr:
 
   override def toString: String = this match
     case SESym(id)        => id.toString
+    case SEGlobal(name)   => s"@$name"
     case SELit(v)         => v.toString
     case SEProj(base, k)  => s"$base.$k"
     case SEField(base, f) => s"$base.[[$f]]"
@@ -58,13 +61,11 @@ enum SymExpr:
     if (this == target) rep
     else
       this match
-        case SESym(_) => this
-        case SELit(_) => this
+        case SESym(_)    => this
+        case SEGlobal(_) => this
+        case SELit(_)    => this
         case SEProj(base, k) =>
-          SEProj(
-            base.rewrite(target, rep),
-            k.rewrite(target, rep),
-          )
+          SEProj(base.rewrite(target, rep), k.rewrite(target, rep))
         case SEField(base, field) => SEField(base.rewrite(target, rep), field)
         case SEApp(op, args)      => SEApp(op, args.map(_.rewrite(target, rep)))
         case SEList(elems)        => SEList(elems.map(_.rewrite(target, rep)))

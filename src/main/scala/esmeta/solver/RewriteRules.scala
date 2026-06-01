@@ -234,7 +234,7 @@ object RewriteRules {
       List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
     val t = SELit(EBool(true))
     val f = SELit(EBool(false))
-    val symMatch = SEProj(SEApp("SYMBOL", List()), SELit(EStr("match")))
+    val symMatch = SEProj(SEGlobal("SYMBOL"), SELit(EStr("match")))
     // 6 return nodes; dropped 1 inter-proc (1532 via ToBoolean);
     // 1 analysis dropped (1530).
     List(
@@ -504,7 +504,7 @@ object RewriteRules {
   // Get is an internal method wrapper understood by reify.
   private def toPrimitiveModel(x: SymExpr, ret: SymExpr): List[AoCase] =
     val symToPrimitive =
-      SEProj(SEApp("SYMBOL", List()), SELit(EStr("toPrimitive")))
+      SEProj(SEGlobal("SYMBOL"), SELit(EStr("toPrimitive")))
     val getExotic = SEApp("GetMethod", List(x, symToPrimitive))
     List(
       AoCase(

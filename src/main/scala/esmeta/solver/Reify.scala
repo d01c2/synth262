@@ -1326,6 +1326,7 @@ object Reify {
     def fromExpr(t: SymExpr): Set[String] = t match
       case SEApp(fname: String, args) => Set(fname) ++ args.flatMap(fromExpr)
       case SEApp(_, args)             => args.flatMap(fromExpr).toSet
+      case SEGlobal(_)                => Set()
       case SEProj(base, key)          => fromExpr(base) ++ fromExpr(key)
       case SEField(base, _)           => fromExpr(base)
       case SEList(elems)              => elems.flatMap(fromExpr).toSet
@@ -1346,6 +1347,7 @@ object Reify {
     def fromExpr(t: SymExpr): Set[String] = t match
       case SEApp(fname: String, _) if !isKnownApp(fname) => Set(fname)
       case SEApp(_, args)    => args.flatMap(fromExpr).toSet
+      case SEGlobal(_)       => Set()
       case SEProj(base, key) => fromExpr(base) ++ fromExpr(key)
       case SEField(base, _)  => fromExpr(base)
       case SEList(elems)     => elems.flatMap(fromExpr).toSet

@@ -370,7 +370,7 @@ class SymbolicInterpreter(
     case x: Local => env.getOrElse(x, SELit(EUndef()))
     case Global(name) =>
       val ty = ValueTy.fromTypeOf(name)
-      if (!ty.isBottom) SEType(ty) else SEApp(name, List())
+      if (!ty.isBottom) SEType(ty) else SEGlobal(name)
     case Field(base, EStr(name)) =>
       eval(base) match
         case SERecord(_, fs) if fs.contains(name) => fs(name)
