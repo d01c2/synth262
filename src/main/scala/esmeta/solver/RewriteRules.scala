@@ -10,9 +10,7 @@ object RewriteRules {
   def rewriteFormula(f: Formula)(using CFG): List[Formula] =
     rewrite(stripCompletion(f)).map(normalizeExpr)
 
-  case class AoCase(when: Goal, thenF: Goal)
-
-  def aoModel(call: SymExpr): List[AoCase] = call match
+  def aoModel(call: SymExpr): Goal = call match
     case SEApp("ToNumber", List(x))  => toNumberModel(x, call)
     case SEApp("ToBoolean", List(x)) => toBooleanModel(x, call)
     case SEApp("ToObject", List(x))  => toObjectModel(x, call)
@@ -101,28 +99,28 @@ object RewriteRules {
     case SEApp("GetMethod", List(_, _))            => true
     case _                                         => false
 
-  private def toBooleanModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+  private def toBooleanModel(x: SymExpr, ret: SymExpr): Goal =
     val t = SELit(EBool(true))
     val f = SELit(EBool(false))
     // return values cannot be inferred from detailed-types, so checked CFG
     List(
-      AoCase(List(FTypeCheck(x, UndefT)), List(FEq(ret, f))),
-      AoCase(List(FTypeCheck(x, NullT)), List(FEq(ret, f))),
-      AoCase(List(FTypeCheck(x, BoolT)), List(FEq(ret, x))),
+      FImply(List(FTypeCheck(x, UndefT)), List(FEq(ret, f))),
+      FImply(List(FTypeCheck(x, NullT)), List(FEq(ret, f))),
+      FImply(List(FTypeCheck(x, BoolT)), List(FEq(ret, x))),
       // detailed-types has no value-level BigInt; split via CFG branch `= argument 0n`
-      AoCase(
+      FImply(
         List(FTypeCheck(x, BigIntT), FEq(x, SELit(EBigInt(BigInt(0))))),
         List(FEq(ret, f)),
       ),
-      AoCase(
+      FImply(
         List(FTypeCheck(x, BigIntT), FNot(FEq(x, SELit(EBigInt(BigInt(0)))))),
         List(FEq(ret, t)),
       ),
-      AoCase(
+      FImply(
         List(FTypeCheck(x, ValueTy(number = NumberIntTy(IntTy.Zero, true)))),
         List(FEq(ret, f)),
       ),
-      AoCase(
+      FImply(
         List(
           FTypeCheck(
             x,
@@ -131,33 +129,33 @@ object RewriteRules {
         ),
         List(FEq(ret, t)),
       ),
-      AoCase(
+      FImply(
         List(FTypeCheck(x, ValueTy(str = Fin(Set(""))))),
         List(FEq(ret, f)),
       ),
-      AoCase(
+      FImply(
         List(FTypeCheck(x, StrT), FNot(FEq(x, SELit(EStr(""))))),
         List(FEq(ret, t)),
       ),
-      AoCase(List(FTypeCheck(x, SymbolT)), List(FEq(ret, t))),
-      AoCase(List(FTypeCheck(x, ObjectT)), List(FEq(ret, t))),
+      FImply(List(FTypeCheck(x, SymbolT)), List(FEq(ret, t))),
+      FImply(List(FTypeCheck(x, ObjectT)), List(FEq(ret, t))),
     )
 
-  private def toObjectModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+  private def toObjectModel(x: SymExpr, ret: SymExpr): Goal =
     val abrupt = List(FTypeCheck(ret, ThrowT))
     val normal = List(FTypeCheck(ret, NormalT))
     // Wrapper cases return new objects whose internal fields (e.g., Prototype,
     // BooleanData) are visible in CFG but not expressible as type constraints.
     // ret.Value only constrained for Object (identity).
     List(
-      AoCase(List(FTypeCheck(x, UndefT)), abrupt),
-      AoCase(List(FTypeCheck(x, NullT)), abrupt),
-      AoCase(List(FTypeCheck(x, BoolT)), normal),
-      AoCase(List(FTypeCheck(x, NumberT)), normal),
-      AoCase(List(FTypeCheck(x, StrT)), normal),
-      AoCase(List(FTypeCheck(x, SymbolT)), normal),
-      AoCase(List(FTypeCheck(x, BigIntT)), normal),
-      AoCase(
+      FImply(List(FTypeCheck(x, UndefT)), abrupt),
+      FImply(List(FTypeCheck(x, NullT)), abrupt),
+      FImply(List(FTypeCheck(x, BoolT)), normal),
+      FImply(List(FTypeCheck(x, NumberT)), normal),
+      FImply(List(FTypeCheck(x, StrT)), normal),
+      FImply(List(FTypeCheck(x, SymbolT)), normal),
+      FImply(List(FTypeCheck(x, BigIntT)), normal),
+      FImply(
         List(FTypeCheck(x, ObjectT)),
         List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), x)),
       ),
@@ -170,50 +168,50 @@ object RewriteRules {
     ret: SymExpr,
     primTy: ValueTy,
     slot: String,
-  ): List[AoCase] =
+  ): Goal =
     List(
-      AoCase(
+      FImply(
         List(FTypeCheck(x, primTy)),
         List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), x)),
       ),
-      AoCase(
+      FImply(
         List(FTypeCheck(x, ObjectT), FExists(x, SELit(EStr(slot)))),
         List(FTypeCheck(ret, NormalT)),
       ),
-      AoCase(
+      FImply(
         List(FNot(FTypeCheck(x, primTy)), FNot(FExists(x, SELit(EStr(slot))))),
         List(FTypeCheck(ret, ThrowT)),
       ),
     )
 
-  private def isCallableModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+  private def isCallableModel(x: SymExpr, ret: SymExpr): Goal =
     val t = SELit(EBool(true))
     val f = SELit(EBool(false))
     val hasCall = FExists(x, SELit(EStr("Call")))
     // 3 return nodes, all modeled. Returns Boolean directly (not a completion).
     // CFG checks `exists argument.Call`
     List(
-      AoCase(List(FNot(FTypeCheck(x, ObjectT))), List(FEq(ret, f))),
-      AoCase(List(FTypeCheck(x, ObjectT), hasCall), List(FEq(ret, t))),
-      AoCase(List(FTypeCheck(x, ObjectT), FNot(hasCall)), List(FEq(ret, f))),
+      FImply(List(FNot(FTypeCheck(x, ObjectT))), List(FEq(ret, f))),
+      FImply(List(FTypeCheck(x, ObjectT), hasCall), List(FEq(ret, t))),
+      FImply(List(FTypeCheck(x, ObjectT), FNot(hasCall)), List(FEq(ret, f))),
     )
 
-  private def isConstructorModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+  private def isConstructorModel(x: SymExpr, ret: SymExpr): Goal =
     val t = SELit(EBool(true))
     val f = SELit(EBool(false))
     val hasConstruct = FExists(x, SELit(EStr("Construct")))
     // 3 return nodes, all modeled. Returns Boolean directly (not a completion).
     // CFG checks `exists argument.Construct`
     List(
-      AoCase(List(FNot(FTypeCheck(x, ObjectT))), List(FEq(ret, f))),
-      AoCase(List(FTypeCheck(x, ObjectT), hasConstruct), List(FEq(ret, t))),
-      AoCase(
+      FImply(List(FNot(FTypeCheck(x, ObjectT))), List(FEq(ret, f))),
+      FImply(List(FTypeCheck(x, ObjectT), hasConstruct), List(FEq(ret, t))),
+      FImply(
         List(FTypeCheck(x, ObjectT), FNot(hasConstruct)),
         List(FEq(ret, f)),
       ),
     )
 
-  private def canBeHeldWeaklyModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+  private def canBeHeldWeaklyModel(x: SymExpr, ret: SymExpr): Goal =
     val t = SELit(EBool(true))
     val f = SELit(EBool(false))
     // 3 return nodes; dropped 1 inter-proc (5738 via KeyForSymbol).
@@ -222,14 +220,14 @@ object RewriteRules {
     // Second case: detailed-types only knows `#0: Symbol|...|Null` at node 5739;
     // the Symbol exclusion comes from CFG control flow (prior-branch narrowing).
     List(
-      AoCase(List(FTypeCheck(x, ObjectT)), List(FEq(ret, t))),
-      AoCase(
+      FImply(List(FTypeCheck(x, ObjectT)), List(FEq(ret, t))),
+      FImply(
         List(FNot(FTypeCheck(x, ObjectT || SymbolT))),
         List(FEq(ret, f)),
       ),
     )
 
-  private def isRegExpModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+  private def isRegExpModel(x: SymExpr, ret: SymExpr): Goal =
     def normal(v: SymExpr): Goal =
       List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
     val t = SELit(EBool(true))
@@ -238,20 +236,20 @@ object RewriteRules {
     // 6 return nodes; dropped 1 inter-proc (1532 via ToBoolean);
     // 1 analysis dropped (1530).
     List(
-      AoCase(List(FNot(FTypeCheck(x, ObjectT))), normal(f)),
-      AoCase(
+      FImply(List(FNot(FTypeCheck(x, ObjectT))), normal(f)),
+      FImply(
         List(
           FTypeCheck(x, ObjectT),
           FTypeCheck(SEApp("Get", List(x, symMatch)), AbruptT),
         ),
         List(FTypeCheck(ret, ThrowT)),
       ),
-      AoCase(
+      FImply(
         List(FTypeCheck(x, ObjectT), FExists(x, SELit(EStr("RegExpMatcher")))),
         normal(t),
       ),
       // node 1537: Object, no RegExpMatcher → false
-      AoCase(
+      FImply(
         List(
           FTypeCheck(x, ObjectT),
           FNot(FExists(x, SELit(EStr("RegExpMatcher")))),
@@ -260,7 +258,7 @@ object RewriteRules {
       ),
     )
 
-  private def isArrayModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+  private def isArrayModel(x: SymExpr, ret: SymExpr): Goal =
     def normal(v: SymExpr): Goal =
       List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
     val t = SELit(EBool(true))
@@ -271,9 +269,9 @@ object RewriteRules {
     // the "not Array, not Proxy" narrowing comes from CFG control flow, not
     // from occurrence typing — detailed-types cannot express prior-branch exclusion.
     List(
-      AoCase(List(FNot(FTypeCheck(x, ObjectT))), normal(f)),
-      AoCase(List(FTypeCheck(x, RecordT("Array"))), normal(t)),
-      AoCase( // This case cannot be inferred only from detailed-types
+      FImply(List(FNot(FTypeCheck(x, ObjectT))), normal(f)),
+      FImply(List(FTypeCheck(x, RecordT("Array"))), normal(t)),
+      FImply( // This case cannot be inferred only from detailed-types
         List(
           FTypeCheck(x, ObjectT),
           FNot(FTypeCheck(x, RecordT("Array") || RecordT("ProxyExoticObject"))),
@@ -285,18 +283,18 @@ object RewriteRules {
   private def requireObjectCoercibleModel(
     x: SymExpr,
     ret: SymExpr,
-  ): List[AoCase] =
+  ): Goal =
     // 3 return nodes, all modeled.
     List(
-      AoCase(List(FTypeCheck(x, UndefT)), List(FTypeCheck(ret, ThrowT))),
-      AoCase(List(FTypeCheck(x, NullT)), List(FTypeCheck(ret, ThrowT))),
-      AoCase(
+      FImply(List(FTypeCheck(x, UndefT)), List(FTypeCheck(ret, ThrowT))),
+      FImply(List(FTypeCheck(x, NullT)), List(FTypeCheck(ret, ThrowT))),
+      FImply(
         List(FNot(FTypeCheck(x, UndefT || NullT))),
         List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), x)),
       ),
     )
 
-  private def toStringModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+  private def toStringModel(x: SymExpr, ret: SymExpr): Goal =
     def normal(v: SymExpr): Goal =
       List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
     // Dropped inter-proc: Number::toString, BigInt::toString (IR ops);
@@ -304,13 +302,13 @@ object RewriteRules {
     // Object case: ToPrimitive throw propagated; normal path depends on
     // recursive ToString(prim) which may still throw (e.g., Symbol).
     List(
-      AoCase(List(FTypeCheck(x, StrT)), normal(x)),
-      AoCase(List(FTypeCheck(x, SymbolT)), List(FTypeCheck(ret, ThrowT))),
-      AoCase(List(FTypeCheck(x, UndefT)), normal(SELit(EStr("undefined")))),
-      AoCase(List(FTypeCheck(x, NullT)), normal(SELit(EStr("null")))),
-      AoCase(List(FTypeCheck(x, TrueT)), normal(SELit(EStr("true")))),
-      AoCase(List(FTypeCheck(x, FalseT)), normal(SELit(EStr("false")))),
-      AoCase(
+      FImply(List(FTypeCheck(x, StrT)), normal(x)),
+      FImply(List(FTypeCheck(x, SymbolT)), List(FTypeCheck(ret, ThrowT))),
+      FImply(List(FTypeCheck(x, UndefT)), normal(SELit(EStr("undefined")))),
+      FImply(List(FTypeCheck(x, NullT)), normal(SELit(EStr("null")))),
+      FImply(List(FTypeCheck(x, TrueT)), normal(SELit(EStr("true")))),
+      FImply(List(FTypeCheck(x, FalseT)), normal(SELit(EStr("false")))),
+      FImply(
         List(
           FTypeCheck(x, ObjectT),
           FTypeCheck(SEApp("ToPrimitive", List(x)), AbruptT),
@@ -319,7 +317,7 @@ object RewriteRules {
       ),
     )
 
-  private def toBigIntModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+  private def toBigIntModel(x: SymExpr, ret: SymExpr): Goal =
     def normal(v: SymExpr): Goal =
       List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
     val abrupt = List(FTypeCheck(ret, ThrowT))
@@ -327,20 +325,20 @@ object RewriteRules {
     // Object case: ToPrimitive throw propagated; normal path depends on
     // recursive ToBigInt(prim) which may still throw (e.g., Number).
     List(
-      AoCase(List(FTypeCheck(x, UndefT)), abrupt),
-      AoCase(List(FTypeCheck(x, NullT)), abrupt),
-      AoCase(List(FTypeCheck(x, NumberT)), abrupt),
-      AoCase(List(FTypeCheck(x, SymbolT)), abrupt),
-      AoCase(
+      FImply(List(FTypeCheck(x, UndefT)), abrupt),
+      FImply(List(FTypeCheck(x, NullT)), abrupt),
+      FImply(List(FTypeCheck(x, NumberT)), abrupt),
+      FImply(List(FTypeCheck(x, SymbolT)), abrupt),
+      FImply(
         List(FTypeCheck(x, BoolT), FEq(x, SELit(EBool(true)))),
         normal(SELit(EBigInt(BigInt(1)))),
       ),
-      AoCase(
+      FImply(
         List(FTypeCheck(x, BoolT), FEq(x, SELit(EBool(false)))),
         normal(SELit(EBigInt(BigInt(0)))),
       ),
-      AoCase(List(FTypeCheck(x, BigIntT)), normal(x)),
-      AoCase(
+      FImply(List(FTypeCheck(x, BigIntT)), normal(x)),
+      FImply(
         List(
           FTypeCheck(x, ObjectT),
           FTypeCheck(SEApp("ToPrimitive", List(x)), AbruptT),
@@ -349,25 +347,25 @@ object RewriteRules {
       ),
     )
 
-  private def toNumberModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+  private def toNumberModel(x: SymExpr, ret: SymExpr): Goal =
     def normal(v: SymExpr): Goal =
       List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
     // Dropped inter-proc: StringToNumber (IR ops).
     // Object case: ToPrimitive throw propagated; normal path depends on
     // recursive ToNumber(prim) which may still throw (e.g., Symbol/BigInt).
     List(
-      AoCase(List(FTypeCheck(x, NumberT)), normal(x)),
-      AoCase(
+      FImply(List(FTypeCheck(x, NumberT)), normal(x)),
+      FImply(
         List(FTypeCheck(x, SymbolT || BigIntT)),
         List(FTypeCheck(ret, ThrowT)),
       ),
-      AoCase(List(FTypeCheck(x, UndefT)), normal(SELit(ENumber(Double.NaN)))),
-      AoCase(
+      FImply(List(FTypeCheck(x, UndefT)), normal(SELit(ENumber(Double.NaN)))),
+      FImply(
         List(FTypeCheck(x, NullT || FalseT)),
         normal(SELit(ENumber(0.0))),
       ),
-      AoCase(List(FTypeCheck(x, TrueT)), normal(SELit(ENumber(1.0)))),
-      AoCase(
+      FImply(List(FTypeCheck(x, TrueT)), normal(SELit(ENumber(1.0)))),
+      FImply(
         List(
           FTypeCheck(x, ObjectT),
           FTypeCheck(SEApp("ToPrimitive", List(x)), AbruptT),
@@ -381,14 +379,14 @@ object RewriteRules {
     x: SymExpr,
     slot: SymExpr,
     ret: SymExpr,
-  ): List[AoCase] =
+  ): Goal =
     List(
-      AoCase(List(FNot(FTypeCheck(x, ObjectT))), List(FTypeCheck(ret, ThrowT))),
-      AoCase(
+      FImply(List(FNot(FTypeCheck(x, ObjectT))), List(FTypeCheck(ret, ThrowT))),
+      FImply(
         List(FTypeCheck(x, ObjectT), FNot(FExists(x, slot))),
         List(FTypeCheck(ret, ThrowT)),
       ),
-      AoCase(
+      FImply(
         List(FTypeCheck(x, ObjectT), FExists(x, slot)),
         List(FTypeCheck(ret, NormalT)),
       ),
@@ -398,11 +396,11 @@ object RewriteRules {
   private def validateNonRevokedProxyModel(
     proxy: SymExpr,
     ret: SymExpr,
-  ): List[AoCase] =
+  ): Goal =
     val hasTarget = FExists(proxy, SELit(EStr("ProxyTarget")))
     List(
-      AoCase(List(FNot(hasTarget)), List(FTypeCheck(ret, ThrowT))),
-      AoCase(List(hasTarget), List(FTypeCheck(ret, NormalT))),
+      FImply(List(FNot(hasTarget)), List(FTypeCheck(ret, ThrowT))),
+      FImply(List(hasTarget), List(FTypeCheck(ret, NormalT))),
     )
 
   // 2 effective return nodes; dropped 1 structural (OrdinaryObjectCreate).
@@ -410,14 +408,14 @@ object RewriteRules {
   private def ordinaryCreateFromConstructorModel(
     ctor: SymExpr,
     ret: SymExpr,
-  ): List[AoCase] =
+  ): Goal =
     val getProto = SEApp("Get", List(ctor, SELit(EStr("prototype"))))
     List(
-      AoCase(
+      FImply(
         List(FTypeCheck(getProto, AbruptT)),
         List(FTypeCheck(ret, ThrowT)),
       ),
-      AoCase(
+      FImply(
         List(FTypeCheck(getProto, NormalT)),
         List(FTypeCheck(ret, NormalT)),
       ),
@@ -429,7 +427,7 @@ object RewriteRules {
   private def installErrorCauseModel(
     options: SymExpr,
     ret: SymExpr,
-  ): List[AoCase] =
+  ): Goal =
     val hasCause =
       SEApp("HasProperty", List(options, SELit(EStr("cause"))))
     val getCause =
@@ -437,15 +435,15 @@ object RewriteRules {
     val t = SELit(EBool(true))
     val f = SELit(EBool(false))
     List(
-      AoCase(
+      FImply(
         List(FNot(FTypeCheck(options, ObjectT))),
         List(FTypeCheck(ret, NormalT)),
       ),
-      AoCase(
+      FImply(
         List(FTypeCheck(options, ObjectT), FTypeCheck(hasCause, AbruptT)),
         List(FTypeCheck(ret, ThrowT)),
       ),
-      AoCase(
+      FImply(
         List(
           FTypeCheck(options, ObjectT),
           FTypeCheck(hasCause, NormalT),
@@ -453,7 +451,7 @@ object RewriteRules {
         ),
         List(FTypeCheck(ret, NormalT)),
       ),
-      AoCase(
+      FImply(
         List(
           FTypeCheck(options, ObjectT),
           FTypeCheck(hasCause, NormalT),
@@ -462,7 +460,7 @@ object RewriteRules {
         ),
         List(FTypeCheck(ret, ThrowT)),
       ),
-      AoCase(
+      FImply(
         List(
           FTypeCheck(options, ObjectT),
           FTypeCheck(hasCause, NormalT),
@@ -481,19 +479,19 @@ object RewriteRules {
   private def validateTypedArrayModel(
     o: SymExpr,
     ret: SymExpr,
-  ): List[AoCase] =
+  ): Goal =
     val reqSlot =
       SEApp("RequireInternalSlot", List(o, SELit(EStr("TypedArrayName"))))
     List(
-      AoCase(
+      FImply(
         List(FTypeCheck(reqSlot, AbruptT)),
         List(FTypeCheck(ret, ThrowT)),
       ),
-      AoCase(
+      FImply(
         List(FTypeCheck(reqSlot, NormalT)),
         List(FTypeCheck(ret, NormalT)),
       ),
-      AoCase(
+      FImply(
         List(FTypeCheck(reqSlot, NormalT)),
         List(FTypeCheck(ret, ThrowT)),
       ),
@@ -502,16 +500,16 @@ object RewriteRules {
   // 9 return nodes; modeled 2, dropped 7 inter-proc (Call to exotic
   // @@toPrimitive, OrdinaryToPrimitive loop+Get+IsCallable+Call chain).
   // Get is an internal method wrapper understood by reify.
-  private def toPrimitiveModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+  private def toPrimitiveModel(x: SymExpr, ret: SymExpr): Goal =
     val symToPrimitive =
       SEProj(SEGlobal("SYMBOL"), SELit(EStr("toPrimitive")))
     val getExotic = SEApp("GetMethod", List(x, symToPrimitive))
     List(
-      AoCase(
+      FImply(
         List(FNot(FTypeCheck(x, ObjectT))),
         List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), x)),
       ),
-      AoCase(
+      FImply(
         List(FTypeCheck(x, ObjectT), FTypeCheck(getExotic, AbruptT)),
         List(FTypeCheck(ret, ThrowT)),
       ),
@@ -521,31 +519,31 @@ object RewriteRules {
   // expressible in formula system. Returns Boolean directly.
   private def isTypedArrayOutOfBoundsModel(
     ret: SymExpr,
-  ): List[AoCase] =
+  ): Goal =
     val t = SELit(EBool(true))
     val f = SELit(EBool(false))
     List(
-      AoCase(Nil, List(FEq(ret, t))),
-      AoCase(Nil, List(FEq(ret, f))),
+      FImply(Nil, List(FEq(ret, t))),
+      FImply(Nil, List(FEq(ret, f))),
     )
 
   // 6 return nodes: 1 throw, 4 normal, 1 structural.
   private def toIntegerOrInfinityModel(
     x: SymExpr,
     ret: SymExpr,
-  ): List[AoCase] =
+  ): Goal =
     val toNumber = SEApp("ToNumber", List(x))
     val numVal = SEField(toNumber, "Value")
     def normal(v: SymExpr): Goal =
       List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
     List(
       // node 1187: ToNumber abrupt
-      AoCase(
+      FImply(
         List(FTypeCheck(toNumber, AbruptT)),
         List(FTypeCheck(ret, ThrowT)),
       ),
       // node 1192: number is NaN → 0
-      AoCase(
+      FImply(
         List(
           FTypeCheck(toNumber, NormalT),
           FEq(numVal, SELit(ENumber(Double.NaN))),
@@ -553,17 +551,17 @@ object RewriteRules {
         normal(SELit(EMath(0))),
       ),
       // node 1192: number is +0 → 0
-      AoCase(
+      FImply(
         List(FTypeCheck(toNumber, NormalT), FEq(numVal, SELit(ENumber(0.0)))),
         normal(SELit(EMath(0))),
       ),
       // node 1192: number is -0 → 0
-      AoCase(
+      FImply(
         List(FTypeCheck(toNumber, NormalT), FEq(numVal, SELit(ENumber(-0.0)))),
         normal(SELit(EMath(0))),
       ),
       // node 1195: number is +INF → +INF
-      AoCase(
+      FImply(
         List(
           FTypeCheck(toNumber, NormalT),
           FEq(numVal, SELit(ENumber(Double.PositiveInfinity))),
@@ -571,7 +569,7 @@ object RewriteRules {
         normal(SELit(EInfinity(true))),
       ),
       // node 1198: number is -INF → -INF
-      AoCase(
+      FImply(
         List(
           FTypeCheck(toNumber, NormalT),
           FEq(numVal, SELit(ENumber(Double.NegativeInfinity))),
@@ -579,24 +577,24 @@ object RewriteRules {
         normal(SELit(EInfinity(false))),
       ),
       // node 1206: general finite → Normal (floor, value not expressible)
-      AoCase(
+      FImply(
         List(FTypeCheck(toNumber, NormalT)),
         List(FTypeCheck(ret, NormalT)),
       ),
     )
 
   // 4 return nodes: 1 throw, 2 normal, 1 structural.
-  private def toLengthModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+  private def toLengthModel(x: SymExpr, ret: SymExpr): Goal =
     val toIntOrInf = SEApp("ToIntegerOrInfinity", List(x))
     val innerVal = SEField(toIntOrInf, "Value")
     List(
       // node 1449: ToIntegerOrInfinity abrupt
-      AoCase(
+      FImply(
         List(FTypeCheck(toIntOrInf, AbruptT)),
         List(FTypeCheck(ret, ThrowT)),
       ),
       // node 1454: len ≤ 0 → 0
-      AoCase(
+      FImply(
         List(
           FTypeCheck(toIntOrInf, NormalT),
           FNot(FLt(SELit(EMath(0)), innerVal)),
@@ -607,7 +605,7 @@ object RewriteRules {
         ),
       ),
       // node 1459: general → Normal (min(len, 2^53-1), clamp not expressible)
-      AoCase(
+      FImply(
         List(FTypeCheck(toIntOrInf, NormalT), FLt(SELit(EMath(0)), innerVal)),
         List(FTypeCheck(ret, NormalT)),
       ),
@@ -617,21 +615,21 @@ object RewriteRules {
   // (RangeError for out-of-range), 1 normal, 1 structural.
   // Normal case: ret.Value = toIntOrInf.Value (no value transformation,
   // only range check — value is identity when in range).
-  private def toIndexModel(x: SymExpr, ret: SymExpr): List[AoCase] =
+  private def toIndexModel(x: SymExpr, ret: SymExpr): Goal =
     val toIntOrInf = SEApp("ToIntegerOrInfinity", List(x))
     List(
-      AoCase(
+      FImply(
         List(FTypeCheck(toIntOrInf, AbruptT)),
         List(FTypeCheck(ret, ThrowT)),
       ),
-      AoCase(
+      FImply(
         List(FTypeCheck(toIntOrInf, NormalT)),
         List(
           FTypeCheck(ret, NormalT),
           FEq(SEField(ret, "Value"), SEField(toIntOrInf, "Value")),
         ),
       ),
-      AoCase(
+      FImply(
         List(FTypeCheck(toIntOrInf, NormalT)),
         List(FTypeCheck(ret, ThrowT)),
       ),
@@ -642,19 +640,19 @@ object RewriteRules {
   private def toPropertyKeyModel(
     x: SymExpr,
     ret: SymExpr,
-  ): List[AoCase] =
+  ): Goal =
     val toPrim = SEApp("ToPrimitive", List(x, SELit(EEnum("string"))))
     val primVal = SEField(toPrim, "Value")
     List(
       // node 1436: ToPrimitive abrupt
-      AoCase(List(FTypeCheck(toPrim, AbruptT)), List(FTypeCheck(ret, ThrowT))),
+      FImply(List(FTypeCheck(toPrim, AbruptT)), List(FTypeCheck(ret, ThrowT))),
       // node 1443: key is Symbol → ret.Value = key
-      AoCase(
+      FImply(
         List(FTypeCheck(toPrim, NormalT), FTypeCheck(primVal, SymbolT)),
         List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), primVal)),
       ),
       // node 1445: key is not Symbol → ToString(key)
-      AoCase(
+      FImply(
         List(FTypeCheck(toPrim, NormalT), FNot(FTypeCheck(primVal, SymbolT))),
         List(
           FTypeCheck(ret, NormalT),
@@ -671,22 +669,22 @@ object RewriteRules {
   private def lengthOfArrayLikeModel(
     obj: SymExpr,
     ret: SymExpr,
-  ): List[AoCase] =
+  ): Goal =
     val getLength = SEApp("Get", List(obj, SELit(EStr("length"))))
     val toLength = SEApp("ToLength", List(SEField(getLength, "Value")))
     List(
       // node 2020: Get abrupt
-      AoCase(
+      FImply(
         List(FTypeCheck(getLength, AbruptT)),
         List(FTypeCheck(ret, ThrowT)),
       ),
       // node 2025: ToLength abrupt
-      AoCase(
+      FImply(
         List(FTypeCheck(getLength, NormalT), FTypeCheck(toLength, AbruptT)),
         List(FTypeCheck(ret, ThrowT)),
       ),
       // node 2031: Normal[Int[0+]]
-      AoCase(
+      FImply(
         List(FTypeCheck(getLength, NormalT), FTypeCheck(toLength, NormalT)),
         List(
           FTypeCheck(ret, NormalT),
@@ -702,17 +700,17 @@ object RewriteRules {
     v: SymExpr,
     p: SymExpr,
     ret: SymExpr,
-  ): List[AoCase] =
+  ): Goal =
     val getResult = SEApp("Get", List(v, p))
     val getVal = SEField(getResult, "Value")
     List(
       // node 1870: GetV abrupt
-      AoCase(
+      FImply(
         List(FTypeCheck(getResult, AbruptT)),
         List(FTypeCheck(ret, ThrowT)),
       ),
       // node 1875: func is undefined or null → Normal[Undefined]
-      AoCase(
+      FImply(
         List(
           FTypeCheck(getResult, NormalT),
           FTypeCheck(getVal, UndefT || NullT),
@@ -723,7 +721,7 @@ object RewriteRules {
         ),
       ),
       // node 1880: func not callable → Throw (TypeError)
-      AoCase(
+      FImply(
         List(
           FTypeCheck(getResult, NormalT),
           FNot(FTypeCheck(getVal, UndefT || NullT)),
@@ -732,7 +730,7 @@ object RewriteRules {
         List(FTypeCheck(ret, ThrowT)),
       ),
       // node 1884: func is callable → Normal, Value = func
-      AoCase(
+      FImply(
         List(
           FTypeCheck(getResult, NormalT),
           FEq(SEApp("IsCallable", List(getVal)), SELit(EBool(true))),
@@ -750,12 +748,12 @@ object RewriteRules {
     x: SymExpr,
     y: SymExpr,
     ret: SymExpr,
-  ): List[AoCase] =
+  ): Goal =
     val t = SELit(EBool(true))
     val f = SELit(EBool(false))
     List(
-      AoCase(List(FEq(x, y)), List(FEq(ret, t))),
-      AoCase(List(FNot(FEq(x, y))), List(FEq(ret, f))),
+      FImply(List(FEq(x, y)), List(FEq(ret, t))),
+      FImply(List(FNot(FEq(x, y))), List(FEq(ret, f))),
     )
 
   private val Contradiction = FEq(SELit(EBool(true)), SELit(EBool(false)))
@@ -902,6 +900,8 @@ object RewriteRules {
   // wrappers whose value semantics need explicit rewrite rules.
 
   private def stripCompletion(f: Formula): Formula = f match
+    case FImply(premise, conclusion) =>
+      FImply(premise.map(stripCompletion), conclusion.map(stripCompletion))
     case FEq(TypeField(base), SELit(EEnum(e))) =>
       val ty = if (e == "normal") NormalT else AbruptT
       FTypeCheck(stripExpr(base), ty)
@@ -929,6 +929,8 @@ object RewriteRules {
   // Normalizes value-level AO projections after rewrite.
 
   private def normalizeExpr(f: Formula): Formula = f match
+    case FImply(premise, conclusion) =>
+      FImply(premise.map(normalizeExpr), conclusion.map(normalizeExpr))
     case FEq(TypeField(base), SELit(EEnum(e))) =>
       val ty = if (e == "normal") NormalT else AbruptT
       FTypeCheck(reduceExpr(base), ty)
@@ -958,6 +960,14 @@ object RewriteRules {
   private def rewriteCompletionValues(
     f: Formula,
   )(using CFG): Option[Formula] = f match
+    case FImply(premise, conclusion) =>
+      val nextPremise =
+        premise.map(f => rewriteCompletionValues(f).getOrElse(f))
+      val nextConclusion =
+        conclusion.map(f => rewriteCompletionValues(f).getOrElse(f))
+      Option.when(nextPremise != premise || nextConclusion != conclusion)(
+        FImply(nextPremise, nextConclusion),
+      )
     case FNot(inner) => rewriteCompletionValues(inner).map(FNot(_))
     case FEq(l, r) =>
       rewriteCompletionValueExpr(l)

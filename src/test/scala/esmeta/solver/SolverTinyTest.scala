@@ -82,20 +82,50 @@ class SolverTinyTest extends SolverTest {
 
       assert(cases.size == 6)
       assert(
-        cases.exists(c =>
-          c.when == List(isType(xSym, NumberT)) &&
-          c.thenF == List(isType(toNumber, NormalT), FEq(value, xSym)),
-        ),
+        cases.exists {
+          case FImply(when, conclusion) =>
+            when == List(isType(xSym, NumberT)) &&
+            conclusion == List(isType(toNumber, NormalT), FEq(value, xSym))
+          case _ => false
+        },
       )
       assert(
-        cases.exists(c =>
-          c.when == List(isType(xSym, UndefT)) &&
-          c.thenF == List(
-            isType(toNumber, NormalT),
-            FEq(value, SELit(ENumber(Double.NaN))),
-          ),
-        ),
+        cases.exists {
+          case FImply(when, conclusion) =>
+            when == List(isType(xSym, UndefT)) &&
+            conclusion == List(
+              isType(toNumber, NormalT),
+              FEq(value, SELit(ENumber(Double.NaN))),
+            )
+          case _ => false
+        },
       )
+    }
+
+    check("aoModel exposes raw implication formulas") {
+      val toNumber = SEApp("ToNumber", List(xSym))
+      val value = SEField(toNumber, "Value")
+      val numberImplication = FImply(
+        List(isType(xSym, NumberT)),
+        List(isType(toNumber, NormalT), FEq(value, xSym)),
+      )
+
+      assert(RewriteRules.aoModel(toNumber).contains(numberImplication))
+    }
+
+    check("FImply discharges only when its premise is known") {
+      val premise = isType(xSym, NumberT)
+      val conclusion = isValue(ySym, EMath(1))
+      val implication = FImply(List(premise), List(conclusion))
+      val inactive = Solver
+        .simplify(List(implication))
+        .getOrElse(fail("expected inactive implication to be satisfiable"))
+      val active = Solver
+        .simplify(List(premise, implication))
+        .getOrElse(fail("expected active implication to be satisfiable"))
+
+      assert(!inactive.contains(conclusion))
+      assert(active.contains(conclusion))
     }
 
     check("ToNumber value requirement is solved by implication cases") {
@@ -134,31 +164,37 @@ class SolverTinyTest extends SolverTest {
       assert(witness(SolverTest.x) == "undefined")
     }
 
-    check("ToLength delegates to ToIntegerOrInfinity via AoCase") {
+    check("ToLength delegates to ToIntegerOrInfinity via implications") {
       val toLength = SEApp("ToLength", List(xSym))
       val inner = SEApp("ToIntegerOrInfinity", List(xSym))
       val cases = RewriteRules.aoModel(toLength)
 
       assert(cases.size == 3)
       assert(
-        cases.exists(c =>
-          c.when == List(FTypeCheck(inner, AbruptT)) &&
-          c.thenF == List(FTypeCheck(toLength, ThrowT)),
-        ),
+        cases.exists {
+          case FImply(when, conclusion) =>
+            when == List(FTypeCheck(inner, AbruptT)) &&
+            conclusion == List(FTypeCheck(toLength, ThrowT))
+          case _ => false
+        },
       )
       assert(
-        cases.exists(c =>
-          c.when.contains(FTypeCheck(inner, NormalT)) &&
-          c.thenF.contains(
-            FEq(SEField(toLength, "Value"), SELit(ENumber(0.0))),
-          ),
-        ),
+        cases.exists {
+          case FImply(when, conclusion) =>
+            when.contains(FTypeCheck(inner, NormalT)) &&
+            conclusion.contains(
+              FEq(SEField(toLength, "Value"), SELit(ENumber(0.0))),
+            )
+          case _ => false
+        },
       )
       assert(
-        cases.exists(c =>
-          c.when.contains(FLt(SELit(EMath(0)), SEField(inner, "Value"))) &&
-          c.thenF == List(FTypeCheck(toLength, NormalT)),
-        ),
+        cases.exists {
+          case FImply(when, conclusion) =>
+            when.contains(FLt(SELit(EMath(0)), SEField(inner, "Value"))) &&
+            conclusion == List(FTypeCheck(toLength, NormalT))
+          case _ => false
+        },
       )
     }
 

@@ -1336,7 +1336,9 @@ object Reify {
       case SETypeOf(t) => fromExpr(t)
       case _           => Set()
     def fromFormula(f: Formula): Set[String] = f match
-      case FNot(inner)      => fromFormula(inner)
+      case FNot(inner) => fromFormula(inner)
+      case FImply(premise, conclusion) =>
+        (premise ++ conclusion).flatMap(fromFormula).toSet
       case FEq(l, r)        => fromExpr(l) ++ fromExpr(r)
       case FLt(l, r)        => fromExpr(l) ++ fromExpr(r)
       case FExists(b, _)    => fromExpr(b)
@@ -1357,7 +1359,9 @@ object Reify {
       case SETypeOf(t) => fromExpr(t)
       case _           => Set()
     f match
-      case FNot(inner)      => outerAppNames(inner)
+      case FNot(inner) => outerAppNames(inner)
+      case FImply(premise, conclusion) =>
+        (premise ++ conclusion).flatMap(outerAppNames).toSet
       case FEq(l, r)        => fromExpr(l) ++ fromExpr(r)
       case FLt(l, r)        => fromExpr(l) ++ fromExpr(r)
       case FExists(b, _)    => fromExpr(b)

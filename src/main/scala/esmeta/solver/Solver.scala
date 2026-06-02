@@ -30,11 +30,13 @@ object Solver {
     if (next == goal) next else rewrite(next)
 
   def simplify(formulas: Goal): Option[Goal] =
-    val norm = removeTautologies(propagateEqualities(formulas))
+    val norm = saturateFacts(formulas)
     if (hasContradictionRaw(norm)) None else Some(norm)
 
   private def normalize(f: Formula): Formula =
     f match
+      case FImply(premise, conclusion) =>
+        FImply(premise.map(normalize), conclusion.map(normalize))
       // double negation elimination
       case FNot(FNot(inner)) => normalize(inner)
       // abrupt is not normal, and vice versa
@@ -80,16 +82,18 @@ object Solver {
     calls match
       case Nil => LazyList((base, seen))
       case call :: rest =>
-        val cases = RewriteRules.aoModel(call)
-        if (cases.isEmpty) solveCases(base, rest, seen)
+        val implications = RewriteRules.aoModel(call)
+        if (implications.isEmpty) solveCases(base, rest, seen)
         else
-          LazyList.from(cases).flatMap { c =>
-            simplify(rewrite(base ++ c.when ++ c.thenF)) match
-              case None => LazyList.empty
-              case Some(solved) =>
-                val newCalls = modeledCalls(solved) -- seen
-                val nextCalls = rest ++ newCalls.toList.sortBy(_.toString)
-                solveCases(solved, nextCalls, seen ++ newCalls)
+          LazyList.from(implications).flatMap {
+            case implication @ FImply(premise, _) =>
+              simplify(rewrite(base ++ premise :+ implication)) match
+                case None => LazyList.empty
+                case Some(solved) =>
+                  val newCalls = modeledCalls(solved) -- seen
+                  val nextCalls = rest ++ newCalls.toList.sortBy(_.toString)
+                  solveCases(solved, nextCalls, seen ++ newCalls)
+            case _ => LazyList.empty
           }
 
   private def stripCallFacts(goal: Goal, calls: Set[SymExpr]): Goal =
@@ -112,7 +116,9 @@ object Solver {
     exprsOf(f).exists(check)
 
   private def exprsOf(f: Formula): List[SymExpr] = f match
-    case FNot(inner)      => exprsOf(inner)
+    case FNot(inner) => exprsOf(inner)
+    case FImply(premise, conclusion) =>
+      (premise ++ conclusion).flatMap(exprsOf)
     case FEq(l, r)        => List(l, r)
     case FLt(l, r)        => List(l, r)
     case FExists(b, k)    => List(b, k)
@@ -199,6 +205,30 @@ object Solver {
       }
     }
     facts
+
+  private def saturateFacts(formulas: Goal): Goal =
+    var facts = formulas.distinct
+    var seen = Set.empty[Formula]
+    var changed = true
+    while (changed) {
+      val next =
+        removeTautologies(
+          propagateEqualities(dischargeImplications(facts)),
+        ).distinct
+      val nextSeen = next.toSet
+      changed = nextSeen != seen
+      facts = next
+      seen = nextSeen
+    }
+    facts
+
+  private def dischargeImplications(fs: Goal): Goal =
+    val known = fs.toSet
+    val implied = fs.collect {
+      case FImply(premise, conclusion) if premise.forall(known) =>
+        conclusion
+    }.flatten
+    fs ++ implied.filterNot(known)
 
   private def hasContradictionRaw(fs: Goal): Boolean =
     val eqSet = fs.collect { case f: FEq => f }.toSet
