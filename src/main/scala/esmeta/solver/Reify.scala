@@ -402,6 +402,24 @@ object Reify {
   private def overlaps(left: ValueTy, right: ValueTy): Boolean =
     !(left && right).isBottom
 
+  private def concreteCandidateAllowed(
+    candidateTy: ValueTy,
+    requiredTy: ValueTy,
+    avoidedTys: List[ValueTy],
+    js: String,
+  ): Boolean =
+    !(requiredTy && candidateTy).isBottom &&
+    avoidedTys.forall(avoidTy => concreteAvoids(candidateTy, avoidTy, js))
+
+  private def concreteAvoids(
+    candidateTy: ValueTy,
+    avoidTy: ValueTy,
+    js: String,
+  ): Boolean =
+    (candidateTy && avoidTy).isBottom ||
+    (js == "{}" && avoidTy <= ObjectT && !(ObjectT <= avoidTy)) ||
+    (js == "function(){}" && avoidTy <= FunctionT && !(FunctionT <= avoidTy))
+
   private def isDirectAbruptCompletion(facts: Set[Fact]): Boolean =
     val parts = partitionFacts(facts)
     parts.types.exists(_ <= AbruptT) &&
@@ -488,7 +506,8 @@ object Reify {
     renderTarget(parts).flatMap(renderTraps(_, parts.traps))
 
   private def renderTarget(parts: FactParts): Option[String] =
-    val structural = hasObjectShape(parts) || parts.calls.nonEmpty
+    val structural =
+      hasObjectShape(parts) || parts.calls.nonEmpty || parts.traps.nonEmpty
     parts.values.headOption match
       case Some(lit) =>
         if (parts.values.exists(_ != lit) || parts.excluded(lit) || structural)
@@ -508,6 +527,12 @@ object Reify {
           renderFunction(parts.calls).flatMap(renderObjectLike(_, parts))
         else if (requiredTy <= FunctionT || requiredTy <= ConstructorT)
           defaultFor(requiredTy, parts.excluded, avoidedTys)
+            .flatMap(renderObjectLike(_, parts))
+        else if (parts.traps.nonEmpty)
+          val objectTy =
+            if ((requiredTy && ObjectT).isBottom) return None
+            else requiredTy && ObjectT
+          defaultFor(objectTy, parts.excluded, avoidedTys)
             .flatMap(renderObjectLike(_, parts))
         else if (hasObjectShape(parts))
           val objectTy =
@@ -908,6 +933,11 @@ object Reify {
     js: String,
   ) {
     val ty: ValueTy = RecordT(name)
+
+    def jsFor(autoLength: Boolean): String =
+      if (autoLength)
+        s"new $name(new ArrayBuffer(0, {maxByteLength: 0}))"
+      else js
   }
 
   private val typedArrayDefaults: List[TypedArrayDefault] = List(
@@ -929,11 +959,81 @@ object Reify {
     requiredTy: ValueTy,
     avoidedTys: List[ValueTy],
   ): Option[String] =
+    renderRevokedProxy(parts, requiredTy, avoidedTys)
+      .orElse(renderSymbol(parts, requiredTy, avoidedTys))
+      .orElse(renderSourceTextFunction(parts, requiredTy, avoidedTys))
+      .orElse(renderTypedArray(parts, requiredTy, avoidedTys))
+
+  private def renderTypedArray(
+    parts: FactParts,
+    requiredTy: ValueTy,
+    avoidedTys: List[ValueTy],
+  ): Option[String] =
     typedArrayDefaults
       .find(candidate =>
         isTypedArrayCandidateAllowed(candidate, parts, requiredTy, avoidedTys),
       )
-      .map(_.js)
+      .map { candidate =>
+        candidate.jsFor(typedArrayNeedsAutoLength(parts))
+      }
+
+  private def renderRevokedProxy(
+    parts: FactParts,
+    requiredTy: ValueTy,
+    avoidedTys: List[ValueTy],
+  ): Option[String] =
+    val js =
+      "(()=>{const r=Proxy.revocable({},{});r.revoke();return r.proxy})()"
+    val candidateTy = RecordT("ProxyExoticObject")
+    Option.when(
+      concreteCandidateAllowed(candidateTy, requiredTy, avoidedTys, js) &&
+      parts.fields.forall {
+        case ("ProxyTarget", facts)  => literalFactsAllow(facts, ENull())
+        case ("ProxyHandler", facts) => literalFactsAllow(facts, ENull())
+        case _                       => false
+      } &&
+      parts.fieldExists.forall {
+        case ("ProxyTarget" | "ProxyHandler", existsSet) =>
+          existsSet == Set(true)
+        case (_, existsSet) => existsSet == Set(false)
+      },
+    )(js)
+
+  private def renderSymbol(
+    parts: FactParts,
+    requiredTy: ValueTy,
+    avoidedTys: List[ValueTy],
+  ): Option[String] =
+    val candidateTy = SymbolT
+    val descFacts = parts.fields.get("Description")
+    val descJs = descFacts match
+      case Some(facts) => renderSymbolDescription(facts)
+      case None        => Some("Symbol()")
+    descJs.filter { js =>
+      concreteCandidateAllowed(candidateTy, requiredTy, avoidedTys, js) &&
+      parts.fields.keySet.subsetOf(Set("Description")) &&
+      parts.fieldExists.forall {
+        case ("Description", existsSet) => existsSet == Set(true)
+        case (_, existsSet)             => existsSet == Set(false)
+      }
+    }
+
+  private def renderSourceTextFunction(
+    parts: FactParts,
+    requiredTy: ValueTy,
+    avoidedTys: List[ValueTy],
+  ): Option[String] =
+    val js = "function(){}"
+    val candidateTy = FunctionT
+    Option.when(
+      parts.fields.keySet == Set("SourceText") &&
+      stringFieldFactsAllow(parts.fields("SourceText")) &&
+      parts.fieldExists.forall {
+        case ("SourceText", existsSet) => existsSet == Set(true)
+        case (_, existsSet)            => existsSet == Set(false)
+      } &&
+      concreteCandidateAllowed(candidateTy, requiredTy, avoidedTys, js),
+    )(js)
 
   private def isTypedArrayCandidateAllowed(
     candidate: TypedArrayDefault,
@@ -946,23 +1046,84 @@ object Reify {
       !(requiredTy && TypedArrayT).isBottom ||
       parts.fields.contains("TypedArrayName") ||
       parts.fields.contains("ContentType") ||
+      parts.fields.contains("ArrayLength") ||
       parts.fieldExists.get("TypedArrayName").exists(_.contains(true)) ||
       parts.fieldExists.get("ContentType").exists(_.contains(true))
     typedArrayRelevant &&
-    !(requiredTy && candidateTy).isBottom &&
-    avoidedTys.forall(avoidTy => (candidateTy && avoidTy).isBottom) &&
+    concreteCandidateAllowed(
+      candidateTy,
+      requiredTy,
+      avoidedTys,
+      candidate.js,
+    ) &&
     parts.fields.forall {
       case ("TypedArrayName", facts) =>
         literalFactsAllow(facts, EStr(candidate.name))
       case ("ContentType", facts) =>
         literalFactsAllow(facts, EEnum(candidate.contentType))
+      case ("ArrayLength", facts) =>
+        typedArrayLengthFactsAllow(facts)
+      case ("ByteLength" | "ByteOffset", facts) =>
+        literalFactsAllow(facts, EMath(0))
       case _ => false
     } &&
     parts.fieldExists.forall {
       case ("TypedArrayName", existsSet) => existsSet == Set(true)
       case ("ContentType", existsSet)    => existsSet == Set(true)
+      case ("ArrayLength", existsSet)    => existsSet == Set(true)
+      case ("ByteLength", existsSet)     => existsSet == Set(true)
+      case ("ByteOffset", existsSet)     => existsSet == Set(true)
       case (_, existsSet)                => existsSet == Set(false)
     }
+
+  private def renderSymbolDescription(facts: Set[Fact]): Option[String] =
+    val parts = partitionFacts(facts)
+    parts.values.headOption match
+      case Some(EStr(desc))
+          if parts.values.size == 1 && !parts.excluded(EStr(desc)) =>
+        Some(s"Symbol(${jsStringLit(desc)})")
+      case Some(EUndef()) if parts.values.size == 1 =>
+        Some("Symbol()")
+      case Some(_) => None
+      case None =>
+        val requiredTy = requiredValueType(parts)
+        val avoidedTys = avoidedValueTypes(parts)
+        if ((requiredTy && UndefT).isBottom && (requiredTy && StrT).isBottom)
+          None
+        else if (
+          avoidedTys.exists(ty => overlaps(ty, StrT)) && !(
+            requiredTy && UndefT
+          ).isBottom
+        )
+          Some("Symbol()")
+        else Some("Symbol(\"\")")
+
+  private def stringFieldFactsAllow(facts: Set[Fact]): Boolean =
+    val parts = partitionFacts(facts)
+    val requiredTy = requiredValueType(parts)
+    parts.values.isEmpty &&
+    parts.excluded.isEmpty &&
+    parts.lowers.isEmpty &&
+    parts.uppers.isEmpty &&
+    parts.props.isEmpty &&
+    parts.propExists.isEmpty &&
+    parts.calls.isEmpty &&
+    parts.extensible.isEmpty &&
+    parts.prototypes.isEmpty &&
+    parts.traps.isEmpty &&
+    parts.fields.isEmpty &&
+    parts.fieldExists.isEmpty &&
+    !(requiredTy && StrT).isBottom &&
+    avoidedValueTypes(parts).forall(ty => (StrT && ty).isBottom)
+
+  private def typedArrayLengthFactsAllow(facts: Set[Fact]): Boolean =
+    literalFactsAllow(facts, EEnum("auto")) ||
+    literalFactsAllow(facts, EMath(0))
+
+  private def typedArrayNeedsAutoLength(parts: FactParts): Boolean =
+    parts.fields
+      .get("ArrayLength")
+      .exists(facts => partitionFacts(facts).values.contains(EEnum("auto")))
 
   private def literalFactsAllow(facts: Set[Fact], lit: LiteralExpr): Boolean =
     val parts = partitionFacts(facts)
@@ -1244,9 +1405,7 @@ object Reify {
   ): Option[String] =
     val excJs = excluded.flatMap(litToJs)
     def allowed(candidateTy: ValueTy, js: String): Boolean =
-      !excJs(js) && avoidTys.forall(avoidTy =>
-        (candidateTy && avoidTy).isBottom,
-      )
+      !excJs(js) && concreteCandidateAllowed(candidateTy, ty, avoidTys, js)
     // 1. exact match
     defaults
       .collectFirst {

@@ -210,6 +210,39 @@ class SolverTinyTest extends SolverTest {
       assert(js.contains("1"))
     }
 
+    check("internal method trap cannot reify on undefined base") {
+      val key = SEProj(SEGlobal("SYMBOL"), SELit(EStr("iterator")))
+      val get = SEApp("Get", List(xSym, key))
+
+      assert(
+        solveAndReify(
+          List(
+            isType(xSym, UndefT),
+            isType(get, NormalT),
+            isType(SEField(get, "Value"), UndefT || NullT),
+          ),
+        ).isEmpty,
+      )
+    }
+
+    checkParamWitness("internal method trap reifies on object-capable base")(
+      List(
+        isType(
+          SEField(
+            SEApp(
+              "Get",
+              List(xSym, SEProj(SEGlobal("SYMBOL"), SELit(EStr("iterator")))),
+            ),
+            "Value",
+          ),
+          UndefT || NullT,
+        ),
+      ),
+    ) { js =>
+      assert(js.contains("new Proxy("))
+      assert(!js.contains("new Proxy(undefined"))
+    }
+
     checkParamWitness("HasProperty value projection reifies as property shape")(
       List(
         isValue(
@@ -259,6 +292,62 @@ class SolverTinyTest extends SolverTest {
     ) { js =>
       assert(js.contains("Int8Array"))
       assert(!js.contains("TypedArrayName"))
+    }
+
+    checkParamWitness(
+      "source text internal field reifies as ordinary function",
+    )(
+      List(
+        FExists(xSym, SELit(EStr("SourceText"))),
+        isType(SEField(xSym, "SourceText"), StrT),
+      ),
+    ) { js =>
+      assert(js.contains("function"))
+    }
+
+    check(
+      "negative source text record constraint keeps a plain object witness",
+    ) {
+      val witness = solveAndReify(
+        List(
+          isType(xSym, ObjectT),
+          isNotType(xSym, RecordT("BuiltinFunctionObject")),
+          FNot(FExists(xSym, SELit(EStr("SourceText")))),
+        ),
+      ).getOrElse(fail("expected plain object witness"))
+
+      assert(witness(SolverTest.x).nonEmpty)
+    }
+
+    checkParamWitness("symbol description internal field reifies as symbol")(
+      List(
+        isType(xSym, SymbolT),
+        isValue(SEField(xSym, "Description"), EUndef()),
+      ),
+    ) { js =>
+      assert(js == "Symbol()")
+    }
+
+    checkParamWitness("revoked proxy internal slots reify via Proxy.revocable")(
+      List(
+        isType(xSym, RecordT("ProxyExoticObject")),
+        isValue(SEField(xSym, "ProxyTarget"), ENull()),
+      ),
+    ) { js =>
+      assert(js.contains("Proxy.revocable"))
+      assert(js.contains(".revoke()"))
+    }
+
+    checkParamWitness(
+      "auto-length typed array reifies as length-tracking view",
+    )(
+      List(
+        FExists(xSym, SELit(EStr("TypedArrayName"))),
+        isValue(SEField(xSym, "ArrayLength"), EEnum("auto")),
+      ),
+    ) { js =>
+      assert(js.contains("new ArrayBuffer"))
+      assert(js.contains("maxByteLength"))
     }
 
     check("generic projection is not an internal field witness") {
