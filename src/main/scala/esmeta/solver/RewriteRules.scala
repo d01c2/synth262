@@ -43,27 +43,19 @@ object RewriteRules {
       installErrorCauseModel(options, call)
     case SEApp("ValidateTypedArray", List(o, _)) =>
       validateTypedArrayModel(o, call)
-    case SEApp("ToPrimitive", List(x, _*)) =>
-      toPrimitiveModel(x, call)
+    case SEApp("ToPrimitive", List(x, _*)) => toPrimitiveModel(x, call)
     case SEApp("IsTypedArrayOutOfBounds", List(_)) =>
       isTypedArrayOutOfBoundsModel(call)
-    case SEApp("SameValue", List(x, y)) =>
-      sameValueModel(x, y, call)
-    case SEApp("SameValueZero", List(x, y)) =>
-      sameValueModel(x, y, call)
+    case SEApp("SameValue", List(x, y))     => sameValueModel(x, y, call)
+    case SEApp("SameValueZero", List(x, y)) => sameValueModel(x, y, call)
     case SEApp("ToIntegerOrInfinity", List(x)) =>
       toIntegerOrInfinityModel(x, call)
-    case SEApp("ToLength", List(x)) =>
-      toLengthModel(x, call)
-    case SEApp("ToIndex", List(x)) =>
-      toIndexModel(x, call)
-    case SEApp("ToPropertyKey", List(x)) =>
-      toPropertyKeyModel(x, call)
-    case SEApp("LengthOfArrayLike", List(x)) =>
-      lengthOfArrayLikeModel(x, call)
-    case SEApp("GetMethod", List(v, p)) =>
-      getMethodModel(v, p, call)
-    case _ => Nil
+    case SEApp("ToLength", List(x))          => toLengthModel(x, call)
+    case SEApp("ToIndex", List(x))           => toIndexModel(x, call)
+    case SEApp("ToPropertyKey", List(x))     => toPropertyKeyModel(x, call)
+    case SEApp("LengthOfArrayLike", List(x)) => lengthOfArrayLikeModel(x, call)
+    case SEApp("GetMethod", List(v, p))      => getMethodModel(v, p, call)
+    case _                                   => Nil
 
   def isModeledCall(expr: SymExpr): Boolean = expr match
     case SEApp("ToNumber", List(_))                => true
@@ -472,14 +464,11 @@ object RewriteRules {
     )
 
   // 3 return nodes; dropped 1 inter-proc (IsTypedArrayOutOfBounds throw).
-  // RequireInternalSlot is modeled; composition requires solveCases re-scan
-  // (not yet implemented — modeledCalls computed once before solveCases).
+  // RequireInternalSlot is modeled; nested modeled calls are discovered by
+  // the solver's summary-closure pass.
   // 4 return nodes: 1 throw (RequireInternalSlot abrupt), 1 throw
   // (IsTypedArrayOutOfBounds true), 1 normal, 1 structural.
-  private def validateTypedArrayModel(
-    o: SymExpr,
-    ret: SymExpr,
-  ): Goal =
+  private def validateTypedArrayModel(o: SymExpr, ret: SymExpr): Goal =
     val reqSlot =
       SEApp("RequireInternalSlot", List(o, SELit(EStr("TypedArrayName"))))
     List(
@@ -515,23 +504,14 @@ object RewriteRules {
       ),
     )
 
-  // 3 return nodes; conditions (buffer detachment, byte offsets) not
-  // expressible in formula system. Returns Boolean directly.
-  private def isTypedArrayOutOfBoundsModel(
-    ret: SymExpr,
-  ): Goal =
-    val t = SELit(EBool(true))
-    val f = SELit(EBool(false))
-    List(
-      FImply(Nil, List(FEq(ret, t))),
-      FImply(Nil, List(FEq(ret, f))),
-    )
+  // 3 return nodes; conditions (buffer detachment, byte offsets) are not
+  // expressible in this formula system. The operation returns Boolean
+  // directly, but the exact value is intentionally left unconstrained.
+  private def isTypedArrayOutOfBoundsModel(ret: SymExpr): Goal =
+    List(FImply(Nil, List(FTypeCheck(ret, BoolT))))
 
   // 6 return nodes: 1 throw, 4 normal, 1 structural.
-  private def toIntegerOrInfinityModel(
-    x: SymExpr,
-    ret: SymExpr,
-  ): Goal =
+  private def toIntegerOrInfinityModel(x: SymExpr, ret: SymExpr): Goal =
     val toNumber = SEApp("ToNumber", List(x))
     val numVal = SEField(toNumber, "Value")
     def normal(v: SymExpr): Goal =
@@ -637,10 +617,7 @@ object RewriteRules {
 
   // 4 return nodes: 1 throw (ToPrimitive abrupt), 1 normal (Symbol
   // identity), 1 normal (ToString), 1 structural.
-  private def toPropertyKeyModel(
-    x: SymExpr,
-    ret: SymExpr,
-  ): Goal =
+  private def toPropertyKeyModel(x: SymExpr, ret: SymExpr): Goal =
     val toPrim = SEApp("ToPrimitive", List(x, SELit(EEnum("string"))))
     val primVal = SEField(toPrim, "Value")
     List(
@@ -666,10 +643,7 @@ object RewriteRules {
 
   // 4 return nodes: 1 throw (Get abrupt), 1 throw (ToLength abrupt),
   // 1 normal, 1 structural.
-  private def lengthOfArrayLikeModel(
-    obj: SymExpr,
-    ret: SymExpr,
-  ): Goal =
+  private def lengthOfArrayLikeModel(obj: SymExpr, ret: SymExpr): Goal =
     val getLength = SEApp("Get", List(obj, SELit(EStr("length"))))
     val toLength = SEApp("ToLength", List(SEField(getLength, "Value")))
     List(
@@ -696,11 +670,7 @@ object RewriteRules {
   // 5 return nodes: 1 throw (GetV abrupt), 1 normal (undefined/null →
   // undefined), 1 throw (not callable), 1 normal (callable func),
   // 1 structural.
-  private def getMethodModel(
-    v: SymExpr,
-    p: SymExpr,
-    ret: SymExpr,
-  ): Goal =
+  private def getMethodModel(v: SymExpr, p: SymExpr, ret: SymExpr): Goal =
     val getResult = SEApp("Get", List(v, p))
     val getVal = SEField(getResult, "Value")
     List(
@@ -744,11 +714,7 @@ object RewriteRules {
   // (Number::sameValue, BigInt::equal — IR ops).
   // SameValueZero shares the same model (solver FEq does not
   // distinguish +0/-0 semantics).
-  private def sameValueModel(
-    x: SymExpr,
-    y: SymExpr,
-    ret: SymExpr,
-  ): Goal =
+  private def sameValueModel(x: SymExpr, y: SymExpr, ret: SymExpr): Goal =
     val t = SELit(EBool(true))
     val f = SELit(EBool(false))
     List(

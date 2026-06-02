@@ -82,18 +82,18 @@ object Solver {
     calls match
       case Nil => LazyList((base, seen))
       case call :: rest =>
-        val implications = RewriteRules.aoModel(call)
-        if (implications.isEmpty) solveCases(base, rest, seen)
+        val cases = RewriteRules.aoModel(call).collect {
+          case FImply(premise, conclusion) => premise -> conclusion
+        }
+        if (cases.isEmpty) solveCases(base, rest, seen)
         else
-          LazyList.from(implications).flatMap {
-            case implication @ FImply(premise, _) =>
-              simplify(rewrite(base ++ premise :+ implication)) match
-                case None => LazyList.empty
-                case Some(solved) =>
-                  val newCalls = modeledCalls(solved) -- seen
-                  val nextCalls = rest ++ newCalls.toList.sortBy(_.toString)
-                  solveCases(solved, nextCalls, seen ++ newCalls)
-            case _ => LazyList.empty
+          LazyList.from(cases).flatMap { (premise, conclusion) =>
+            simplify(rewrite(base ++ premise ++ conclusion)) match
+              case None => LazyList.empty
+              case Some(solved) =>
+                val newCalls = modeledCalls(solved) -- seen
+                val nextCalls = rest ++ newCalls.toList.sortBy(_.toString)
+                solveCases(solved, nextCalls, seen ++ newCalls)
           }
 
   private def stripCallFacts(goal: Goal, calls: Set[SymExpr]): Goal =

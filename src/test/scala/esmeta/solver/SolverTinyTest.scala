@@ -128,7 +128,7 @@ class SolverTinyTest extends SolverTest {
       assert(active.contains(conclusion))
     }
 
-    check("ToNumber value requirement is solved by implication cases") {
+    check("ToNumber value requirement is solved by summary cases") {
       val toNumber = SEApp("ToNumber", List(xSym))
       val solved = Solver
         .solve(List(isValue(SEField(toNumber, "Value"), ENumber(1.0))))
@@ -316,13 +316,23 @@ class SolverTinyTest extends SolverTest {
       assert(!rewritten.contains(isValue(wrappedValue, EMath(1))))
     }
 
-    check("ToNumber abrupt requirement selects throwing implication case") {
+    check("ToNumber abrupt requirement selects compatible throwing case") {
       val toNumber = SEApp("ToNumber", List(xSym))
       val solved = Solver
         .solve(List(isType(toNumber, AbruptT)))
         .getOrElse(fail("expected satisfiable ToNumber goal"))
 
       assert(solved.contains(isType(xSym, SymbolT || BigIntT)))
+      assert(!solved.exists(_.toString.contains("ToNumber")))
+    }
+
+    check("ToNumber throwing summary fires when its premise is known") {
+      val toNumber = SEApp("ToNumber", List(xSym))
+      val solved = Solver
+        .solve(List(isType(xSym, SymbolT), isType(toNumber, AbruptT)))
+        .getOrElse(fail("expected satisfiable ToNumber goal"))
+
+      assert(solved.contains(isType(xSym, SymbolT)))
       assert(!solved.exists(_.toString.contains("ToNumber")))
     }
 
