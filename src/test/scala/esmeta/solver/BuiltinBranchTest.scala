@@ -81,16 +81,25 @@ class BuiltinBranchTest extends ESMetaTest {
       (reachableModelingAOs -- builtinEntries).map(_.name).toList.sorted
     val modelingAOCount = reachableModelingAOs.size
 
-    // collect unique (builtin, branch) pairs; each branch is solved once.
+    // collect unique branches; entry selection via reverse call graph
+    // (matches `sbt run solve` so miss cases are reproducible)
+    val accessibleBuiltins = builtins.toSet
+    val funcEntryCache = collection.mutable.Map[Int, List[Func]]()
+    def entriesFor(b: Branch): List[Func] =
+      funcEntryCache.getOrElseUpdate(
+        cfg.funcOf(b).id,
+        Solve.findEntries(b).filter(accessibleBuiltins.contains),
+      )
     val targets: List[(Func, Branch)] = {
-      val pairs = reachableByBuiltin.flatMap {
-        case (f, reachable) =>
-          targetBranches(reachable).sortBy(_.id).map(f -> _)
-      }
       val seen = MSet[Int]()
       val buf = List.newBuilder[(Func, Branch)]
-      for ((f, b) <- pairs)
-        if (seen.add(b.id)) buf += (f -> b)
+      for {
+        (_, reachable) <- reachableByBuiltin
+        b <- targetBranches(reachable).sortBy(_.id)
+        if seen.add(b.id)
+        entries = entriesFor(b)
+        if entries.nonEmpty
+      } buf += (entries.head -> b)
       buf.result()
     }
 
@@ -156,19 +165,71 @@ class BuiltinBranchTest extends ESMetaTest {
                     Set(),
                   )
                 case None =>
-                  val cand = candidates.head
-                  BranchResult(
-                    f.name,
-                    targetFunc.name,
-                    s"logs/cfg/func/${targetFunc.normalizedName}.cfg",
-                    b.id,
-                    "miss",
-                    Some(cand.js),
-                    elapsed,
-                    "",
-                    Some(cand.simplified),
-                    Set(),
-                  )
+                  // miss — try remaining entries from reverse call graph
+                  val fallbackEntries = entriesFor(b)
+                    .filterNot(_.name == f.name)
+                  val fallbackHit = fallbackEntries.iterator
+                    .flatMap { altF =>
+                      val altCands =
+                        try {
+                          val ps = Solve.paramIds(altF)
+                          SymbolicInterpreter(
+                            altF,
+                            cond,
+                            Solver.solveAll,
+                          ).result
+                            .flatMap { fs =>
+                              Reify(fs, ps).witness.flatMap { w =>
+                                Reify
+                                  .toJsCall(altF, ps, w)
+                                  .map(Candidate(_, fs))
+                              }
+                            }
+                            .take(20)
+                            .toList
+                        } catch
+                          case _: NotImplementedError | _: MatchError => Nil
+                      altCands
+                        .find { cand =>
+                          try {
+                            val interp = cov.run(cand.js)
+                            interp.touchedCondViews.keys.exists { cv =>
+                              cv.cond.branch.id == b.id && cv.cond.cond == true
+                            }
+                          } catch { case _: Throwable => false }
+                        }
+                        .map(js => (altF, js))
+                    }
+                    .nextOption()
+                  val totalElapsed = System.nanoTime() - t0
+                  fallbackHit match
+                    case Some((altF, js)) =>
+                      BranchResult(
+                        altF.name,
+                        targetFunc.name,
+                        s"logs/cfg/func/${targetFunc.normalizedName}.cfg",
+                        b.id,
+                        "ok",
+                        Some(js.js),
+                        totalElapsed,
+                        "",
+                        Some(js.simplified),
+                        Set(),
+                      )
+                    case None =>
+                      val cand = candidates.head
+                      BranchResult(
+                        f.name,
+                        targetFunc.name,
+                        s"logs/cfg/func/${targetFunc.normalizedName}.cfg",
+                        b.id,
+                        "miss",
+                        Some(cand.js),
+                        totalElapsed,
+                        "",
+                        Some(cand.simplified),
+                        Set(),
+                      )
             } else {
               var reason = "unknown"
               var simplifiedGoal: Option[List[Formula]] = None

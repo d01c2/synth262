@@ -35,7 +35,7 @@ case object Solve extends Phase[CFG, String] {
       }
       .mkString("\n")
 
-  private def findEntries(branch: Branch)(using cfg: CFG): List[Func] =
+  def findEntries(branch: Branch)(using cfg: CFG): List[Func] =
     val func = cfg.funcOf(branch)
     if (func.isBuiltin) List(func)
     else {
