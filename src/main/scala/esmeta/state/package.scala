@@ -93,7 +93,6 @@ def trimString(x: String, isStarting: Boolean, esParser: ESParser): String =
   sb.toString
 
 /** conversion number to string */
-// NOTE: Number::toString ( x, radix )
 def toStringHelper(x: Double, radix: Int = 10): String = {
   // get sign
   def getSign(n: Int): Char = if (n - 1 > 0) '+' else '-'
@@ -109,167 +108,84 @@ def toStringHelper(x: Double, radix: Int = 10): String = {
   def getRadixString(d: scala.math.BigInt): String =
     if (d < 10) d.toString else ('a' + (d - 10)).toChar.toString
 
-  // 1. If _x_ is *NaN*, return *"NaN"*.
+  // 1. If _x_ is *NaN*, return the String *"NaN"*.
   if (x.isNaN) "NaN"
-  // 2. If _x_ is either *+0*<sub>𝔽</sub> or *-0*<sub>𝔽</sub>, return *"0"*.
+  // 2. If _x_ is *+0*<sub>𝔽</sub> or *-0*<sub>𝔽</sub>, return the String
+  //    *"0"*.
   else if (x == 0) "0"
-  // 3. If _x_ < *-0*<sub>𝔽</sub>, return the string-concatenation of *"-"*
-  //    and toStringHelper(-_x_, _radix_).
+  // 3. If _x_ < *-0*<sub>𝔽</sub>, return the string-concatenation of *"-"* and
+  //    toStringHelper(-_x_).
   else if (x < 0) "-" + toStringHelper(-x, radix)
-  // 4. If _x_ is *+∞*<sub>𝔽</sub>, return *"Infinity"*.
+  // 4. If _x_ is *+∞*<sub>𝔽</sub>, return the String *"Infinity"*.
   else if (x.isPosInfinity) "Infinity"
   else {
-    // 5. Let _n_, _k_, and _s_ be integers such that _k_ ≥ 1,
-    //    _radix_^(_k_ - 1) ≤ _s_ < _radix_^_k_, 𝔽(_s_ × _radix_^(_n_ - _k_))
-    //    is _x_, and _k_ is as small as possible. Note that _k_ is the
-    //    number of digits in the representation of _s_ using radix _radix_,
-    //    that _s_ is not divisible by _radix_, and that the least significant
-    //    digit of _s_ is not necessarily uniquely determined by these criteria.
+    // 5. Otherwise, let _n_, _k_, and _s_ be integers such that _k_ >= 1,
+    //    _radix_<sup>_k_ - 1</sup> <= _s_ < _radix_<sup>_k_</sup>, 𝔽(_s_ *
+    //    _radix_<sup>_n_ - _k_</sup>) is _x_, and _k_ is as small as possible.
     val (n: Int, k: Int, s: scala.math.BigInt) =
-      if (radix == 10)
-        // For radix 10, the exact decimal representation of an IEEE 754
-        // double is always a finite decimal, so the BigDecimal algorithm
-        // terminates and finds the exact (n, k, s).
-        var S = BigDecimal(x, UNLIMITED)
-        var N = 0
-        while (S % radix == 0) { S /= radix; N += 1 }
-        while (S % 1 != 0) { S *= radix; N -= 1 }
-        var RK = BigDecimal(radix, UNLIMITED)
-        var K = 1
-        while (S >= RK) { RK *= radix; K += 1 }
-        (N + K, K, S.toBigInt)
-      else
-        // For non-10 radixes, the BigDecimal approach can loop forever
-        // because the exact decimal of a double (m × 2^e) may not be a
-        // finite base-R fraction when R has prime factors other than
-        // 2 and 5 (e.g., radix=3, x=0.1). Instead, directly search for
-        // the minimal k where 𝔽(s × radix^(n-k)) = x, using exact
-        // binary arithmetic.
-        import scala.math.{BigInt => SBigInt, BigDecimal => SBigDec}
+      var S = BigDecimal(x, UNLIMITED)
+      var N = 0
+      while (S % radix == 0) { S /= radix; N += 1 }
+      while (S % 1 != 0) { S *= radix; N -= 1 }
+      var RK = BigDecimal(radix, UNLIMITED)
+      var K = 1
+      while (S >= RK) { RK *= radix; K += 1 }
+      (N + K, K, S.toBigInt)
 
-        // extract exact IEEE 754 binary representation: x = mant × 2^bExp
-        val bits = java.lang.Double.doubleToLongBits(x)
-        val rawExp = ((bits >>> 52) & 0x7ff).toInt
-        val mant = SBigInt(
-          if (rawExp == 0) bits & 0xfffffffffffffL
-          else (bits & 0xfffffffffffffL) | 0x10000000000000L,
-        )
-        val bExp = if (rawExp == 0) 1 - 1023 - 52 else rawExp - 1023 - 52
-
-        val bigR = SBigInt(radix)
-        val mc = new java.math.MathContext(200)
-
-        // round-to-nearest integer division for positive BigInts
-        def divRound(num: SBigInt, den: SBigInt): SBigInt =
-          (num * 2 + den) / (den * 2)
-
-        // compute s = round(x / radix^p) = round(mant × 2^bExp / radix^p)
-        def computeS(p: Int): SBigInt =
-          val rp = bigR.pow(scala.math.abs(p))
-          if (p >= 0 && bExp >= 0) divRound(mant << bExp, rp)
-          else if (p >= 0) divRound(mant, SBigInt(2).pow(-bExp) * rp)
-          else if (bExp >= 0) (mant << bExp) * rp
-          else divRound(mant * rp, SBigInt(2).pow(-bExp))
-
-        // check 𝔽(s × radix^p) == x
-        def checkTrip(s: SBigInt, p: Int): Boolean =
-          if (p >= 0) SBigDec(s * bigR.pow(p)).doubleValue == x
-          else (SBigDec(s, mc) / SBigDec(bigR.pow(-p), mc)).doubleValue == x
-
-        // exact comparison: x ≥ radix^e, using BigInteger arithmetic
-        // to avoid floating-point imprecision in log-based estimates
-        def xGeRadixPow(e: Int): Boolean =
-          if (e >= 0 && bExp >= 0)
-            (mant << bExp) >= bigR.pow(e)
-          else if (e >= 0) // bExp < 0
-            mant >= bigR.pow(e) * SBigInt(2).pow(-bExp)
-          else if (bExp >= 0) // e < 0
-            (mant << bExp) * bigR.pow(-e) >= 1
-          else // e < 0, bExp < 0
-            mant * bigR.pow(-e) >= SBigInt(2).pow(-bExp)
-
-        // determine n such that radix^(n-1) ≤ x < radix^n
-        var N = scala.math
-          .floor(java.lang.Math.log(x) / java.lang.Math.log(radix.toDouble))
-          .toInt + 1
-        while (!xGeRadixPow(N - 1)) N -= 1
-        while (xGeRadixPow(N)) N += 1
-
-        // search for minimal k (bounded by 54 for 53-bit mantissa)
-        var K = 1
-        var S: SBigInt = SBigInt(0)
-        var found = false
-        while (!found && K <= 54)
-          val p = N - K
-          S = computeS(p)
-          val lo = bigR.pow(K - 1)
-          val hi = lo * radix
-          if (S < lo || S >= hi) K += 1
-          else if (checkTrip(S, p)) found = true
-          else if (S + 1 < hi && checkTrip(S + 1, p))
-            S += 1; found = true
-          else if (S - 1 >= lo && checkTrip(S - 1, p))
-            S -= 1; found = true
-          else K += 1
-        // ensure _s_ is not divisible by _radix_
-        while (S % radix == 0 && K > 1) { S /= radix; K -= 1 }
-        (N, K, S)
-
-    // 6. If _radix_ ≠ 10 or _n_ is in the inclusive interval from -5 to 21,
-    //    then
-    if (radix != 10 || (-6 < n && n <= 21)) {
-      // 6.a. If _n_ ≥ _k_, then
-      if (k <= n) {
-        getStr(s, radix) +
-        "0" * (n - k)
-        // 6.b. Else if _n_ > 0, then
-      } else if (n > 0) {
-        val str = getStr(s, radix)
-        str.substring(0, n) +
-        '.' +
-        str.substring(n)
-        // 6.c. Else,
-      } else {
-        "0" +
-        "." +
-        "0" * -n +
-        getStr(s, radix)
-      }
+    if (k <= n && n <= 21) {
+      // * the code units of the _k_ digits of the decimal representation of
+      //   _s_ (in order, with no leading zeroes)
+      getStr(s, radix) +
+      // * _n_ - _k_ occurrences of the code unit 0x0030 (DIGIT ZERO)
+      "0" * (n - k)
+    } else if (0 < n && n <= 21) {
+      val str = getStr(s, radix)
+      // * the code units of the most significant _n_ digits of the decimal
+      //   representation of _s_
+      str.substring(0, n) +
+      // * the code unit 0x002E (FULL STOP)
+      '.' +
+      // * the code units of the remaining _k_ - _n_ digits of the decimal
+      //   representation of _s_
+      str.substring(n)
+    } else if (-6 < n && n <= 0) {
+      // * the code unit 0x0030 (DIGIT ZERO)
+      "0" +
+      // * the code unit 0x002E (FULL STOP)
+      "." +
+      // * -_n_ occurrences of the code unit 0x0030 (DIGIT ZERO)
+      "0" * -n +
+      // * the code units of the _k_ digits of the decimal representation of _s_
+      getStr(s, radix)
+    } else if (k == 1) {
+      // * the code unit of the single digit of _s_
+      getStr(s, radix) +
+      // * the code unit 0x0065 (LATIN SMALL LETTER E)
+      "e" +
+      // * the code unit 0x002B (PLUS SIGN) or the code unit 0x002D
+      //   (HYPHEN-MINUS) according to whether _n_ - 1 is positive or negative
+      getSign(n) +
+      // * the code units of the decimal representation of the integer abs(_n_
+      //   - 1) (with no leading zeroes)
+      math.abs(n - 1)
     } else {
-      // 7. NOTE: In this case, the input will be represented using scientific
-      //    E notation, such as 1.2e+3.
-      // 8. Assert: _radix_ is 10.
-      // 9. If _n_ < 0, then let _exponentSign_ be 0x002D (HYPHEN-MINUS).
-      // 10. Else, let _exponentSign_ be 0x002B (PLUS SIGN).
-      val exponentSign = getSign(n)
-      // 11. If _k_ = 1, then return the string-concatenation of:
-      if (k == 1) {
-        // * the code unit of the single digit of _s_
-        getStr(s, radix) +
-        // * the code unit 0x0065 (LATIN SMALL LETTER E)
-        "e" +
-        // * _exponentSign_
-        exponentSign +
-        // * the code units of the decimal representation of abs(_n_ - 1)
-        math.abs(n - 1)
-        // 12. Return the string-concatenation of:
-      } else {
-        val str = getStr(s, radix)
-        // * the code unit of the most significant digit of the decimal
-        //   representation of _s_
-        str.substring(0, 1) +
-        // * the code unit 0x002E (FULL STOP)
-        '.' +
-        // * the code units of the remaining _k_ - 1 digits of the decimal
-        //   representation of _s_
-        str.substring(1) +
-        // * the code unit 0x0065 (LATIN SMALL LETTER E)
-        'e' +
-        // * _exponentSign_
-        exponentSign +
-        // * the code units of the decimal representation of abs(_n_ - 1)
-        math.abs(n - 1)
-      }
+      val str = getStr(s, radix)
+      // * the code units of the most significant digit of the decimal
+      //   representation of _s_
+      str.substring(0, 1) +
+      // * the code unit 0x002E (FULL STOP)
+      '.' +
+      // * the code units of the remaining _k_ - 1 digits of the decimal
+      //   representation of _s_
+      str.substring(1) +
+      // * the code unit 0x0065 (LATIN SMALL LETTER E)
+      'e' +
+      // * the code unit 0x002B (PLUS SIGN) or the code unit 0x002D
+      //   (HYPHEN-MINUS) according to whether _n_ - 1 is positive or negative
+      getSign(n) +
+      // * the code units of the decimal representation of the integer abs(_n_
+      //   - 1) (with no leading zeroes)
+      math.abs(n - 1)
     }
   }
 }

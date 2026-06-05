@@ -1,7 +1,6 @@
 package esmeta.es.util
 
 import esmeta.cfg.*
-import esmeta.es.*
 import esmeta.state.util.{JsonProtocol as StateJsonProtocol}
 import esmeta.util.*
 import esmeta.util.BaseUtils.*
@@ -54,5 +53,4 @@ class JsonProtocol(cfg: CFG) extends StateJsonProtocol(cfg) {
   // coverage constructor
   given coverageConstructorDecoder: Decoder[CoverageConstructor] = deriveDecoder
   given coverageConstructorEncoder: Encoder[CoverageConstructor] = deriveEncoder
-
 }

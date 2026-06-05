@@ -157,7 +157,6 @@ val CirceVersion = "0.14.7"
 val CirceYamlVersion = "0.16.0"
 val ZioHttpVersion = "3.3.2"
 val Http4sVersion = "0.23.30"
-val OpenAIVersion = "4.15.0"
 
 // project root
 lazy val root = project
@@ -182,7 +181,6 @@ lazy val root = project
         .cross(CrossVersion.for3Use2_13),
       "org.http4s" %% "http4s-ember-server" % Http4sVersion,
       "org.http4s" %% "http4s-dsl" % Http4sVersion,
-      "com.openai" % "openai-java" % OpenAIVersion,
     ),
 
     // Copy all managed dependencies to <build-root>/lib_managed/ This is
@@ -205,7 +203,6 @@ lazy val root = project
     // fix deduplicate issue of polyglot dependencies
     // https://stackoverflow.com/questions/54834125/sbt-assembly-deduplicate-module-info-class
     assembly / assemblyMergeStrategy := {
-      case PathList("META-INF", "okio.kotlin_module")  => MergeStrategy.first
       case PathList("module-info.class")               => MergeStrategy.last
       case path if path.endsWith("/module-info.class") => MergeStrategy.last
       case x =>

@@ -86,8 +86,6 @@ object ESMeta extends Git(BASE_DIR) {
     CmdMutate,
     CmdDumpDebugger,
     CmdDumpVisualizer,
-    // Evaluation of LLM in test suite generation task
-    CmdLLMEvaluate,
     // Constraint Solver
     CmdSolve,
   )
@@ -117,8 +115,6 @@ object ESMeta extends Git(BASE_DIR) {
     Mutate,
     DumpDebugger,
     DumpVisualizer,
-    // Evaluation of LLM in test suite generation task
-    LLMEvaluate,
     // Constraint Solver
     Solve,
   )

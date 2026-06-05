@@ -27,8 +27,6 @@ bin/
 
 ## temporal files
 .*.js
-.*.json
-*.scala.bak
 
 ## vscode
 .vscode
@@ -42,6 +40,3 @@ tests/result/test262
 ## local .bashrc/.zshrc files
 .bashrc
 .zshrc
-
-## manual
-micro-bench/results
