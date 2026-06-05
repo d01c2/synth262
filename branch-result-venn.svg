@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="680" viewBox="0 0 920 680" role="img" aria-labelledby="title desc">
+  <title id="title">Venn</title>
+  <desc id="desc">Clean Venn diagram for solver-result, test262-result, and fuzz-result branch-side sets.</desc>
+  <style>
+    .bg { fill: #ffffff; }
+    .title { font: 700 28px Arial, sans-serif; fill: #1f2933; }
+    .circle { stroke-width: 2.5; mix-blend-mode: multiply; }
+    .solver { fill: #f28b82; fill-opacity: 0.44; stroke: #d35f54; }
+    .test262 { fill: #80cbc4; fill-opacity: 0.48; stroke: #3f9f98; }
+    .fuzz { fill: #ffe082; fill-opacity: 0.58; stroke: #d3a72c; }
+    .set-label { font: 700 18px Arial, sans-serif; fill: #1f2933; text-anchor: middle; }
+    .set-size { font: 400 13px Arial, sans-serif; fill: #5b6570; text-anchor: middle; }
+    .count { font: 700 22px Arial, sans-serif; fill: #111827; text-anchor: middle; dominant-baseline: middle; }
+    .small-count { font: 700 18px Arial, sans-serif; fill: #111827; text-anchor: middle; dominant-baseline: middle; }
+  </style>
+
+  <rect class="bg" x="0" y="0" width="920" height="680" />
+
+  <text class="title" x="48" y="52">Venn</text>
+
+  <g transform="translate(0,20)">
+    <circle class="circle solver" cx="355" cy="275" r="178" />
+    <circle class="circle test262" cx="525" cy="275" r="178" />
+    <circle class="circle fuzz" cx="440" cy="420" r="178" />
+
+    <text class="set-label" x="270" y="122">Solver</text>
+    <text class="set-size" x="270" y="144">2,177</text>
+    <text class="set-label" x="610" y="122">Test262</text>
+    <text class="set-size" x="610" y="144">4,554</text>
+    <text class="set-label" x="440" y="630">Fuzz</text>
+    <text class="set-size" x="440" y="652">3,850</text>
+
+    <text class="count" x="272" y="290">74</text>
+    <text class="count" x="608" y="290">889</text>
+    <text class="count" x="440" y="535">141</text>
+    <text class="small-count" x="440" y="218">211</text>
+    <text class="small-count" x="342" y="405">255</text>
+    <text class="small-count" x="538" y="405">1,817</text>
+    <text class="count" x="440" y="340">1,637</text>
+  </g>
+
+</svg>
