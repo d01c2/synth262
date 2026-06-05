@@ -90,7 +90,7 @@ class BuiltinBranchTest extends ESMetaTest {
         cfg.funcOf(b).id,
         Solve.findEntries(b).filter(accessibleBuiltins.contains),
       )
-    val targets: List[(Func, Branch)] = {
+    val targetBranchEntries: List[(Func, Branch)] = {
       val seen = MSet[Int]()
       val buf = List.newBuilder[(Func, Branch)]
       for {
@@ -102,6 +102,10 @@ class BuiltinBranchTest extends ESMetaTest {
       } buf += (entries.head -> b)
       buf.result()
     }
+    val targets: List[(Func, Cond)] =
+      targetBranchEntries.flatMap { (f, b) =>
+        List(f -> Cond(b, true), f -> Cond(b, false))
+      }
 
     check("builtin branches: solve and verify") {
       case class BranchResult(
@@ -109,6 +113,7 @@ class BuiltinBranchTest extends ESMetaTest {
         targetName: String,
         targetCfg: String,
         bid: Int,
+        side: Boolean,
         status: String,
         js: Option[String],
         elapsed: Long,
@@ -119,13 +124,18 @@ class BuiltinBranchTest extends ESMetaTest {
 
       case class Candidate(js: String, simplified: List[Formula])
 
-      println(s"  Solving ${targets.size} branches with $nThreads threads...")
+      def sideString(side: Boolean): String = if (side) "T" else "F"
+
+      println(
+        s"  Solving ${targets.size} branch sides from " +
+        s"${targetBranchEntries.size} branches with $nThreads threads...",
+      )
 
       val results = {
-        val futures = targets.map { (f, b) =>
+        val futures = targets.map { (f, cond) =>
           Future {
             val t0 = System.nanoTime()
-            val cond = Cond(b, true)
+            val b = cond.branch
             val targetFunc = cfg.funcOf(b)
             val candidates =
               try {
@@ -146,7 +156,7 @@ class BuiltinBranchTest extends ESMetaTest {
                 try {
                   val interp = cov.run(cand.js)
                   interp.touchedCondViews.keys.exists { cv =>
-                    cv.cond.branch.id == b.id && cv.cond.cond == true
+                    cv.cond.branch.id == b.id && cv.cond.cond == cond.cond
                   }
                 } catch { case _: Throwable => false }
               }
@@ -157,6 +167,7 @@ class BuiltinBranchTest extends ESMetaTest {
                     targetFunc.name,
                     s"logs/cfg/func/${targetFunc.normalizedName}.cfg",
                     b.id,
+                    cond.cond,
                     "ok",
                     Some(js.js),
                     elapsed,
@@ -194,7 +205,8 @@ class BuiltinBranchTest extends ESMetaTest {
                           try {
                             val interp = cov.run(cand.js)
                             interp.touchedCondViews.keys.exists { cv =>
-                              cv.cond.branch.id == b.id && cv.cond.cond == true
+                              cv.cond.branch.id == b.id &&
+                              cv.cond.cond == cond.cond
                             }
                           } catch { case _: Throwable => false }
                         }
@@ -209,6 +221,7 @@ class BuiltinBranchTest extends ESMetaTest {
                         targetFunc.name,
                         s"logs/cfg/func/${targetFunc.normalizedName}.cfg",
                         b.id,
+                        cond.cond,
                         "ok",
                         Some(js.js),
                         totalElapsed,
@@ -223,6 +236,7 @@ class BuiltinBranchTest extends ESMetaTest {
                         targetFunc.name,
                         s"logs/cfg/func/${targetFunc.normalizedName}.cfg",
                         b.id,
+                        cond.cond,
                         "miss",
                         Some(cand.js),
                         totalElapsed,
@@ -285,6 +299,7 @@ class BuiltinBranchTest extends ESMetaTest {
                 targetFunc.name,
                 s"logs/cfg/func/${targetFunc.normalizedName}.cfg",
                 b.id,
+                cond.cond,
                 "unsolved",
                 None,
                 elapsed,
@@ -306,7 +321,8 @@ class BuiltinBranchTest extends ESMetaTest {
       val verified = verifiedResults.size
       val verifyFailed = missedResults.size
       val timings =
-        (verifiedResults ++ missedResults).map(r => (r.fname, r.bid, r.elapsed))
+        (verifiedResults ++ missedResults)
+          .map(r => (r.fname, r.bid, r.side, r.elapsed))
       val reasons =
         unsolvedResults.groupMapReduce(_.reason)(_ => 1)(_ + _)
       val blockingAoFreq =
@@ -314,17 +330,20 @@ class BuiltinBranchTest extends ESMetaTest {
 
       for (r <- missedResults)
         println(
-          f"  [MISS] ${r.fname} Branch[${r.bid}]:T" +
+          f"  [MISS] ${r.fname} Branch[${r.bid}]:${sideString(r.side)}" +
           f" (${r.elapsed / 1000.0}%.0f us)",
         )
 
       // timing summary
       if (timings.nonEmpty) {
         println(s"\n  Top 10 slowest:")
-        for ((name, bid, ns) <- timings.sortBy(-_._3).take(10))
-          println(f"    ${ns / 1_000_000.0}%8.2f ms  $name Branch[$bid]")
-        val totalMs = timings.map(_._3).sum / 1_000_000.0
-        val avgUs = timings.map(_._3).sum / timings.size / 1_000.0
+        for ((name, bid, side, ns) <- timings.sortBy(-_._4).take(10))
+          println(
+            f"    ${ns / 1_000_000.0}%8.2f ms  " +
+            s"$name Branch[$bid]:${sideString(side)}",
+          )
+        val totalMs = timings.map(_._4).sum / 1_000_000.0
+        val avgUs = timings.map(_._4).sum / timings.size / 1_000.0
         println(f"\n  Solve time: $totalMs%.1f ms total, $avgUs%.1f us avg")
       }
 
@@ -382,7 +401,9 @@ class BuiltinBranchTest extends ESMetaTest {
 
         def dumpSolved(r: BranchResult): Unit = {
           dumpFile.println(
-            s"=== ${r.fname} -> ${r.targetName} Branch[${r.bid}] === ${r.status.toUpperCase}",
+            s"=== ${r.fname} -> ${r.targetName} " +
+            s"Branch[${r.bid}]:${sideString(r.side)} " +
+            s"=== ${r.status.toUpperCase}",
           )
           dumpFile.println(s"  [cfg] ${r.targetCfg}")
           r.js.foreach(js => dumpFile.println(s"  [js] $js"))
@@ -400,7 +421,8 @@ class BuiltinBranchTest extends ESMetaTest {
         // dump unsolved cases
         for (r <- results if r.status == "unsolved") {
           dumpFile.println(
-            s"=== ${r.fname} -> ${r.targetName} Branch[${r.bid}] === ${r.reason}",
+            s"=== ${r.fname} -> ${r.targetName} " +
+            s"Branch[${r.bid}]:${sideString(r.side)} === ${r.reason}",
           )
           dumpFile.println(s"  [cfg] ${r.targetCfg}")
           r.simplified.foreach { fs =>
@@ -417,11 +439,13 @@ class BuiltinBranchTest extends ESMetaTest {
       println(s"\n  Full dump written to solve-dump.log")
 
       val total = targets.size
+      val targetBranches = targetBranchEntries.size
       val missRate = if (solved == 0) 0.0 else verifyFailed * 100.0 / solved
       println(
         s"\n  Builtin functions:  ${builtins.size} (${allBuiltins.size - builtins.size} excluded)",
       )
-      println(f"  Target branches: $total")
+      println(f"  Target branches: $targetBranches")
+      println(f"  Target branch sides: $total")
       println(
         f"  Solve rate: $solved / $total (${solved * 100.0 / total}%.1f%%)",
       )
