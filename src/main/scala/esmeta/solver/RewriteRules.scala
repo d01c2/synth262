@@ -10,88 +10,127 @@ object RewriteRules {
   def rewriteFormula(f: Formula)(using CFG): List[Formula] =
     rewrite(stripCompletion(f)).map(normalizeExpr)
 
-  def aoModel(call: SymExpr): Goal = call match
-    case SEApp("ToNumber", List(x))  => toNumberModel(x, call)
-    case SEApp("ToBoolean", List(x)) => toBooleanModel(x, call)
-    case SEApp("ToObject", List(x))  => toObjectModel(x, call)
-    case SEApp("ToBigInt", List(x))  => toBigIntModel(x, call)
-    case SEApp("ToString", List(x))  => toStringModel(x, call)
-    case SEApp("RequireObjectCoercible", List(x)) =>
+  def aoSummary(call: SymExpr): AOSummary =
+    AOSummary(call, aoModel(call).flatMap(AOCase.fromFormula))
+
+  def aoModel(call: SymExpr): List[Formula] = call match
+    case SECall("ToNumber", List(x))  => toNumberModel(x, call)
+    case SECall("ToBoolean", List(x)) => toBooleanModel(x, call)
+    case SECall("ToObject", List(x))  => toObjectModel(x, call)
+    case SECall("ToBigInt", List(x))  => toBigIntModel(x, call)
+    case SECall("ToString", List(x))  => toStringModel(x, call)
+    case SECall("RequireObjectCoercible", List(x)) =>
       requireObjectCoercibleModel(x, call)
-    case SEApp("ThisSymbolValue", List(x)) =>
+    case SECall("ThisSymbolValue", List(x)) =>
       thisValueModel(x, call, SymbolT, "SymbolData")
-    case SEApp("ThisNumberValue", List(x)) =>
+    case SECall("ThisNumberValue", List(x)) =>
       thisValueModel(x, call, NumberT, "NumberData")
-    case SEApp("ThisBigIntValue", List(x)) =>
+    case SECall("ThisBigIntValue", List(x)) =>
       thisValueModel(x, call, BigIntT, "BigIntData")
-    case SEApp("ThisStringValue", List(x)) =>
+    case SECall("ThisStringValue", List(x)) =>
       thisValueModel(x, call, StrT, "StringData")
-    case SEApp("ThisBooleanValue", List(x)) =>
+    case SECall("ThisBooleanValue", List(x)) =>
       thisValueModel(x, call, BoolT, "BooleanData")
-    case SEApp("IsArray", List(x))         => isArrayModel(x, call)
-    case SEApp("IsCallable", List(x))      => isCallableModel(x, call)
-    case SEApp("IsConstructor", List(x))   => isConstructorModel(x, call)
-    case SEApp("IsRegExp", List(x))        => isRegExpModel(x, call)
-    case SEApp("CanBeHeldWeakly", List(x)) => canBeHeldWeaklyModel(x, call)
-    case SEApp("RequireInternalSlot", List(x, slot)) =>
+    case SECall("IsArray", List(x))         => isArrayModel(x, call)
+    case SECall("IsCallable", List(x))      => isCallableModel(x, call)
+    case SECall("IsConstructor", List(x))   => isConstructorModel(x, call)
+    case SECall("IsRegExp", List(x))        => isRegExpModel(x, call)
+    case SECall("CanBeHeldWeakly", List(x)) => canBeHeldWeaklyModel(x, call)
+    case SECall("RequireInternalSlot", List(x, slot)) =>
       requireInternalSlotModel(x, slot, call)
-    case SEApp("ValidateNonRevokedProxy", List(proxy)) =>
+    case SECall("ValidateNonRevokedProxy", List(proxy)) =>
       validateNonRevokedProxyModel(proxy, call)
-    case SEApp("OrdinaryCreateFromConstructor", List(ctor, _*)) =>
+    case SECall("OrdinaryCreateFromConstructor", List(ctor, _*)) =>
       ordinaryCreateFromConstructorModel(ctor, call)
-    case SEApp("InstallErrorCause", List(_, options)) =>
+    case SECall("InstallErrorCause", List(_, options)) =>
       installErrorCauseModel(options, call)
-    case SEApp("ValidateTypedArray", List(o, _)) =>
+    case SECall("ValidateTypedArray", List(o, _)) =>
       validateTypedArrayModel(o, call)
-    case SEApp("ToPrimitive", List(x, _*)) => toPrimitiveModel(x, call)
-    case SEApp("IsTypedArrayOutOfBounds", List(_)) =>
+    case SECall("ToPrimitive", List(x, _*)) => toPrimitiveModel(x, call)
+    case SECall("IsTypedArrayOutOfBounds", List(_)) =>
       isTypedArrayOutOfBoundsModel(call)
-    case SEApp("SameValue", List(x, y))     => sameValueModel(x, y, call)
-    case SEApp("SameValueZero", List(x, y)) => sameValueModel(x, y, call)
-    case SEApp("ToIntegerOrInfinity", List(x)) =>
+    case SECall("SameValue", List(x, y))     => sameValueModel(x, y, call)
+    case SECall("SameValueZero", List(x, y)) => sameValueModel(x, y, call)
+    case SECall("ToIntegerOrInfinity", List(x)) =>
       toIntegerOrInfinityModel(x, call)
-    case SEApp("ToLength", List(x))          => toLengthModel(x, call)
-    case SEApp("ToIndex", List(x))           => toIndexModel(x, call)
-    case SEApp("ToPropertyKey", List(x))     => toPropertyKeyModel(x, call)
-    case SEApp("LengthOfArrayLike", List(x)) => lengthOfArrayLikeModel(x, call)
-    case SEApp("GetMethod", List(v, p))      => getMethodModel(v, p, call)
-    case _                                   => Nil
+    case SECall("ToLength", List(x))          => toLengthModel(x, call)
+    case SECall("ToIndex", List(x))           => toIndexModel(x, call)
+    case SECall("ToUint32", List(x))          => toUint32Model(x, call)
+    case SECall("ToPropertyKey", List(x))     => toPropertyKeyModel(x, call)
+    case SECall("LengthOfArrayLike", List(x)) => lengthOfArrayLikeModel(x, call)
+    case SECall("CreateDataProperty", List(o, p, v)) =>
+      createDataPropertyModel(o, p, v, call)
+    case SECall("CreateDataPropertyOrThrow", List(o, p, v)) =>
+      createDataPropertyOrThrowModel(o, p, v, call)
+    case SECall("GetMethod", List(v, p)) => getMethodModel(v, p, call)
+    case SECall("GetIterator", List(obj, kind)) =>
+      getIteratorModel(obj, kind, call)
+    case SECall("GetIteratorFromMethod", List(obj, method)) =>
+      getIteratorFromMethodModel(obj, method, call)
+    case SECall("GetIteratorDirect", List(obj)) =>
+      getIteratorDirectModel(obj, call)
+    case SECall("IteratorNext", iterRecord :: args) =>
+      iteratorNextModel(iterRecord, args, call)
+    case SECall("IteratorComplete", List(result)) =>
+      iteratorCompleteModel(result, call)
+    case SECall("IteratorValue", List(result)) =>
+      iteratorValueModel(result, call)
+    case SECall("IteratorStep", List(iterRecord)) =>
+      iteratorStepModel(iterRecord, call)
+    case SECall("IteratorStepValue", List(iterRecord)) =>
+      iteratorStepValueModel(iterRecord, call)
+    case SECall("IteratorClose", List(iterRecord, completion)) =>
+      iteratorCloseModel(iterRecord, completion, call)
+    case _ => Nil
 
   def isModeledCall(expr: SymExpr): Boolean = expr match
-    case SEApp("ToNumber", List(_))                => true
-    case SEApp("ToBoolean", List(_))               => true
-    case SEApp("ToObject", List(_))                => true
-    case SEApp("ToBigInt", List(_))                => true
-    case SEApp("ToString", List(_))                => true
-    case SEApp("RequireObjectCoercible", List(_))  => true
-    case SEApp("ThisSymbolValue", List(_))         => true
-    case SEApp("ThisNumberValue", List(_))         => true
-    case SEApp("ThisBigIntValue", List(_))         => true
-    case SEApp("ThisStringValue", List(_))         => true
-    case SEApp("ThisBooleanValue", List(_))        => true
-    case SEApp("IsArray", List(_))                 => true
-    case SEApp("IsCallable", List(_))              => true
-    case SEApp("IsConstructor", List(_))           => true
-    case SEApp("IsRegExp", List(_))                => true
-    case SEApp("CanBeHeldWeakly", List(_))         => true
-    case SEApp("RequireInternalSlot", List(_, _))  => true
-    case SEApp("ValidateNonRevokedProxy", List(_)) => true
-    case SEApp("OrdinaryCreateFromConstructor", _) => true
-    case SEApp("InstallErrorCause", List(_, _))    => true
-    case SEApp("ValidateTypedArray", List(_, _))   => true
-    case SEApp("ToPrimitive", _)                   => true
-    case SEApp("IsTypedArrayOutOfBounds", List(_)) => true
-    case SEApp("SameValue", List(_, _))            => true
-    case SEApp("SameValueZero", List(_, _))        => true
-    case SEApp("ToIntegerOrInfinity", List(_))     => true
-    case SEApp("ToLength", List(_))                => true
-    case SEApp("ToIndex", List(_))                 => true
-    case SEApp("ToPropertyKey", List(_))           => true
-    case SEApp("LengthOfArrayLike", List(_))       => true
-    case SEApp("GetMethod", List(_, _))            => true
-    case _                                         => false
+    case SECall("ToNumber", List(_))                 => true
+    case SECall("ToBoolean", List(_))                => true
+    case SECall("ToObject", List(_))                 => true
+    case SECall("ToBigInt", List(_))                 => true
+    case SECall("ToString", List(_))                 => true
+    case SECall("RequireObjectCoercible", List(_))   => true
+    case SECall("ThisSymbolValue", List(_))          => true
+    case SECall("ThisNumberValue", List(_))          => true
+    case SECall("ThisBigIntValue", List(_))          => true
+    case SECall("ThisStringValue", List(_))          => true
+    case SECall("ThisBooleanValue", List(_))         => true
+    case SECall("IsArray", List(_))                  => true
+    case SECall("IsCallable", List(_))               => true
+    case SECall("IsConstructor", List(_))            => true
+    case SECall("IsRegExp", List(_))                 => true
+    case SECall("CanBeHeldWeakly", List(_))          => true
+    case SECall("RequireInternalSlot", List(_, _))   => true
+    case SECall("ValidateNonRevokedProxy", List(_))  => true
+    case SECall("OrdinaryCreateFromConstructor", _)  => true
+    case SECall("InstallErrorCause", List(_, _))     => true
+    case SECall("ValidateTypedArray", List(_, _))    => true
+    case SECall("ToPrimitive", _)                    => true
+    case SECall("IsTypedArrayOutOfBounds", List(_))  => true
+    case SECall("SameValue", List(_, _))             => true
+    case SECall("SameValueZero", List(_, _))         => true
+    case SECall("ToIntegerOrInfinity", List(_))      => true
+    case SECall("ToLength", List(_))                 => true
+    case SECall("ToIndex", List(_))                  => true
+    case SECall("ToUint32", List(_))                 => true
+    case SECall("ToPropertyKey", List(_))            => true
+    case SECall("LengthOfArrayLike", List(_))        => true
+    case SECall("CreateDataProperty", List(_, _, _)) => true
+    case SECall("CreateDataPropertyOrThrow", List(_, _, _)) =>
+      true
+    case SECall("GetMethod", List(_, _))             => true
+    case SECall("GetIterator", List(_, _))           => true
+    case SECall("GetIteratorFromMethod", List(_, _)) => true
+    case SECall("GetIteratorDirect", List(_))        => true
+    case SECall("IteratorNext", _ :: _)              => true
+    case SECall("IteratorComplete", List(_))         => true
+    case SECall("IteratorValue", List(_))            => true
+    case SECall("IteratorStep", List(_))             => true
+    case SECall("IteratorStepValue", List(_))        => true
+    case SECall("IteratorClose", List(_, _))         => true
+    case _                                           => false
 
-  private def toBooleanModel(x: SymExpr, ret: SymExpr): Goal =
+  private def toBooleanModel(x: SymExpr, ret: SymExpr): List[Formula] =
     val t = SELit(EBool(true))
     val f = SELit(EBool(false))
     // return values cannot be inferred from detailed-types, so checked CFG
@@ -133,7 +172,7 @@ object RewriteRules {
       FImply(List(FTypeCheck(x, ObjectT)), List(FEq(ret, t))),
     )
 
-  private def toObjectModel(x: SymExpr, ret: SymExpr): Goal =
+  private def toObjectModel(x: SymExpr, ret: SymExpr): List[Formula] =
     val abrupt = List(FTypeCheck(ret, ThrowT))
     val normal = List(FTypeCheck(ret, NormalT))
     // Wrapper cases return new objects whose internal fields (e.g., Prototype,
@@ -160,7 +199,7 @@ object RewriteRules {
     ret: SymExpr,
     primTy: ValueTy,
     slot: String,
-  ): Goal =
+  ): List[Formula] =
     List(
       FImply(
         List(FTypeCheck(x, primTy)),
@@ -176,7 +215,7 @@ object RewriteRules {
       ),
     )
 
-  private def isCallableModel(x: SymExpr, ret: SymExpr): Goal =
+  private def isCallableModel(x: SymExpr, ret: SymExpr): List[Formula] =
     val t = SELit(EBool(true))
     val f = SELit(EBool(false))
     val hasCall = FExists(x, SELit(EStr("Call")))
@@ -188,7 +227,7 @@ object RewriteRules {
       FImply(List(FTypeCheck(x, ObjectT), FNot(hasCall)), List(FEq(ret, f))),
     )
 
-  private def isConstructorModel(x: SymExpr, ret: SymExpr): Goal =
+  private def isConstructorModel(x: SymExpr, ret: SymExpr): List[Formula] =
     val t = SELit(EBool(true))
     val f = SELit(EBool(false))
     val hasConstruct = FExists(x, SELit(EStr("Construct")))
@@ -203,7 +242,7 @@ object RewriteRules {
       ),
     )
 
-  private def canBeHeldWeaklyModel(x: SymExpr, ret: SymExpr): Goal =
+  private def canBeHeldWeaklyModel(x: SymExpr, ret: SymExpr): List[Formula] =
     val t = SELit(EBool(true))
     val f = SELit(EBool(false))
     // 3 return nodes; dropped 1 inter-proc (5738 via KeyForSymbol).
@@ -219,12 +258,12 @@ object RewriteRules {
       ),
     )
 
-  private def isRegExpModel(x: SymExpr, ret: SymExpr): Goal =
-    def normal(v: SymExpr): Goal =
+  private def isRegExpModel(x: SymExpr, ret: SymExpr): List[Formula] =
+    def normal(v: SymExpr): List[Formula] =
       List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
     val t = SELit(EBool(true))
     val f = SELit(EBool(false))
-    val symMatch = SEProj(SEGlobal("SYMBOL"), SELit(EStr("match")))
+    val symMatch = SEField(SEGlobal("SYMBOL"), SELit(EStr("match")))
     // 6 return nodes; dropped 1 inter-proc (1532 via ToBoolean);
     // 1 analysis dropped (1530).
     List(
@@ -232,7 +271,7 @@ object RewriteRules {
       FImply(
         List(
           FTypeCheck(x, ObjectT),
-          FTypeCheck(SEApp("Get", List(x, symMatch)), AbruptT),
+          FTypeCheck(SECall("Get", List(x, symMatch)), AbruptT),
         ),
         List(FTypeCheck(ret, ThrowT)),
       ),
@@ -250,8 +289,8 @@ object RewriteRules {
       ),
     )
 
-  private def isArrayModel(x: SymExpr, ret: SymExpr): Goal =
-    def normal(v: SymExpr): Goal =
+  private def isArrayModel(x: SymExpr, ret: SymExpr): List[Formula] =
+    def normal(v: SymExpr): List[Formula] =
       List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
     val t = SELit(EBool(true))
     val f = SELit(EBool(false))
@@ -275,7 +314,7 @@ object RewriteRules {
   private def requireObjectCoercibleModel(
     x: SymExpr,
     ret: SymExpr,
-  ): Goal =
+  ): List[Formula] =
     // 3 return nodes, all modeled.
     List(
       FImply(List(FTypeCheck(x, UndefT)), List(FTypeCheck(ret, ThrowT))),
@@ -286,8 +325,8 @@ object RewriteRules {
       ),
     )
 
-  private def toStringModel(x: SymExpr, ret: SymExpr): Goal =
-    def normal(v: SymExpr): Goal =
+  private def toStringModel(x: SymExpr, ret: SymExpr): List[Formula] =
+    def normal(v: SymExpr): List[Formula] =
       List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
     // Dropped inter-proc: Number::toString, BigInt::toString (IR ops);
     // 1 analysis dropped (1390) due to infeasible Completion check.
@@ -303,14 +342,14 @@ object RewriteRules {
       FImply(
         List(
           FTypeCheck(x, ObjectT),
-          FTypeCheck(SEApp("ToPrimitive", List(x)), AbruptT),
+          FTypeCheck(SECall("ToPrimitive", List(x)), AbruptT),
         ),
         List(FTypeCheck(ret, ThrowT)),
       ),
     )
 
-  private def toBigIntModel(x: SymExpr, ret: SymExpr): Goal =
-    def normal(v: SymExpr): Goal =
+  private def toBigIntModel(x: SymExpr, ret: SymExpr): List[Formula] =
+    def normal(v: SymExpr): List[Formula] =
       List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
     val abrupt = List(FTypeCheck(ret, ThrowT))
     // Dropped inter-proc: StringToBigInt (IR ops).
@@ -333,14 +372,14 @@ object RewriteRules {
       FImply(
         List(
           FTypeCheck(x, ObjectT),
-          FTypeCheck(SEApp("ToPrimitive", List(x)), AbruptT),
+          FTypeCheck(SECall("ToPrimitive", List(x)), AbruptT),
         ),
         abrupt,
       ),
     )
 
-  private def toNumberModel(x: SymExpr, ret: SymExpr): Goal =
-    def normal(v: SymExpr): Goal =
+  private def toNumberModel(x: SymExpr, ret: SymExpr): List[Formula] =
+    def normal(v: SymExpr): List[Formula] =
       List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
     // Dropped inter-proc: StringToNumber (IR ops).
     // Object case: ToPrimitive throw propagated; normal path depends on
@@ -360,7 +399,7 @@ object RewriteRules {
       FImply(
         List(
           FTypeCheck(x, ObjectT),
-          FTypeCheck(SEApp("ToPrimitive", List(x)), AbruptT),
+          FTypeCheck(SECall("ToPrimitive", List(x)), AbruptT),
         ),
         List(FTypeCheck(ret, ThrowT)),
       ),
@@ -371,7 +410,7 @@ object RewriteRules {
     x: SymExpr,
     slot: SymExpr,
     ret: SymExpr,
-  ): Goal =
+  ): List[Formula] =
     List(
       FImply(List(FNot(FTypeCheck(x, ObjectT))), List(FTypeCheck(ret, ThrowT))),
       FImply(
@@ -388,7 +427,7 @@ object RewriteRules {
   private def validateNonRevokedProxyModel(
     proxy: SymExpr,
     ret: SymExpr,
-  ): Goal =
+  ): List[Formula] =
     val hasTarget = FExists(proxy, SELit(EStr("ProxyTarget")))
     List(
       FImply(List(FNot(hasTarget)), List(FTypeCheck(ret, ThrowT))),
@@ -400,8 +439,8 @@ object RewriteRules {
   private def ordinaryCreateFromConstructorModel(
     ctor: SymExpr,
     ret: SymExpr,
-  ): Goal =
-    val getProto = SEApp("Get", List(ctor, SELit(EStr("prototype"))))
+  ): List[Formula] =
+    val getProto = SECall("Get", List(ctor, SELit(EStr("prototype"))))
     List(
       FImply(
         List(FTypeCheck(getProto, AbruptT)),
@@ -419,11 +458,11 @@ object RewriteRules {
   private def installErrorCauseModel(
     options: SymExpr,
     ret: SymExpr,
-  ): Goal =
+  ): List[Formula] =
     val hasCause =
-      SEApp("HasProperty", List(options, SELit(EStr("cause"))))
+      SECall("HasProperty", List(options, SELit(EStr("cause"))))
     val getCause =
-      SEApp("Get", List(options, SELit(EStr("cause"))))
+      SECall("Get", List(options, SELit(EStr("cause"))))
     val t = SELit(EBool(true))
     val f = SELit(EBool(false))
     List(
@@ -468,9 +507,9 @@ object RewriteRules {
   // the solver's summary-closure pass.
   // 4 return nodes: 1 throw (RequireInternalSlot abrupt), 1 throw
   // (IsTypedArrayOutOfBounds true), 1 normal, 1 structural.
-  private def validateTypedArrayModel(o: SymExpr, ret: SymExpr): Goal =
+  private def validateTypedArrayModel(o: SymExpr, ret: SymExpr): List[Formula] =
     val reqSlot =
-      SEApp("RequireInternalSlot", List(o, SELit(EStr("TypedArrayName"))))
+      SECall("RequireInternalSlot", List(o, SELit(EStr("TypedArrayName"))))
     List(
       FImply(
         List(FTypeCheck(reqSlot, AbruptT)),
@@ -489,10 +528,10 @@ object RewriteRules {
   // 9 return nodes; modeled 2, dropped 7 inter-proc (Call to exotic
   // @@toPrimitive, OrdinaryToPrimitive loop+Get+IsCallable+Call chain).
   // Get is an internal method wrapper understood by reify.
-  private def toPrimitiveModel(x: SymExpr, ret: SymExpr): Goal =
+  private def toPrimitiveModel(x: SymExpr, ret: SymExpr): List[Formula] =
     val symToPrimitive =
-      SEProj(SEGlobal("SYMBOL"), SELit(EStr("toPrimitive")))
-    val getExotic = SEApp("GetMethod", List(x, symToPrimitive))
+      SEField(SEGlobal("SYMBOL"), SELit(EStr("toPrimitive")))
+    val getExotic = SECall("GetMethod", List(x, symToPrimitive))
     List(
       FImply(
         List(FNot(FTypeCheck(x, ObjectT))),
@@ -507,14 +546,17 @@ object RewriteRules {
   // 3 return nodes; conditions (buffer detachment, byte offsets) are not
   // expressible in this formula system. The operation returns Boolean
   // directly, but the exact value is intentionally left unconstrained.
-  private def isTypedArrayOutOfBoundsModel(ret: SymExpr): Goal =
+  private def isTypedArrayOutOfBoundsModel(ret: SymExpr): List[Formula] =
     List(FImply(Nil, List(FTypeCheck(ret, BoolT))))
 
-  // 6 return nodes: 1 throw, 4 normal, 1 structural.
-  private def toIntegerOrInfinityModel(x: SymExpr, ret: SymExpr): Goal =
-    val toNumber = SEApp("ToNumber", List(x))
+  // 6 return nodes: 1 throw, 4 exact normal, 1 structural.
+  private def toIntegerOrInfinityModel(
+    x: SymExpr,
+    ret: SymExpr,
+  ): List[Formula] =
+    val toNumber = SECall("ToNumber", List(x))
     val numVal = SEField(toNumber, "Value")
-    def normal(v: SymExpr): Goal =
+    def normal(v: SymExpr): List[Formula] =
       List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
     List(
       // node 1187: ToNumber abrupt
@@ -563,9 +605,12 @@ object RewriteRules {
       ),
     )
 
-  // 4 return nodes: 1 throw, 2 normal, 1 structural.
-  private def toLengthModel(x: SymExpr, ret: SymExpr): Goal =
-    val toIntOrInf = SEApp("ToIntegerOrInfinity", List(x))
+  private val MaxSafeLength: SymExpr =
+    SELit(EMath(BigDecimal("9007199254740991")))
+
+  // 4 return nodes: 1 throw, len <= 0, 2^53-1 < len, and general normal.
+  private def toLengthModel(x: SymExpr, ret: SymExpr): List[Formula] =
+    val toIntOrInf = SECall("ToIntegerOrInfinity", List(x))
     val innerVal = SEField(toIntOrInf, "Value")
     List(
       // node 1449: ToIntegerOrInfinity abrupt
@@ -584,9 +629,21 @@ object RewriteRules {
           FEq(SEField(ret, "Value"), SELit(ENumber(0.0))),
         ),
       ),
-      // node 1459: general → Normal (min(len, 2^53-1), clamp not expressible)
       FImply(
-        List(FTypeCheck(toIntOrInf, NormalT), FLt(SELit(EMath(0)), innerVal)),
+        List(
+          FTypeCheck(toIntOrInf, NormalT),
+          FLt(MaxSafeLength, innerVal),
+        ),
+        List(
+          FTypeCheck(ret, NormalT),
+          FEq(SEField(ret, "Value"), MaxSafeLength),
+        ),
+      ),
+      FImply(
+        List(
+          FTypeCheck(toIntOrInf, NormalT),
+          FLt(SELit(EMath(0)), innerVal),
+        ),
         List(FTypeCheck(ret, NormalT)),
       ),
     )
@@ -595,8 +652,8 @@ object RewriteRules {
   // (RangeError for out-of-range), 1 normal, 1 structural.
   // Normal case: ret.Value = toIntOrInf.Value (no value transformation,
   // only range check — value is identity when in range).
-  private def toIndexModel(x: SymExpr, ret: SymExpr): Goal =
-    val toIntOrInf = SEApp("ToIntegerOrInfinity", List(x))
+  private def toIndexModel(x: SymExpr, ret: SymExpr): List[Formula] =
+    val toIntOrInf = SECall("ToIntegerOrInfinity", List(x))
     List(
       FImply(
         List(FTypeCheck(toIntOrInf, AbruptT)),
@@ -615,10 +672,57 @@ object RewriteRules {
       ),
     )
 
+  // 7 modeled cases: 1 throw, 5 exact zero normal cases, 1 structural normal.
+  private def toUint32Model(x: SymExpr, ret: SymExpr): List[Formula] =
+    val toNumber = SECall("ToNumber", List(x))
+    val numVal = SEField(toNumber, "Value")
+    val zero = SELit(ENumber(0.0))
+    val normalZero =
+      List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), zero))
+    List(
+      FImply(
+        List(FTypeCheck(toNumber, AbruptT)),
+        List(FTypeCheck(ret, ThrowT)),
+      ),
+      FImply(
+        List(
+          FTypeCheck(toNumber, NormalT),
+          FEq(numVal, SELit(ENumber(Double.NaN))),
+        ),
+        normalZero,
+      ),
+      FImply(
+        List(
+          FTypeCheck(toNumber, NormalT),
+          FEq(numVal, SELit(ENumber(Double.PositiveInfinity))),
+        ),
+        normalZero,
+      ),
+      FImply(
+        List(
+          FTypeCheck(toNumber, NormalT),
+          FEq(numVal, SELit(ENumber(Double.NegativeInfinity))),
+        ),
+        normalZero,
+      ),
+      FImply(
+        List(FTypeCheck(toNumber, NormalT), FEq(numVal, SELit(ENumber(0.0)))),
+        normalZero,
+      ),
+      FImply(
+        List(FTypeCheck(toNumber, NormalT), FEq(numVal, SELit(ENumber(-0.0)))),
+        normalZero,
+      ),
+      FImply(
+        List(FTypeCheck(toNumber, NormalT)),
+        List(FTypeCheck(ret, NormalT)),
+      ),
+    )
+
   // 4 return nodes: 1 throw (ToPrimitive abrupt), 1 normal (Symbol
   // identity), 1 normal (ToString), 1 structural.
-  private def toPropertyKeyModel(x: SymExpr, ret: SymExpr): Goal =
-    val toPrim = SEApp("ToPrimitive", List(x, SELit(EEnum("string"))))
+  private def toPropertyKeyModel(x: SymExpr, ret: SymExpr): List[Formula] =
+    val toPrim = SECall("ToPrimitive", List(x, SELit(EEnum("string"))))
     val primVal = SEField(toPrim, "Value")
     List(
       // node 1436: ToPrimitive abrupt
@@ -635,7 +739,7 @@ object RewriteRules {
           FTypeCheck(ret, NormalT),
           FEq(
             SEField(ret, "Value"),
-            SEField(SEApp("ToString", List(primVal)), "Value"),
+            SEField(SECall("ToString", List(primVal)), "Value"),
           ),
         ),
       ),
@@ -643,9 +747,12 @@ object RewriteRules {
 
   // 4 return nodes: 1 throw (Get abrupt), 1 throw (ToLength abrupt),
   // 1 normal, 1 structural.
-  private def lengthOfArrayLikeModel(obj: SymExpr, ret: SymExpr): Goal =
-    val getLength = SEApp("Get", List(obj, SELit(EStr("length"))))
-    val toLength = SEApp("ToLength", List(SEField(getLength, "Value")))
+  private def lengthOfArrayLikeModel(
+    obj: SymExpr,
+    ret: SymExpr,
+  ): List[Formula] =
+    val getLength = SECall("Get", List(obj, SELit(EStr("length"))))
+    val toLength = SECall("ToLength", List(SEField(getLength, "Value")))
     List(
       // node 2020: Get abrupt
       FImply(
@@ -667,11 +774,68 @@ object RewriteRules {
       ),
     )
 
+  private def createDataPropertyModel(
+    o: SymExpr,
+    p: SymExpr,
+    v: SymExpr,
+    ret: SymExpr,
+  ): List[Formula] =
+    val desc = SERecord(
+      "PropertyDescriptor",
+      Map(
+        "Value" -> v,
+        "Writable" -> SELit(EBool(true)),
+        "Enumerable" -> SELit(EBool(true)),
+        "Configurable" -> SELit(EBool(true)),
+      ),
+    )
+    val define = SECall("DefineOwnProperty", List(o, o, p, desc))
+    List(
+      FImply(
+        List(FTypeCheck(define, AbruptT)),
+        List(FTypeCheck(ret, ThrowT)),
+      ),
+      FImply(
+        List(FTypeCheck(define, NormalT)),
+        List(
+          FTypeCheck(ret, NormalT),
+          FEq(SEField(ret, "Value"), SEField(define, "Value")),
+        ),
+      ),
+    )
+
+  private def createDataPropertyOrThrowModel(
+    o: SymExpr,
+    p: SymExpr,
+    v: SymExpr,
+    ret: SymExpr,
+  ): List[Formula] =
+    val create = SECall("CreateDataProperty", List(o, p, v))
+    val success = SEField(create, "Value")
+    List(
+      FImply(
+        List(FTypeCheck(create, AbruptT)),
+        List(FTypeCheck(ret, ThrowT)),
+      ),
+      FImply(
+        List(FTypeCheck(create, NormalT), FEq(success, SELit(EBool(false)))),
+        List(FTypeCheck(ret, ThrowT)),
+      ),
+      FImply(
+        List(FTypeCheck(create, NormalT), FEq(success, SELit(EBool(true)))),
+        List(FTypeCheck(ret, NormalT)),
+      ),
+    )
+
   // 5 return nodes: 1 throw (GetV abrupt), 1 normal (undefined/null →
   // undefined), 1 throw (not callable), 1 normal (callable func),
   // 1 structural.
-  private def getMethodModel(v: SymExpr, p: SymExpr, ret: SymExpr): Goal =
-    val getResult = SEApp("Get", List(v, p))
+  private def getMethodModel(
+    v: SymExpr,
+    p: SymExpr,
+    ret: SymExpr,
+  ): List[Formula] =
+    val getResult = SECall("Get", List(v, p))
     val getVal = SEField(getResult, "Value")
     List(
       // node 1870: GetV abrupt
@@ -695,7 +859,7 @@ object RewriteRules {
         List(
           FTypeCheck(getResult, NormalT),
           FNot(FTypeCheck(getVal, UndefT || NullT)),
-          FEq(SEApp("IsCallable", List(getVal)), SELit(EBool(false))),
+          FEq(SECall("IsCallable", List(getVal)), SELit(EBool(false))),
         ),
         List(FTypeCheck(ret, ThrowT)),
       ),
@@ -703,9 +867,466 @@ object RewriteRules {
       FImply(
         List(
           FTypeCheck(getResult, NormalT),
-          FEq(SEApp("IsCallable", List(getVal)), SELit(EBool(true))),
+          FEq(SECall("IsCallable", List(getVal)), SELit(EBool(true))),
         ),
         List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), getVal)),
+      ),
+    )
+
+  private def normalReturn(ret: SymExpr): List[Formula] =
+    List(FTypeCheck(ret, NormalT))
+
+  private def normalReturn(ret: SymExpr, value: SymExpr): List[Formula] =
+    List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), value))
+
+  private def throwReturn(ret: SymExpr): List[Formula] =
+    List(FTypeCheck(ret, ThrowT))
+
+  private def prop(name: String): SymExpr = SELit(EStr(name))
+
+  private def enumLit(name: String): SymExpr = SELit(EEnum(name))
+
+  private def bool(value: Boolean): SymExpr = SELit(EBool(value))
+
+  private def symbol(name: String): SymExpr =
+    SEField(SEGlobal("SYMBOL"), prop(name))
+
+  private def getIteratorModel(
+    obj: SymExpr,
+    kind: SymExpr,
+    ret: SymExpr,
+  ): List[Formula] =
+    val asyncKind = enumLit("async")
+    val syncKind = enumLit("sync")
+    val getAsyncMethod = SECall("GetMethod", List(obj, symbol("asyncIterator")))
+    val asyncMethod = SEField(getAsyncMethod, "Value")
+    val getSyncMethod = SECall("GetMethod", List(obj, symbol("iterator")))
+    val syncMethod = SEField(getSyncMethod, "Value")
+    val fromAsync = SECall("GetIteratorFromMethod", List(obj, asyncMethod))
+    val fromSync = SECall("GetIteratorFromMethod", List(obj, syncMethod))
+    val createAsync =
+      SECall("CreateAsyncFromSyncIterator", List(SEField(fromSync, "Value")))
+    List(
+      FImply(
+        List(FEq(kind, asyncKind), FTypeCheck(getAsyncMethod, AbruptT)),
+        throwReturn(ret),
+      ),
+      FImply(
+        List(
+          FEq(kind, asyncKind),
+          FTypeCheck(getAsyncMethod, NormalT),
+          FEq(asyncMethod, SELit(EUndef())),
+          FTypeCheck(getSyncMethod, AbruptT),
+        ),
+        throwReturn(ret),
+      ),
+      FImply(
+        List(
+          FEq(kind, asyncKind),
+          FTypeCheck(getAsyncMethod, NormalT),
+          FEq(asyncMethod, SELit(EUndef())),
+          FTypeCheck(getSyncMethod, NormalT),
+          FEq(syncMethod, SELit(EUndef())),
+        ),
+        throwReturn(ret),
+      ),
+      FImply(
+        List(
+          FEq(kind, asyncKind),
+          FTypeCheck(getAsyncMethod, NormalT),
+          FEq(asyncMethod, SELit(EUndef())),
+          FTypeCheck(getSyncMethod, NormalT),
+          FNot(FEq(syncMethod, SELit(EUndef()))),
+          FTypeCheck(fromSync, AbruptT),
+        ),
+        throwReturn(ret),
+      ),
+      FImply(
+        List(
+          FEq(kind, asyncKind),
+          FTypeCheck(getAsyncMethod, NormalT),
+          FEq(asyncMethod, SELit(EUndef())),
+          FTypeCheck(getSyncMethod, NormalT),
+          FNot(FEq(syncMethod, SELit(EUndef()))),
+          FTypeCheck(fromSync, NormalT),
+          FTypeCheck(createAsync, AbruptT),
+        ),
+        throwReturn(ret),
+      ),
+      FImply(
+        List(
+          FEq(kind, asyncKind),
+          FTypeCheck(getAsyncMethod, NormalT),
+          FEq(asyncMethod, SELit(EUndef())),
+          FTypeCheck(getSyncMethod, NormalT),
+          FNot(FEq(syncMethod, SELit(EUndef()))),
+          FTypeCheck(fromSync, NormalT),
+          FTypeCheck(createAsync, RecordT("IteratorRecord")),
+        ),
+        normalReturn(ret, createAsync),
+      ),
+      FImply(
+        List(FEq(kind, syncKind), FTypeCheck(getSyncMethod, AbruptT)),
+        throwReturn(ret),
+      ),
+      FImply(
+        List(
+          FEq(kind, syncKind),
+          FTypeCheck(getSyncMethod, NormalT),
+          FEq(syncMethod, SELit(EUndef())),
+        ),
+        throwReturn(ret),
+      ),
+      FImply(
+        List(
+          FEq(kind, syncKind),
+          FTypeCheck(getSyncMethod, NormalT),
+          FNot(FEq(syncMethod, SELit(EUndef()))),
+          FTypeCheck(fromSync, AbruptT),
+        ),
+        throwReturn(ret),
+      ),
+      FImply(
+        List(
+          FEq(kind, syncKind),
+          FTypeCheck(getSyncMethod, NormalT),
+          FNot(FEq(syncMethod, SELit(EUndef()))),
+          FTypeCheck(fromSync, NormalT),
+        ),
+        normalReturn(ret, SEField(fromSync, "Value")),
+      ),
+      FImply(
+        List(
+          FEq(kind, asyncKind),
+          FTypeCheck(getAsyncMethod, NormalT),
+          FNot(FEq(asyncMethod, SELit(EUndef()))),
+          FTypeCheck(fromAsync, AbruptT),
+        ),
+        throwReturn(ret),
+      ),
+      FImply(
+        List(
+          FEq(kind, asyncKind),
+          FTypeCheck(getAsyncMethod, NormalT),
+          FNot(FEq(asyncMethod, SELit(EUndef()))),
+          FTypeCheck(fromAsync, NormalT),
+        ),
+        normalReturn(ret, SEField(fromAsync, "Value")),
+      ),
+    )
+
+  private def getIteratorFromMethodModel(
+    obj: SymExpr,
+    method: SymExpr,
+    ret: SymExpr,
+  ): List[Formula] =
+    val callResult = SECall("Call", List(method, obj))
+    val iterator = SEField(callResult, "Value")
+    val direct = SECall("GetIteratorDirect", List(iterator))
+    List(
+      FImply(
+        List(FTypeCheck(callResult, AbruptT)),
+        throwReturn(ret),
+      ),
+      FImply(
+        List(
+          FTypeCheck(callResult, NormalT),
+          FNot(FTypeCheck(iterator, ObjectT)),
+        ),
+        throwReturn(ret),
+      ),
+      FImply(
+        List(
+          FTypeCheck(callResult, NormalT),
+          FTypeCheck(iterator, ObjectT),
+          FTypeCheck(direct, AbruptT),
+        ),
+        throwReturn(ret),
+      ),
+      FImply(
+        List(
+          FTypeCheck(callResult, NormalT),
+          FTypeCheck(iterator, ObjectT),
+          FTypeCheck(direct, NormalT),
+        ),
+        normalReturn(ret, SEField(direct, "Value")),
+      ),
+    )
+
+  private def getIteratorDirectModel(
+    obj: SymExpr,
+    ret: SymExpr,
+  ): List[Formula] =
+    val getNext = SECall("Get", List(obj, prop("next")))
+    val nextMethod = SEField(getNext, "Value")
+    val record = SERecord(
+      "IteratorRecord",
+      Map(
+        "Iterator" -> obj,
+        "NextMethod" -> nextMethod,
+        "Done" -> bool(false),
+      ),
+    )
+    val retValue = SEField(ret, "Value")
+    List(
+      FImply(
+        List(FTypeCheck(obj, ObjectT), FTypeCheck(getNext, AbruptT)),
+        throwReturn(ret),
+      ),
+      FImply(
+        List(FTypeCheck(obj, ObjectT), FTypeCheck(getNext, NormalT)),
+        normalReturn(ret, record) ++ List(
+          FTypeCheck(retValue, RecordT("IteratorRecord")),
+          FEq(SEField(retValue, "Iterator"), obj),
+          FEq(SEField(retValue, "NextMethod"), nextMethod),
+          FEq(SEField(retValue, "Done"), bool(false)),
+        ),
+      ),
+    )
+
+  private def iteratorNextModel(
+    iterRecord: SymExpr,
+    args: List[SymExpr],
+    ret: SymExpr,
+  ): List[Formula] =
+    val result = iteratorNextResult(iterRecord, args)
+    val resultValue = SEField(result, "Value")
+    List(
+      FImply(
+        List(
+          FTypeCheck(iteratorRecordExpr(iterRecord), RecordT("IteratorRecord")),
+          FTypeCheck(result, AbruptT),
+        ),
+        throwReturn(ret),
+      ),
+      FImply(
+        List(
+          FTypeCheck(iteratorRecordExpr(iterRecord), RecordT("IteratorRecord")),
+          FTypeCheck(result, NormalT),
+          FNot(FTypeCheck(resultValue, ObjectT)),
+        ),
+        throwReturn(ret),
+      ),
+      FImply(
+        List(
+          FTypeCheck(iteratorRecordExpr(iterRecord), RecordT("IteratorRecord")),
+          FTypeCheck(result, NormalT),
+          FTypeCheck(resultValue, ObjectT),
+        ),
+        normalReturn(ret, resultValue),
+      ),
+    )
+
+  private def iteratorCompleteModel(
+    result: SymExpr,
+    ret: SymExpr,
+  ): List[Formula] =
+    val iteratorResult = iteratorResultValue(result)
+    val doneResult = SECall("Get", List(iteratorResult, prop("done")))
+    val doneValue = SEField(doneResult, "Value")
+    val toBoolean = SECall("ToBoolean", List(doneValue))
+    List(
+      FImply(
+        List(
+          FTypeCheck(iteratorResult, ObjectT),
+          FTypeCheck(doneResult, AbruptT),
+        ),
+        throwReturn(ret),
+      ),
+      FImply(
+        List(
+          FTypeCheck(iteratorResult, ObjectT),
+          FTypeCheck(doneResult, NormalT),
+        ),
+        normalReturn(ret, toBoolean),
+      ),
+    )
+
+  private def iteratorValueModel(
+    result: SymExpr,
+    ret: SymExpr,
+  ): List[Formula] =
+    val iteratorResult = iteratorResultValue(result)
+    val valueResult = SECall("Get", List(iteratorResult, prop("value")))
+    List(
+      FImply(
+        List(
+          FTypeCheck(iteratorResult, ObjectT),
+          FTypeCheck(valueResult, AbruptT),
+        ),
+        throwReturn(ret),
+      ),
+      FImply(
+        List(
+          FTypeCheck(iteratorResult, ObjectT),
+          FTypeCheck(valueResult, NormalT),
+        ),
+        normalReturn(ret, SEField(valueResult, "Value")),
+      ),
+    )
+
+  private def iteratorStepModel(
+    iterRecord: SymExpr,
+    ret: SymExpr,
+  ): List[Formula] =
+    val next = SECall("IteratorNext", List(iterRecord))
+    val result = SEField(next, "Value")
+    val done = SECall("IteratorComplete", List(result))
+    val doneValue = SEField(done, "Value")
+    List(
+      FImply(
+        List(
+          FTypeCheck(iteratorRecordExpr(iterRecord), RecordT("IteratorRecord")),
+          FTypeCheck(next, AbruptT),
+        ),
+        throwReturn(ret),
+      ),
+      FImply(
+        List(
+          FTypeCheck(iteratorRecordExpr(iterRecord), RecordT("IteratorRecord")),
+          FTypeCheck(next, NormalT),
+          FTypeCheck(done, AbruptT),
+        ),
+        throwReturn(ret),
+      ),
+      FImply(
+        List(
+          FTypeCheck(iteratorRecordExpr(iterRecord), RecordT("IteratorRecord")),
+          FTypeCheck(next, NormalT),
+          FTypeCheck(done, NormalT),
+          FEq(doneValue, bool(true)),
+        ),
+        normalReturn(ret, enumLit("done")),
+      ),
+      FImply(
+        List(
+          FTypeCheck(iteratorRecordExpr(iterRecord), RecordT("IteratorRecord")),
+          FTypeCheck(next, NormalT),
+          FTypeCheck(done, NormalT),
+          FEq(doneValue, bool(false)),
+        ),
+        normalReturn(ret, result),
+      ),
+    )
+
+  private def iteratorStepValueModel(
+    iterRecord: SymExpr,
+    ret: SymExpr,
+  ): List[Formula] =
+    val step = SECall("IteratorStep", List(iterRecord))
+    val result = SEField(step, "Value")
+    val value = SECall("IteratorValue", List(result))
+    List(
+      FImply(
+        List(
+          FTypeCheck(iteratorRecordExpr(iterRecord), RecordT("IteratorRecord")),
+          FTypeCheck(step, AbruptT),
+        ),
+        throwReturn(ret),
+      ),
+      FImply(
+        List(
+          FTypeCheck(iteratorRecordExpr(iterRecord), RecordT("IteratorRecord")),
+          FTypeCheck(step, NormalT),
+          FEq(result, enumLit("done")),
+        ),
+        normalReturn(ret, enumLit("done")),
+      ),
+      FImply(
+        List(
+          FTypeCheck(iteratorRecordExpr(iterRecord), RecordT("IteratorRecord")),
+          FTypeCheck(step, NormalT),
+          FNot(FEq(result, enumLit("done"))),
+          FTypeCheck(value, AbruptT),
+        ),
+        throwReturn(ret),
+      ),
+      FImply(
+        List(
+          FTypeCheck(iteratorRecordExpr(iterRecord), RecordT("IteratorRecord")),
+          FTypeCheck(step, NormalT),
+          FNot(FEq(result, enumLit("done"))),
+          FTypeCheck(value, NormalT),
+        ),
+        normalReturn(ret, SEField(value, "Value")),
+      ),
+    )
+
+  private def iteratorCloseModel(
+    iterRecord: SymExpr,
+    completion: SymExpr,
+    ret: SymExpr,
+  ): List[Formula] =
+    val iterator = iteratorRecordParts(iterRecord)._1
+    val getReturn = SECall("GetMethod", List(iterator, prop("return")))
+    val returnMethod = SEField(getReturn, "Value")
+    val callReturn = SECall("Call", List(returnMethod, iterator))
+    val callReturnValue = SEField(callReturn, "Value")
+    List(
+      FImply(
+        List(
+          FTypeCheck(iteratorRecordExpr(iterRecord), RecordT("IteratorRecord")),
+          FTypeCheck(getReturn, NormalT),
+          FEq(returnMethod, SELit(EUndef())),
+          FTypeCheck(completion, AbruptT),
+        ),
+        List(FEq(ret, completion)),
+      ),
+      FImply(
+        List(
+          FTypeCheck(iteratorRecordExpr(iterRecord), RecordT("IteratorRecord")),
+          FTypeCheck(getReturn, NormalT),
+          FEq(returnMethod, SELit(EUndef())),
+          FTypeCheck(completion, NormalT),
+        ),
+        List(FEq(ret, completion)),
+      ),
+      FImply(
+        List(
+          FTypeCheck(iteratorRecordExpr(iterRecord), RecordT("IteratorRecord")),
+          FTypeCheck(completion, ThrowT),
+        ),
+        List(FEq(ret, completion)),
+      ),
+      FImply(
+        List(
+          FTypeCheck(iteratorRecordExpr(iterRecord), RecordT("IteratorRecord")),
+          FTypeCheck(completion, NormalT),
+          FTypeCheck(getReturn, AbruptT),
+        ),
+        List(FEq(ret, getReturn), FTypeCheck(ret, ThrowT)),
+      ),
+      FImply(
+        List(
+          FTypeCheck(iteratorRecordExpr(iterRecord), RecordT("IteratorRecord")),
+          FTypeCheck(completion, NormalT),
+          FTypeCheck(getReturn, NormalT),
+          FNot(FEq(returnMethod, SELit(EUndef()))),
+          FTypeCheck(callReturn, AbruptT),
+        ),
+        List(FEq(ret, callReturn), FTypeCheck(ret, ThrowT)),
+      ),
+      FImply(
+        List(
+          FTypeCheck(iteratorRecordExpr(iterRecord), RecordT("IteratorRecord")),
+          FTypeCheck(completion, NormalT),
+          FTypeCheck(getReturn, NormalT),
+          FNot(FEq(returnMethod, SELit(EUndef()))),
+          FTypeCheck(callReturn, NormalT),
+          FNot(FTypeCheck(callReturnValue, ObjectT)),
+        ),
+        throwReturn(ret),
+      ),
+      FImply(
+        List(
+          FTypeCheck(iteratorRecordExpr(iterRecord), RecordT("IteratorRecord")),
+          FTypeCheck(completion, NormalT),
+          FTypeCheck(getReturn, NormalT),
+          FNot(FEq(returnMethod, SELit(EUndef()))),
+          FTypeCheck(callReturn, NormalT),
+          FTypeCheck(callReturnValue, ObjectT),
+        ),
+        List(FEq(ret, completion)),
       ),
     )
 
@@ -714,7 +1335,11 @@ object RewriteRules {
   // (Number::sameValue, BigInt::equal — IR ops).
   // SameValueZero shares the same model (solver FEq does not
   // distinguish +0/-0 semantics).
-  private def sameValueModel(x: SymExpr, y: SymExpr, ret: SymExpr): Goal =
+  private def sameValueModel(
+    x: SymExpr,
+    y: SymExpr,
+    ret: SymExpr,
+  ): List[Formula] =
     val t = SELit(EBool(true))
     val f = SELit(EBool(false))
     List(
@@ -726,10 +1351,10 @@ object RewriteRules {
 
   private def rewrite(f: Formula)(using CFG): List[Formula] = f match
     // Completion record wrappers
-    case FTypeCheck(SEApp("NormalCompletion", List(x)), ty) if ty <= CompT =>
+    case FTypeCheck(SECall("NormalCompletion", List(x)), ty) if ty <= CompT =>
       if (ty <= AbruptT) List(Contradiction)
       else normalCompletionTypeConstraints(x, ty)
-    case FTypeCheck(SEApp("Completion", List(x)), ty)
+    case FTypeCheck(SECall("Completion", List(x)), ty)
         if ty <= CompT && isCompletionExpr(x) =>
       List(FTypeCheck(x, ty))
 
@@ -782,84 +1407,6 @@ object RewriteRules {
     // https://tc39.es/ecma262/#sec-samevaluezero
     // SameValueZero is modeled point-wise as implication facts.
 
-    // 9 Executable Code and Execution Contexts
-
-    // https://tc39.es/ecma262/#sec-canbeheldweakly
-    // CanBeHeldWeakly is modeled point-wise as implication facts.
-
-    // 10.1 Ordinary Object Internal Methods and Internal Slots
-
-    // https://tc39.es/ecma262/#sec-requireinternalslot
-    // RequireInternalSlot is modeled point-wise as implication facts.
-
-    // ThisXXXValue series (around 20.XX)
-
-    // ThisXXXValue series (ThisSymbolValue, ThisNumberValue, ThisBigIntValue,
-    // ThisStringValue, ThisBooleanValue) are modeled point-wise as implication facts.
-
-    // https://tc39.es/ecma262/#sec-ordinarycreatefromconstructor
-    // OrdinaryCreateFromConstructor is modeled point-wise as implication facts.
-
-    // https://tc39.es/ecma262/#sec-installerrorcause
-    // InstallErrorCause is modeled point-wise as implication facts.
-
-    // https://tc39.es/ecma262/#sec-validatenonrevokedproxy
-    // ValidateNonRevokedProxy is modeled point-wise as implication facts.
-
-    // https://tc39.es/ecma262/#sec-validatetypedarray
-    // ValidateTypedArray is modeled point-wise as implication facts.
-
-    // 27.1 Iteration
-
-    // https://tc39.es/ecma262/#sec-getiterator
-    case FTypeCheck(SEApp("GetIterator", List(obj)), ty) if ty <= NormalT =>
-      val methodResult = SEApp("Get", List(obj, SELit(EStr("iterator"))))
-      val method = SEField(methodResult, "Value")
-      val callResult = SEApp("Call", List(method, obj))
-      List(
-        FTypeCheck(methodResult, NormalT),
-        FTypeCheck(callResult, NormalT),
-        FTypeCheck(SEField(callResult, "Value"), ObjectT),
-      )
-
-    // https://tc39.es/ecma262/#sec-getiteratorfrommethod
-    case FTypeCheck(SEApp("GetIteratorFromMethod", List(obj, method)), ty)
-        if ty <= NormalT =>
-      val callResult = SEApp("Call", List(method, obj))
-      List(
-        FTypeCheck(callResult, NormalT),
-        FTypeCheck(SEField(callResult, "Value"), ObjectT),
-      )
-
-    // https://tc39.es/ecma262/#sec-iteratornext
-    case FTypeCheck(SEApp("IteratorNext", iterRecord :: args), ty)
-        if ty <= NormalT =>
-      iteratorParts(iterRecord) match
-        case Some(_) =>
-          val result = iteratorNextResult(iterRecord, args)
-          List(
-            FTypeCheck(result, NormalT),
-            FTypeCheck(SEField(result, "Value"), ObjectT),
-          )
-        case None => List(f)
-
-    // https://tc39.es/ecma262/#sec-iteratorcomplete
-    case FTypeCheck(SEApp("IteratorComplete", List(result)), ty)
-        if ty <= NormalT =>
-      val doneResult =
-        SEApp("Get", List(iteratorResultValue(result), SELit(EStr("done"))))
-      List(
-        FTypeCheck(doneResult, NormalT),
-        FTypeCheck(SEField(doneResult, "Value"), BoolT),
-      )
-
-    // https://tc39.es/ecma262/#sec-iteratorvalue
-    case FTypeCheck(SEApp("IteratorValue", List(result)), ty)
-        if ty <= NormalT =>
-      val valueResult =
-        SEApp("Get", List(iteratorResultValue(result), SELit(EStr("value"))))
-      List(FTypeCheck(valueResult, NormalT))
-
     case _ => List(rewriteCompletionValues(f).getOrElse(f))
 
   // Converts .Type comparisons before rewrite while preserving completion
@@ -881,11 +1428,10 @@ object RewriteRules {
     case FTypeCheck(e, ty) => FTypeCheck(stripExpr(e), ty)
 
   private def stripExpr(t: SymExpr): SymExpr = t match
-    case SETypeOf(inner)      => SETypeOf(stripExpr(inner))
-    case SEProj(base, k)      => SEProj(stripExpr(base), stripExpr(k))
-    case SEField(base, field) => SEField(stripExpr(base), field)
-    case SEApp(op, args)      => SEApp(op, args.map(stripExpr))
-    case SEList(elems)        => SEList(elems.map(stripExpr))
+    case SETypeOf(inner)    => SETypeOf(stripExpr(inner))
+    case SEField(base, key) => SEField(stripExpr(base), stripExpr(key))
+    case SEApp(op, args)    => SEApp(op, args.map(stripExpr))
+    case SEList(elems)      => SEList(elems.map(stripExpr))
     case SERecord(tn, fields) =>
       SERecord(tn, fields.map((k, v) => k -> stripExpr(v)))
     case SEMap(entries) =>
@@ -910,13 +1456,12 @@ object RewriteRules {
     case FTypeCheck(e, ty) => FTypeCheck(reduceExpr(e), ty)
 
   private def reduceExpr(t: SymExpr): SymExpr = t match
-    case SEApp("__CLAMP__", List(x, _, _)) => reduceExpr(x)
-    case SETypeOf(inner)                   => SETypeOf(reduceExpr(inner))
-    case ValueField(inner)    => SEField(reduceExpr(inner), "Value")
-    case SEProj(base, k)      => SEProj(reduceExpr(base), reduceExpr(k))
-    case SEField(base, field) => SEField(reduceExpr(base), field)
-    case SEApp(op, args)      => SEApp(op, args.map(reduceExpr(_)))
-    case SEList(elems)        => SEList(elems.map(reduceExpr(_)))
+    case SEResidual("__CLAMP__", List(x, _, _)) => reduceExpr(x)
+    case SETypeOf(inner)                        => SETypeOf(reduceExpr(inner))
+    case ValueField(inner)  => SEField(reduceExpr(inner), "Value")
+    case SEField(base, key) => SEField(reduceExpr(base), reduceExpr(key))
+    case SEApp(op, args)    => SEApp(op, args.map(reduceExpr(_)))
+    case SEList(elems)      => SEList(elems.map(reduceExpr(_)))
     case SERecord(tn, fields) =>
       SERecord(tn, fields.map((k, v) => k -> reduceExpr(v)))
     case SEMap(entries) =>
@@ -951,19 +1496,17 @@ object RewriteRules {
     expr: SymExpr,
   )(using CFG): Option[SymExpr] =
     expr match
-      case ValueField(SEApp("NormalCompletion", List(inner))) =>
+      case ValueField(SECall("NormalCompletion", List(inner))) =>
         Some(reduceExpr(inner))
-      case ValueField(SEApp("Completion", List(inner)))
+      case ValueField(SECall("Completion", List(inner)))
           if isCompletionExpr(inner) =>
         Some(SEField(reduceExpr(inner), "Value"))
       case SETypeOf(inner) =>
         rewriteCompletionValueExpr(inner).map(SETypeOf(_))
-      case SEProj(base, key) =>
+      case SEField(base, key) =>
         rewriteCompletionValueExpr(base)
-          .map(SEProj(_, key))
-          .orElse(rewriteCompletionValueExpr(key).map(SEProj(base, _)))
-      case SEField(base, field) =>
-        rewriteCompletionValueExpr(base).map(SEField(_, field))
+          .map(SEField(_, key))
+          .orElse(rewriteCompletionValueExpr(key).map(SEField(base, _)))
       case SEApp(op, args) =>
         rewriteFirst(args, rewriteCompletionValueExpr).map(SEApp(op, _))
       case SEList(elems) =>
@@ -1013,9 +1556,24 @@ object RewriteRules {
   private def isCompletionExpr(
     expr: SymExpr,
   )(using cfg: CFG): Boolean = expr match
-    case SEApp(name: String, _) =>
+    case SECall(name, _) =>
       cfg.fnameMap.get(name).forall(_.retTy.isCompletion)
     case _ => false
+
+  private def iteratorRecordExpr(iterRecord: SymExpr): SymExpr =
+    reduceExpr(iterRecord)
+
+  private def iteratorRecordParts(
+    iterRecord: SymExpr,
+  ): (SymExpr, SymExpr, SymExpr) =
+    iteratorParts(iterRecord).getOrElse {
+      val record = iteratorRecordExpr(iterRecord)
+      (
+        SEField(record, "Iterator"),
+        SEField(record, "NextMethod"),
+        SEField(record, "Done"),
+      )
+    }
 
   private def iteratorParts(
     iterRecord: SymExpr,
@@ -1027,23 +1585,37 @@ object RewriteRules {
           nextMethod <- fields.get("NextMethod")
           done <- fields.get("Done")
         } yield (reduceExpr(iterator), reduceExpr(nextMethod), reduceExpr(done))
+      case ValueField(SECall("GetIteratorDirect", List(obj))) =>
+        Some(iteratorPartsFromObject(obj))
+      case ValueField(SECall("GetIteratorFromMethod", List(obj, method))) =>
+        val iterator = SEField(SECall("Call", List(method, obj)), "Value")
+        Some(iteratorPartsFromObject(iterator))
+      case ValueField(SECall("GetIterator", List(obj, SELit(EEnum("sync"))))) =>
+        val method =
+          SEField(SECall("GetMethod", List(obj, symbol("iterator"))), "Value")
+        val iterator = SEField(SECall("Call", List(method, obj)), "Value")
+        Some(iteratorPartsFromObject(iterator))
       case _ => None
+
+  private def iteratorPartsFromObject(
+    iterator: SymExpr,
+  ): (SymExpr, SymExpr, SymExpr) =
+    val nextMethod =
+      SEField(SECall("Get", List(iterator, prop("next"))), "Value")
+    (reduceExpr(iterator), nextMethod, bool(false))
 
   private def iteratorNextResult(
     iterRecord: SymExpr,
     args: List[SymExpr],
   ): SymExpr =
-    iteratorParts(iterRecord) match
-      case Some((iterator, nextMethod, _)) =>
-        val callArgs = List(nextMethod, iterator) ++ args.map(reduceExpr)
-        SEApp("Call", callArgs)
-      case None =>
-        SEApp("IteratorNext", reduceExpr(iterRecord) :: args.map(reduceExpr))
+    val (iterator, nextMethod, _) = iteratorRecordParts(iterRecord)
+    val callArgs = List(nextMethod, iterator) ++ args.map(reduceExpr)
+    SECall("Call", callArgs)
 
   private def iteratorResultValue(result: SymExpr): SymExpr =
     reduceExpr(result) match
-      case SEApp("IteratorNext", iterRecord :: args) =>
+      case SECall("IteratorNext", iterRecord :: args) =>
         SEField(iteratorNextResult(iterRecord, args), "Value")
-      case app @ SEApp("Call", _) => SEField(app, "Value")
-      case other                  => other
+      case app @ SECall("Call", _) => SEField(app, "Value")
+      case other                   => other
 }

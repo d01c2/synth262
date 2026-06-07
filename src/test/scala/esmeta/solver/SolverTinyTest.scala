@@ -1,6 +1,6 @@
 package esmeta.solver
 
-import esmeta.cfg.{Branch, BranchKind, CFG, Func as CFGFunc}
+import esmeta.cfg.{Block, Branch, BranchKind, CFG, Func as CFGFunc}
 import esmeta.es.util.Coverage.Cond
 import esmeta.ir.*
 import esmeta.ty.*
@@ -9,7 +9,7 @@ import Formula.*, SymExpr.*
 /** basic solver test */
 class SolverTinyTest extends SolverTest {
   val name: String = "solverTinyTest"
-  private def rewrite(goal: Goal): Goal = Solver.rewrite(goal)
+  private def expand(goal: List[Formula]): List[Formula] = solver.expand(goal)
 
   def init: Unit = {
     import SolverTest.*
@@ -30,18 +30,38 @@ class SolverTinyTest extends SolverTest {
       List(isValue(xSym, EUndef()), isNotType(xSym, UndefT)),
     )
 
-    check("GetIterator normal keeps Call completion separate from its value") {
-      val methodResult = SEApp("Get", List(xSym, SELit(EStr("iterator"))))
-      val method = SEField(methodResult, "Value")
-      val call = SEApp("Call", List(method, xSym))
-      val value = SEField(call, "Value")
-      val rewritten =
-        rewrite(List(isType(SEApp("GetIterator", List(xSym)), NormalT)))
+    check("literal ordering treats infinity as unbounded") {
+      val huge = SELit(EMath(BigDecimal("1e400")))
+      val posInf = SELit(EInfinity(true))
+      val negInf = SELit(EInfinity(false))
 
-      assert(rewritten.contains(isType(methodResult, NormalT)))
-      assert(rewritten.contains(isType(call, NormalT)))
-      assert(rewritten.contains(isType(value, ObjectT)))
-      assert(!rewritten.contains(isType(call, ObjectT)))
+      assert(solver.saturate(List(FLt(huge, posInf))) == Some(Nil))
+      assert(solver.saturate(List(FLt(posInf, huge))).isEmpty)
+      assert(solver.saturate(List(FLt(negInf, huge))) == Some(Nil))
+      assert(solver.saturate(List(FNot(FLt(huge, posInf)))).isEmpty)
+    }
+
+    check("GetIterator normal keeps Call completion separate from its value") {
+      val call = SECall("Call", List(ySym, xSym))
+      val value = SEField(call, "Value")
+      val model =
+        RewriteRules.aoModel(SECall("GetIteratorFromMethod", List(xSym, ySym)))
+
+      assert(
+        model.exists {
+          case FImply(when, _) =>
+            when.contains(isType(call, NormalT)) &&
+            when.contains(isType(value, ObjectT))
+          case _ => false
+        },
+      )
+      assert(
+        !model.exists {
+          case FImply(when, conclusion) =>
+            (when ++ conclusion).contains(isType(call, ObjectT))
+          case _ => false
+        },
+      )
     }
 
     check("IteratorNext normal keeps Call completion separate from its value") {
@@ -53,30 +73,39 @@ class SolverTinyTest extends SolverTest {
           "Done" -> SELit(EBool(false)),
         ),
       )
-      val call = SEApp("Call", List(ySym, xSym))
+      val call = SECall("Call", List(ySym, xSym))
       val value = SEField(call, "Value")
-      val rewritten =
-        rewrite(
-          List(isType(SEApp("IteratorNext", List(iterRecord)), NormalT)),
-        )
+      val model = RewriteRules.aoModel(SECall("IteratorNext", List(iterRecord)))
 
-      assert(rewritten.contains(isType(call, NormalT)))
-      assert(rewritten.contains(isType(value, ObjectT)))
-      assert(!rewritten.contains(isType(call, ObjectT)))
+      assert(
+        model.exists {
+          case FImply(when, _) =>
+            when.contains(isType(call, NormalT)) &&
+            when.contains(isType(value, ObjectT))
+          case _ => false
+        },
+      )
+      assert(
+        !model.exists {
+          case FImply(when, conclusion) =>
+            (when ++ conclusion).contains(isType(call, ObjectT))
+          case _ => false
+        },
+      )
     }
 
     check("ToNumber value projection is not rewritten into its input") {
       val value =
-        SEField(SEApp("ToNumber", List(xSym)), "Value")
-      val rewritten = rewrite(List(isValue(value, EMath(1))))
+        SEField(SECall("ToNumber", List(xSym)), "Value")
+      val expanded = expand(List(isValue(value, EMath(1))))
 
-      assert(rewritten.contains(isValue(value, EMath(1))))
-      assert(!rewritten.contains(isValue(xSym, EMath(1))))
-      assert(!rewritten.contains(isType(xSym, NumberT)))
+      assert(expanded.contains(isValue(value, EMath(1))))
+      assert(!expanded.contains(isValue(xSym, EMath(1))))
+      assert(!expanded.contains(isType(xSym, NumberT)))
     }
 
     check("ToNumber model has six point-wise cases") {
-      val toNumber = SEApp("ToNumber", List(xSym))
+      val toNumber = SECall("ToNumber", List(xSym))
       val value = SEField(toNumber, "Value")
       val cases = RewriteRules.aoModel(toNumber)
 
@@ -103,7 +132,7 @@ class SolverTinyTest extends SolverTest {
     }
 
     check("aoModel exposes raw implication formulas") {
-      val toNumber = SEApp("ToNumber", List(xSym))
+      val toNumber = SECall("ToNumber", List(xSym))
       val value = SEField(toNumber, "Value")
       val numberImplication = FImply(
         List(isType(xSym, NumberT)),
@@ -117,11 +146,11 @@ class SolverTinyTest extends SolverTest {
       val premise = isType(xSym, NumberT)
       val conclusion = isValue(ySym, EMath(1))
       val implication = FImply(List(premise), List(conclusion))
-      val inactive = Solver
-        .simplify(List(implication))
+      val inactive = solver
+        .saturate(List(implication))
         .getOrElse(fail("expected inactive implication to be satisfiable"))
-      val active = Solver
-        .simplify(List(premise, implication))
+      val active = solver
+        .saturate(List(premise, implication))
         .getOrElse(fail("expected active implication to be satisfiable"))
 
       assert(!inactive.contains(conclusion))
@@ -129,8 +158,8 @@ class SolverTinyTest extends SolverTest {
     }
 
     check("ToNumber value requirement is solved by summary cases") {
-      val toNumber = SEApp("ToNumber", List(xSym))
-      val solved = Solver
+      val toNumber = SECall("ToNumber", List(xSym))
+      val solved = solver
         .solve(List(isValue(SEField(toNumber, "Value"), ENumber(1.0))))
         .getOrElse(fail("expected satisfiable ToNumber goal"))
 
@@ -140,7 +169,7 @@ class SolverTinyTest extends SolverTest {
     }
 
     check("ToNumber model does not activate from input-only constraints") {
-      val solved = Solver
+      val solved = solver
         .solve(List(isType(xSym, NumberT)))
         .getOrElse(fail("expected satisfiable input-only goal"))
 
@@ -148,8 +177,8 @@ class SolverTinyTest extends SolverTest {
     }
 
     check("ToNumber undefined can satisfy a NaN result") {
-      val toNumber = SEApp("ToNumber", List(xSym))
-      val solved = Solver
+      val toNumber = SECall("ToNumber", List(xSym))
+      val solved = solver
         .solve(
           List(
             isType(xSym, UndefT),
@@ -165,11 +194,15 @@ class SolverTinyTest extends SolverTest {
     }
 
     check("ToLength delegates to ToIntegerOrInfinity via implications") {
-      val toLength = SEApp("ToLength", List(xSym))
-      val inner = SEApp("ToIntegerOrInfinity", List(xSym))
+      val toLength = SECall("ToLength", List(xSym))
+      val inner = SECall("ToIntegerOrInfinity", List(xSym))
+      val innerValue = SEField(inner, "Value")
+      val retValue = SEField(toLength, "Value")
+      val maxSafeLength =
+        SELit(EMath(BigDecimal("9007199254740991")))
       val cases = RewriteRules.aoModel(toLength)
 
-      assert(cases.size == 3)
+      assert(cases.size == 4)
       assert(
         cases.exists {
           case FImply(when, conclusion) =>
@@ -191,17 +224,189 @@ class SolverTinyTest extends SolverTest {
       assert(
         cases.exists {
           case FImply(when, conclusion) =>
-            when.contains(FLt(SELit(EMath(0)), SEField(inner, "Value"))) &&
+            when.contains(FLt(maxSafeLength, innerValue)) &&
+            conclusion.contains(FEq(retValue, maxSafeLength))
+          case _ => false
+        },
+      )
+      assert(
+        cases.exists {
+          case FImply(when, conclusion) =>
+            when.contains(FLt(SELit(EMath(0)), innerValue)) &&
             conclusion == List(FTypeCheck(toLength, NormalT))
+          case _ => false
+        },
+      )
+      assert(!cases.exists {
+        case FImply(_, conclusion) =>
+          conclusion.contains(FEq(retValue, innerValue))
+        case _ => false
+      })
+    }
+
+    checkParamWitness(
+      "ToIntegerOrInfinity finite bounds reify through the input",
+    )(
+      {
+        val toInteger = SECall("ToIntegerOrInfinity", List(xSym))
+        val value = SEField(toInteger, "Value")
+        List(
+          FTypeCheck(toInteger, NormalT),
+          FLt(value, SELit(EMath(0))),
+          FNot(FEq(value, SELit(EInfinity(true)))),
+          FNot(FEq(value, SELit(EInfinity(false)))),
+        )
+      },
+    ) { js =>
+      assert(js == "-1")
+    }
+
+    checkParamWitness("bounded number reify can choose fractional witness")(
+      List(
+        isType(xSym, NumberT),
+        isNotValue(xSym, ENumber(-1.0)),
+        isNotValue(xSym, ENumber(0.0)),
+        isNotValue(xSym, ENumber(1.0)),
+        FNot(FLt(SELit(ENumber(1.0)), xSym)),
+        FNot(FLt(xSym, SELit(ENumber(-1.0)))),
+      ),
+    ) { js =>
+      assert(js == "-0.5")
+    }
+
+    checkParamWitness("number reify respects NumberInt exclusion")(
+      List(
+        isType(xSym, NumberT),
+        isNotType(xSym, NumberIntT),
+        FNot(FLt(xSym, SELit(ENumber(1.0)))),
+      ),
+    ) { js =>
+      assert(js == "1.5")
+    }
+
+    check("ToUint32 delegates to ToNumber via implications") {
+      val toUint32 = SECall("ToUint32", List(xSym))
+      val toNumber = SECall("ToNumber", List(xSym))
+      val numVal = SEField(toNumber, "Value")
+      val retValue = SEField(toUint32, "Value")
+      val cases = RewriteRules.aoModel(toUint32)
+
+      assert(cases.size == 7)
+      assert(
+        cases.exists {
+          case FImply(when, conclusion) =>
+            when == List(FTypeCheck(toNumber, AbruptT)) &&
+            conclusion == List(FTypeCheck(toUint32, ThrowT))
+          case _ => false
+        },
+      )
+      assert(
+        cases.exists {
+          case FImply(when, conclusion) =>
+            when.contains(FEq(numVal, SELit(ENumber(Double.NaN)))) &&
+            conclusion.contains(FEq(retValue, SELit(ENumber(0.0))))
+          case _ => false
+        },
+      )
+      assert(
+        cases.exists {
+          case FImply(when, conclusion) =>
+            when == List(FTypeCheck(toNumber, NormalT)) &&
+            conclusion == List(FTypeCheck(toUint32, NormalT))
           case _ => false
         },
       )
     }
 
+    checkParamWitness("ToUint32 abrupt requirement reifies via ToNumber")(
+      {
+        val toUint32 = SECall("ToUint32", List(xSym))
+        List(FTypeCheck(toUint32, AbruptT))
+      },
+    ) { js =>
+      assert(js == "Symbol()" || js == "0n")
+    }
+
+    checkParamWitness(
+      "LengthOfArrayLike non-zero goal reifies as length property",
+    )(
+      {
+        val length = SECall("LengthOfArrayLike", List(xSym))
+        val value = SEField(length, "Value")
+        List(
+          FTypeCheck(length, NormalT),
+          FNot(FEq(value, SELit(ENumber(0.0)))),
+        )
+      },
+    ) { js =>
+      assert(js.contains("length"))
+      assert(!js.contains("length: 0"))
+    }
+
+    check("CreateDataPropertyOrThrow delegates to DefineOwnProperty") {
+      val createOrThrow = SECall(
+        "CreateDataPropertyOrThrow",
+        List(xSym, SELit(EStr("p")), ySym),
+      )
+      val create = SECall(
+        "CreateDataProperty",
+        List(xSym, SELit(EStr("p")), ySym),
+      )
+      val cases = RewriteRules.aoModel(createOrThrow)
+
+      assert(cases.size == 3)
+      assert(
+        cases.exists {
+          case FImply(when, conclusion) =>
+            when == List(FTypeCheck(create, AbruptT)) &&
+            conclusion == List(FTypeCheck(createOrThrow, ThrowT))
+          case _ => false
+        },
+      )
+      assert(
+        cases.exists {
+          case FImply(when, conclusion) =>
+            when.contains(FEq(SEField(create, "Value"), SELit(EBool(true)))) &&
+            conclusion == List(FTypeCheck(createOrThrow, NormalT))
+          case _ => false
+        },
+      )
+    }
+
+    checkParamWitness(
+      "CreateDataPropertyOrThrow throw reifies as defineProperty trap",
+    )(
+      {
+        val createOrThrow = SECall(
+          "CreateDataPropertyOrThrow",
+          List(xSym, SELit(EStr("p")), SELit(EMath(1))),
+        )
+        List(FTypeCheck(createOrThrow, ThrowT))
+      },
+    ) { js =>
+      assert(js.contains("new Proxy("))
+      assert(js.contains("defineProperty"))
+    }
+
+    checkParamWitness(
+      "CreateDataPropertyOrThrow normal reifies as object-capable receiver",
+    )(
+      {
+        val createOrThrow = SECall(
+          "CreateDataPropertyOrThrow",
+          List(xSym, SELit(EStr("p")), SELit(EMath(1))),
+        )
+        List(FTypeCheck(createOrThrow, NormalT))
+      },
+    ) { js =>
+      assert(js.nonEmpty)
+      assert(!js.contains("undefined"))
+    }
+
     checkParamWitness("Get value projection reifies as property value")(
       List(
         isValue(
-          SEField(SEApp("Get", List(xSym, SELit(EStr("p")))), "Value"),
+          SEField(SECall("Get", List(xSym, SELit(EStr("p")))), "Value"),
           EMath(1),
         ),
       ),
@@ -211,8 +416,8 @@ class SolverTinyTest extends SolverTest {
     }
 
     check("internal method trap cannot reify on undefined base") {
-      val key = SEProj(SEGlobal("SYMBOL"), SELit(EStr("iterator")))
-      val get = SEApp("Get", List(xSym, key))
+      val key = SEField(SEGlobal("SYMBOL"), SELit(EStr("iterator")))
+      val get = SECall("Get", List(xSym, key))
 
       assert(
         solveAndReify(
@@ -229,9 +434,9 @@ class SolverTinyTest extends SolverTest {
       List(
         isType(
           SEField(
-            SEApp(
+            SECall(
               "Get",
-              List(xSym, SEProj(SEGlobal("SYMBOL"), SELit(EStr("iterator")))),
+              List(xSym, SEField(SEGlobal("SYMBOL"), SELit(EStr("iterator")))),
             ),
             "Value",
           ),
@@ -247,7 +452,7 @@ class SolverTinyTest extends SolverTest {
       List(
         isValue(
           SEField(
-            SEApp("HasProperty", List(xSym, SELit(EStr("p")))),
+            SECall("HasProperty", List(xSym, SELit(EStr("p")))),
             "Value",
           ),
           EBool(true),
@@ -262,7 +467,7 @@ class SolverTinyTest extends SolverTest {
     }
 
     check("global refs are not treated as zero-argument applications") {
-      val symIterator = SEProj(SEGlobal("SYMBOL"), SELit(EStr("iterator")))
+      val symIterator = SEField(SEGlobal("SYMBOL"), SELit(EStr("iterator")))
       val formula = isType(symIterator, SymbolT)
 
       assert(!Reify.hasUninterpretableApp(List(formula)))
@@ -271,7 +476,7 @@ class SolverTinyTest extends SolverTest {
 
     check("zero-argument applications remain uninterpretable calls") {
       val oldGlobalShape =
-        SEProj(SEApp("SYMBOL", List()), SELit(EStr("iterator")))
+        SEField(SECall("SYMBOL", List()), SELit(EStr("iterator")))
       val formula = isType(oldGlobalShape, SymbolT)
 
       assert(Reify.hasUninterpretableApp(List(formula)))
@@ -338,6 +543,87 @@ class SolverTinyTest extends SolverTest {
       assert(js.contains(".revoke()"))
     }
 
+    checkParamWitness("intrinsic equality reifies as builtin object")(
+      {
+        val iteratorPrototype = SEField(
+          SEField(
+            SEField(
+              SEField(SEGlobal("EXECUTION_STACK"), SELit(EMath(0))),
+              "Realm",
+            ),
+            "Intrinsics",
+          ),
+          "%Iterator.prototype%",
+        )
+        List(isType(xSym, ObjectT), FEq(xSym, iteratorPrototype))
+      },
+    ) { js =>
+      assert(js == "Iterator.prototype")
+    }
+
+    checkParamWitness(
+      "intrinsic inequality allows an ordinary object witness",
+    )(
+      {
+        val iteratorPrototype = SEField(
+          SEField(
+            SEField(
+              SEField(SEGlobal("EXECUTION_STACK"), SELit(EMath(0))),
+              "Realm",
+            ),
+            "Intrinsics",
+          ),
+          "%Iterator.prototype%",
+        )
+        List(isType(xSym, ObjectT), FNot(FEq(xSym, iteratorPrototype)))
+      },
+    ) { js =>
+      assert(js.nonEmpty)
+      assert(js != "Iterator.prototype")
+    }
+
+    checkParamWitness(
+      "intrinsic inequality with property traps reifies as proxy",
+      params = List(SolverTest.x, SolverTest.y),
+    )(
+      {
+        val iteratorPrototype = SEField(
+          SEField(
+            SEField(
+              SEField(SEGlobal("EXECUTION_STACK"), SELit(EMath(0))),
+              "Realm",
+            ),
+            "Intrinsics",
+          ),
+          "%Iterator.prototype%",
+        )
+        val key = SELit(EStr("constructor"))
+        val getOwn = SECall("GetOwnProperty", List(xSym, xSym, key))
+        val desc = SERecord(
+          "PropertyDescriptor",
+          Map(
+            "Value" -> ySym,
+            "Writable" -> SELit(EBool(true)),
+            "Enumerable" -> SELit(EBool(true)),
+            "Configurable" -> SELit(EBool(true)),
+          ),
+        )
+        val define = SECall("DefineOwnProperty", List(xSym, xSym, key, desc))
+        List(
+          isType(xSym, ObjectT),
+          FNot(FEq(xSym, iteratorPrototype)),
+          isType(getOwn, NormalT),
+          isValue(SEField(getOwn, "Value"), EUndef()),
+          isType(define, NormalT),
+          isValue(SEField(define, "Value"), EBool(true)),
+        )
+      },
+    ) { js =>
+      assert(js.contains("new Proxy("))
+      assert(js.contains("getOwnPropertyDescriptor"))
+      assert(js.contains("defineProperty"))
+    }
+
     checkParamWitness(
       "auto-length typed array reifies as length-tracking view",
     )(
@@ -350,15 +636,16 @@ class SolverTinyTest extends SolverTest {
       assert(js.contains("maxByteLength"))
     }
 
-    check("generic projection is not an internal field witness") {
+    check("dynamic field access is not an internal field witness") {
       assert(
         solveAndReify(
           List(
             isValue(
-              SEProj(xSym, SELit(EStr("TypedArrayName"))),
+              SEField(xSym, ySym),
               EStr("Int8Array"),
             ),
           ),
+          params = List(SolverTest.x, SolverTest.y),
         ).isEmpty,
       )
     }
@@ -366,48 +653,120 @@ class SolverTinyTest extends SolverTest {
     check(
       "value-level Call projection is not stripped into the Call completion",
     ) {
-      val call = SEApp("Call", List(xSym, ySym))
+      val call = SECall("Call", List(xSym, ySym))
       val value = SEField(call, "Value")
-      val rewritten = rewrite(List(isValue(value, EMath(1))))
+      val expanded = expand(List(isValue(value, EMath(1))))
 
-      assert(rewritten.contains(isValue(value, EMath(1))))
-      assert(!rewritten.contains(isValue(call, EMath(1))))
+      assert(expanded.contains(isValue(value, EMath(1))))
+      assert(!expanded.contains(isValue(call, EMath(1))))
     }
 
     check("Completion-wrapped Call value projection is preserved") {
-      val call = SEApp("Call", List(xSym, ySym))
+      val call = SECall("Call", List(xSym, ySym))
       val value = SEField(call, "Value")
       val wrappedValue =
-        SEField(SEApp("Completion", List(call)), "Value")
-      val rewritten = rewrite(List(isValue(wrappedValue, EMath(1))))
+        SEField(SECall("Completion", List(call)), "Value")
+      val expanded = expand(List(isValue(wrappedValue, EMath(1))))
 
-      assert(rewritten.contains(isValue(value, EMath(1))))
-      assert(!rewritten.contains(isValue(call, EMath(1))))
+      assert(expanded.contains(isValue(value, EMath(1))))
+      assert(!expanded.contains(isValue(call, EMath(1))))
     }
 
     check("unknown Completion value projection is preserved") {
       val wrappedValue =
-        SEField(SEApp("Completion", List(xSym)), "Value")
+        SEField(SECall("Completion", List(xSym)), "Value")
       val bareValue = SEField(xSym, "Value")
-      val rewritten = rewrite(List(isValue(wrappedValue, EMath(1))))
+      val expanded = expand(List(isValue(wrappedValue, EMath(1))))
 
-      assert(rewritten.contains(isValue(wrappedValue, EMath(1))))
-      assert(!rewritten.contains(isValue(bareValue, EMath(1))))
-      assert(!rewritten.contains(isValue(xSym, EMath(1))))
+      assert(expanded.contains(isValue(wrappedValue, EMath(1))))
+      assert(!expanded.contains(isValue(bareValue, EMath(1))))
+      assert(!expanded.contains(isValue(xSym, EMath(1))))
     }
 
     check("NormalCompletion value projection rewrites to inner value") {
       val wrappedValue =
-        SEField(SEApp("NormalCompletion", List(xSym)), "Value")
-      val rewritten = rewrite(List(isValue(wrappedValue, EMath(1))))
+        SEField(SECall("NormalCompletion", List(xSym)), "Value")
+      val expanded = expand(List(isValue(wrappedValue, EMath(1))))
 
-      assert(rewritten.contains(isValue(xSym, EMath(1))))
-      assert(!rewritten.contains(isValue(wrappedValue, EMath(1))))
+      assert(expanded.contains(isValue(xSym, EMath(1))))
+      assert(!expanded.contains(isValue(wrappedValue, EMath(1))))
+    }
+
+    checkParamWitness(
+      "concrete IteratorRecord type check does not block reify",
+    )(
+      List(
+        isType(xSym, ObjectT),
+        isType(SECall("Get", List(xSym, SELit(EStr("next")))), NormalT),
+        isType(
+          SERecord(
+            "IteratorRecord",
+            Map(
+              "Iterator" -> xSym,
+              "NextMethod" -> SEField(
+                SECall("Get", List(xSym, SELit(EStr("next")))),
+                "Value",
+              ),
+              "Done" -> SELit(EBool(false)),
+            ),
+          ),
+          RecordT("IteratorRecord"),
+        ),
+      ),
+    ) { js =>
+      assert(js.nonEmpty)
+    }
+
+    checkParamWitness(
+      "iterator next method call facts reify through property value",
+    )(
+      {
+        val getNext = SECall("Get", List(xSym, SELit(EStr("next"))))
+        val nextMethod = SEField(getNext, "Value")
+        val callNext = SECall("Call", List(nextMethod, xSym))
+        List(
+          isType(xSym, ObjectT),
+          isType(getNext, NormalT),
+          isType(
+            SERecord(
+              "IteratorRecord",
+              Map(
+                "Iterator" -> xSym,
+                "NextMethod" -> nextMethod,
+                "Done" -> SELit(EBool(false)),
+              ),
+            ),
+            RecordT("IteratorRecord"),
+          ),
+          isType(callNext, NormalT),
+          isType(SEField(callNext, "Value"), ObjectT),
+        )
+      },
+    ) { js =>
+      assert(js.contains("next"))
+      assert(js.contains("return"))
+      assert(js.contains("let i=0"))
+      assert(js.contains("done: false"))
+      assert(js.contains("done: true"))
+      assert(!js.contains("return {};"))
+    }
+
+    check("nested solver-only calls are dropped without direct projection") {
+      val toObject = SECall("ToObject", List(xSym))
+      val objectValue = SEField(toObject, "Value")
+      val get = SECall("Get", List(objectValue, SELit(EStr("p"))))
+      val propertyFact = isValue(SEField(get, "Value"), EMath(1))
+      val solved = solver
+        .solve(List(isType(toObject, NormalT), propertyFact))
+        .getOrElse(fail("expected satisfiable ToObject goal"))
+
+      assert(!solved.contains(propertyFact))
+      assert(!solved.contains(isType(toObject, NormalT)))
     }
 
     check("ToNumber abrupt requirement selects compatible throwing case") {
-      val toNumber = SEApp("ToNumber", List(xSym))
-      val solved = Solver
+      val toNumber = SECall("ToNumber", List(xSym))
+      val solved = solver
         .solve(List(isType(toNumber, AbruptT)))
         .getOrElse(fail("expected satisfiable ToNumber goal"))
 
@@ -416,8 +775,8 @@ class SolverTinyTest extends SolverTest {
     }
 
     check("ToNumber throwing summary fires when its premise is known") {
-      val toNumber = SEApp("ToNumber", List(xSym))
-      val solved = Solver
+      val toNumber = SECall("ToNumber", List(xSym))
+      val solved = solver
         .solve(List(isType(xSym, SymbolT), isType(toNumber, AbruptT)))
         .getOrElse(fail("expected satisfiable ToNumber goal"))
 
@@ -426,22 +785,22 @@ class SolverTinyTest extends SolverTest {
     }
 
     check("unknown Completion Type check stays on wrapper") {
-      val wrapped = SEApp("Completion", List(xSym))
+      val wrapped = SECall("Completion", List(xSym))
       val typeCheck =
         FEq(SEField(wrapped, "Type"), SELit(EEnum("normal")))
-      val rewritten = rewrite(List(typeCheck))
+      val expanded = expand(List(typeCheck))
 
-      assert(rewritten.contains(isType(wrapped, NormalT)))
-      assert(!rewritten.contains(isType(xSym, NormalT)))
+      assert(expanded.contains(isType(wrapped, NormalT)))
+      assert(!expanded.contains(isType(xSym, NormalT)))
     }
 
     check("NormalCompletion Type check rewrites as known normal") {
-      val wrapped = SEApp("NormalCompletion", List(xSym))
+      val wrapped = SECall("NormalCompletion", List(xSym))
       val typeCheck =
         FEq(SEField(wrapped, "Type"), SELit(EEnum("normal")))
-      val rewritten = rewrite(List(typeCheck))
+      val expanded = expand(List(typeCheck))
 
-      assert(rewritten.isEmpty)
+      assert(expanded.isEmpty)
     }
 
     check("IteratorComplete reads done from IteratorNext value") {
@@ -453,25 +812,31 @@ class SolverTinyTest extends SolverTest {
           "Done" -> SELit(EBool(false)),
         ),
       )
-      val call = SEApp("Call", List(ySym, xSym))
+      val call = SECall("Call", List(ySym, xSym))
       val value = SEField(call, "Value")
-      val done = SEApp("Get", List(value, SELit(EStr("done"))))
-      val bareDone = SEApp("Get", List(call, SELit(EStr("done"))))
-      val rewritten =
-        rewrite(
-          List(
-            isType(
-              SEApp(
-                "IteratorComplete",
-                List(SEApp("IteratorNext", List(iterRecord))),
-              ),
-              NormalT,
-            ),
+      val done = SECall("Get", List(value, SELit(EStr("done"))))
+      val bareDone = SECall("Get", List(call, SELit(EStr("done"))))
+      val model =
+        RewriteRules.aoModel(
+          SECall(
+            "IteratorComplete",
+            List(SECall("IteratorNext", List(iterRecord))),
           ),
         )
 
-      assert(rewritten.contains(isType(done, NormalT)))
-      assert(!rewritten.contains(isType(bareDone, NormalT)))
+      assert(
+        model.exists {
+          case FImply(when, _) => when.contains(isType(done, NormalT))
+          case _               => false
+        },
+      )
+      assert(
+        !model.exists {
+          case FImply(when, conclusion) =>
+            (when ++ conclusion).contains(isType(bareDone, NormalT))
+          case _ => false
+        },
+      )
     }
 
     check("IteratorValue reads value from IteratorNext value") {
@@ -483,25 +848,31 @@ class SolverTinyTest extends SolverTest {
           "Done" -> SELit(EBool(false)),
         ),
       )
-      val call = SEApp("Call", List(ySym, xSym))
+      val call = SECall("Call", List(ySym, xSym))
       val value = SEField(call, "Value")
-      val resultValue = SEApp("Get", List(value, SELit(EStr("value"))))
-      val bareValue = SEApp("Get", List(call, SELit(EStr("value"))))
-      val rewritten =
-        rewrite(
-          List(
-            isType(
-              SEApp(
-                "IteratorValue",
-                List(SEApp("IteratorNext", List(iterRecord))),
-              ),
-              NormalT,
-            ),
+      val resultValue = SECall("Get", List(value, SELit(EStr("value"))))
+      val bareValue = SECall("Get", List(call, SELit(EStr("value"))))
+      val model =
+        RewriteRules.aoModel(
+          SECall(
+            "IteratorValue",
+            List(SECall("IteratorNext", List(iterRecord))),
           ),
         )
 
-      assert(rewritten.contains(isType(resultValue, NormalT)))
-      assert(!rewritten.contains(isType(bareValue, NormalT)))
+      assert(
+        model.exists {
+          case FImply(when, _) => when.contains(isType(resultValue, NormalT))
+          case _               => false
+        },
+      )
+      assert(
+        !model.exists {
+          case FImply(when, conclusion) =>
+            (when ++ conclusion).contains(isType(bareValue, NormalT))
+          case _ => false
+        },
+      )
     }
 
     check("symbolic interpreter explores both disjunctive path constraints") {
@@ -538,9 +909,14 @@ class SolverTinyTest extends SolverTest {
       val func = CFGFunc(0, irFunc, guard)
       val cfg = CFG(List(func))
       given CFG = cfg
+      val localSolver = Solver()
 
       val goals =
-        SymbolicInterpreter(func, Cond(target, true), Solver.solveAll).result
+        SymbolicInterpreter(
+          func,
+          Cond(target, true),
+          localSolver.solveAll,
+        ).result
           .take(3)
           .toList
       val expected = Set(
@@ -556,6 +932,48 @@ class SolverTinyTest extends SolverTest {
 
       assert(goals.size == 2)
       assert(goals.toSet == expected)
+    }
+
+    check("symbolic interpreter respects back pop from local lists") {
+      val xsLocal = Name("xs")
+      val yLocal = Name("y")
+      val target = Branch(
+        1,
+        BranchKind.If,
+        EBinary(BOp.Eq, ERef(yLocal), EMath(BigDecimal(2))),
+      )
+      val entry = Block(
+        0,
+        scala.collection.mutable.ListBuffer(
+          ILet(
+            xsLocal,
+            EList(List(EMath(BigDecimal(1)), EMath(BigDecimal(2)))),
+          ),
+          IPop(yLocal, ERef(xsLocal), front = false),
+        ),
+        Some(target),
+      )
+      val irFunc = Func(
+        true,
+        FuncKind.AbsOp,
+        "backPop",
+        Nil,
+        Type(NormalT),
+        INop(),
+      )
+      val func = CFGFunc(0, irFunc, entry)
+      val cfg = CFG(List(func))
+      given CFG = cfg
+      val localSolver = Solver()
+
+      val goals =
+        SymbolicInterpreter(
+          func,
+          Cond(target, true),
+          localSolver.solveAll,
+        ).result.toList
+
+      assert(goals == List(Nil))
     }
 
   }

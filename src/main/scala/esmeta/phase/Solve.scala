@@ -57,6 +57,7 @@ case object Solve extends Phase[CFG, String] {
     cond: Cond,
   )(using CFG): LazyList[String] =
     val params = paramIds(entry)
+    val solver = Solver()
     var goalIdx = 0
     println(s"\n=== Entry: ${entry.name} ===")
     val goals = SymbolicInterpreter(
@@ -66,16 +67,16 @@ case object Solve extends Phase[CFG, String] {
         goalIdx += 1
         println(s"\n--- Goal $goalIdx [raw] ---")
         goal.foreach(f => println(s"  $f"))
-        val rw = Solver.rewrite(goal)
-        println(s"--- Goal $goalIdx [rewritten] ---")
-        rw.foreach(f => println(s"  $f"))
-        val solved = Solver.solveAll(goal)
+        val expanded = solver.expand(goal)
+        println(s"--- Goal $goalIdx [expanded] ---")
+        expanded.foreach(f => println(s"  $f"))
+        val solved = solver.solveAll(goal)
         if (solved.isEmpty) {
           println(s"--- Goal $goalIdx => CONTRADICTION ---")
           LazyList.empty
         } else {
           val first = solved.head
-          println(s"--- Goal $goalIdx [simplified] ---")
+          println(s"--- Goal $goalIdx [saturated] ---")
           first.foreach(f => println(s"  $f"))
           solved
         }

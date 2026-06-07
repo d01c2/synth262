@@ -9,7 +9,14 @@ import esmeta.phase.Solve
 import scala.collection.mutable.{Set => MSet, Queue}
 import scala.concurrent.{Future, Await, ExecutionContext}
 import scala.concurrent.duration.Duration
-import java.util.concurrent.Executors
+import java.util.concurrent.{
+  Callable,
+  ExecutorCompletionService,
+  Executors,
+  ThreadFactory,
+  TimeUnit,
+  TimeoutException,
+}
 import java.io.PrintWriter
 
 class BuiltinBranchTest extends ESMetaTest {
@@ -52,8 +59,21 @@ class BuiltinBranchTest extends ESMetaTest {
     val cov = Coverage(cfg, timeLimit = Some(10))
 
     val nThreads = Runtime.getRuntime.availableProcessors
-    val pool = Executors.newFixedThreadPool(nThreads)
+    val pool = Executors.newFixedThreadPool(
+      nThreads,
+      new ThreadFactory {
+        private var nextId = 0
+        def newThread(r: Runnable): Thread = {
+          nextId += 1
+          val t = new Thread(r, s"builtin-branch-test-$nextId")
+          t.setDaemon(true)
+          t
+        }
+      },
+    )
     given ExecutionContext = ExecutionContext.fromExecutor(pool)
+    val solveTimeLimit = 120
+    val solveTimeout = Duration(solveTimeLimit, "seconds")
 
     val allBuiltins = cfg.funcs.filter(_.isBuiltin).sortBy(_.name)
     val builtins = {
@@ -118,199 +138,275 @@ class BuiltinBranchTest extends ESMetaTest {
         js: Option[String],
         elapsed: Long,
         reason: String,
-        simplified: Option[List[Formula]],
+        saturated: Option[List[Formula]],
         blockingAOs: Set[String],
       )
 
-      case class Candidate(js: String, simplified: List[Formula])
+      case class Candidate(js: String, saturated: List[Formula])
 
       def sideString(side: Boolean): String = if (side) "T" else "F"
 
       println(
         s"  Solving ${targets.size} branch sides from " +
-        s"${targetBranchEntries.size} branches with $nThreads threads...",
+        s"${targetBranchEntries.size} branches with $nThreads threads " +
+        s"(timeout: $solveTimeout per side)...",
       )
 
       val results = {
-        val futures = targets.map { (f, cond) =>
-          Future {
-            val t0 = System.nanoTime()
-            val b = cond.branch
-            val targetFunc = cfg.funcOf(b)
-            val candidates =
-              try {
-                val params = Solve.paramIds(f)
-                SymbolicInterpreter(f, cond, Solver.solveAll).result
-                  .flatMap { fs =>
-                    Reify(fs, params).witness.flatMap { w =>
-                      Reify.toJsCall(f, params, w).map(Candidate(_, fs))
-                    }
-                  }
-                  .take(20)
-                  .toList
-              } catch case _: NotImplementedError | _: MatchError => Nil
-            val elapsed = System.nanoTime() - t0
+        def timeoutResult(f: Func, cond: Cond): BranchResult = {
+          val b = cond.branch
+          val targetFunc = cfg.funcOf(b)
+          BranchResult(
+            f.name,
+            targetFunc.name,
+            s"logs/cfg/func/${targetFunc.normalizedName}.cfg",
+            b.id,
+            cond.cond,
+            "unsolved",
+            None,
+            solveTimeout.toNanos,
+            "timeout",
+            None,
+            Set(),
+          )
+        }
 
-            if (candidates.nonEmpty) {
-              val hit = candidates.find { cand =>
-                try {
-                  val interp = cov.run(cand.js)
-                  interp.touchedCondViews.keys.exists { cv =>
-                    cv.cond.branch.id == b.id && cv.cond.cond == cond.cond
-                  }
-                } catch { case _: Throwable => false }
-              }
-              hit match
-                case Some(js) =>
-                  BranchResult(
-                    f.name,
-                    targetFunc.name,
-                    s"logs/cfg/func/${targetFunc.normalizedName}.cfg",
-                    b.id,
-                    cond.cond,
-                    "ok",
-                    Some(js.js),
-                    elapsed,
-                    "",
-                    Some(js.simplified),
-                    Set(),
-                  )
-                case None =>
-                  // miss — try remaining entries from reverse call graph
-                  val fallbackEntries = entriesFor(b)
-                    .filterNot(_.name == f.name)
-                  val fallbackHit = fallbackEntries.iterator
-                    .flatMap { altF =>
-                      val altCands =
-                        try {
-                          val ps = Solve.paramIds(altF)
-                          SymbolicInterpreter(
-                            altF,
-                            cond,
-                            Solver.solveAll,
-                          ).result
-                            .flatMap { fs =>
-                              Reify(fs, ps).witness.flatMap { w =>
-                                Reify
-                                  .toJsCall(altF, ps, w)
-                                  .map(Candidate(_, fs))
-                              }
-                            }
-                            .take(20)
-                            .toList
-                        } catch
-                          case _: NotImplementedError | _: MatchError => Nil
-                      altCands
-                        .find { cand =>
-                          try {
-                            val interp = cov.run(cand.js)
-                            interp.touchedCondViews.keys.exists { cv =>
-                              cv.cond.branch.id == b.id &&
-                              cv.cond.cond == cond.cond
-                            }
-                          } catch { case _: Throwable => false }
-                        }
-                        .map(js => (altF, js))
-                    }
-                    .nextOption()
-                  val totalElapsed = System.nanoTime() - t0
-                  fallbackHit match
-                    case Some((altF, js)) =>
-                      BranchResult(
-                        altF.name,
-                        targetFunc.name,
-                        s"logs/cfg/func/${targetFunc.normalizedName}.cfg",
-                        b.id,
-                        cond.cond,
-                        "ok",
-                        Some(js.js),
-                        totalElapsed,
-                        "",
-                        Some(js.simplified),
-                        Set(),
-                      )
-                    case None =>
-                      val cand = candidates.head
-                      BranchResult(
-                        f.name,
-                        targetFunc.name,
-                        s"logs/cfg/func/${targetFunc.normalizedName}.cfg",
-                        b.id,
-                        cond.cond,
-                        "miss",
-                        Some(cand.js),
-                        totalElapsed,
-                        "",
-                        Some(cand.simplified),
-                        Set(),
-                      )
-            } else {
-              var reason = "unknown"
-              var simplifiedGoal: Option[List[Formula]] = None
-              var blockingAOs: Set[String] = Set()
-              try {
-                val interp =
-                  SymbolicInterpreter(f, cond, Solver.solveAll)
-                val goals = interp.result
-                if (goals.isEmpty)
-                  reason =
-                    if (interp.targetContradiction) "contradiction"
-                    else if (interp.pathContradiction) "pruned"
-                    else if (interp.notImplBlocked.isDefined)
-                      s"no-goals(${interp.notImplBlocked.get})"
-                    else if (interp.loopBlocked) "no-goals(loop)"
-                    else if (interp.cycleBlocked) "no-goals(cycle)"
-                    else if (interp.stepInBlocked) "no-goals(step-in)"
-                    else if (interp.hasVariadic) "no-goals(variadic)"
-                    else if (interp.internalMethodDispatch)
-                      "no-goals(internal-method)"
-                    else "no-goals"
-                else {
-                  val params = Solve.paramIds(f)
-                  val fs = goals.head
-                  simplifiedGoal = Some(fs)
-                  if (Reify.hasUninterpretableApp(fs))
-                    val names = fs.flatMap(Reify.outerAppNames).toSet
-                    blockingAOs = names
-                    reason =
-                      s"uninterp-app(${names.toList.sorted.mkString(",")})"
-                  else
-                    Reify(fs, params).witness match
-                      case None =>
-                        reason = "reify-failed"
-                      case Some(w) =>
-                        Reify.toJsCall(f, params, w) match
-                          case None    => reason = "no-js-call"
-                          case Some(_) => reason = "unknown"
+        def solveTarget(f: Func, cond: Cond): BranchResult = {
+          val t0 = System.nanoTime()
+          val solver = Solver(timeLimit = Some(solveTimeLimit))
+          def checkTimeout(): Unit =
+            if (solver.timeout) throw TimeoutException("solver")
+          def elapsedNanos: Long = System.nanoTime() - t0
+          def solveAllTimed(goal: List[Formula]): LazyList[List[Formula]] =
+            solver.solveAll(goal)
+          val b = cond.branch
+          val targetFunc = cfg.funcOf(b)
+          Thread
+            .currentThread()
+            .setName(
+              s"builtin-branch-test ${f.name} " +
+              s"Branch[${b.id}]:${sideString(cond.cond)}",
+            )
+
+          def candidatesFor(entry: Func): LazyList[Candidate] =
+            val params = Solve.paramIds(entry)
+            SymbolicInterpreter(
+              entry,
+              cond,
+              solveAllTimed,
+              solver.hasContradiction,
+            ).result
+              .flatMap { fs =>
+                checkTimeout()
+                Reify(fs, params).witness.flatMap { w =>
+                  checkTimeout()
+                  Reify.toJsCall(entry, params, w).map(Candidate(_, fs))
                 }
-              } catch {
-                case e: NotImplementedError =>
-                  val site = e.getStackTrace.headOption
-                    .map(_.getMethodName)
-                    .getOrElse("?")
-                  reason = s"unimpl($site)"
-                case e: MatchError =>
-                  reason = s"missing-transfer(${e.getMessage.take(60)})"
-                case e: Throwable =>
-                  reason = s"error(${e.getClass.getSimpleName})"
               }
-              BranchResult(
-                f.name,
-                targetFunc.name,
-                s"logs/cfg/func/${targetFunc.normalizedName}.cfg",
-                b.id,
-                cond.cond,
-                "unsolved",
-                None,
-                elapsed,
-                reason,
-                simplifiedGoal,
-                blockingAOs,
-              )
+              .take(20)
+
+          def verifies(cand: Candidate): Boolean =
+            checkTimeout()
+            try {
+              val interp = cov.run(cand.js)
+              checkTimeout()
+              interp.touchedCondViews.keys.exists { cv =>
+                cv.cond.branch.id == b.id && cv.cond.cond == cond.cond
+              }
+            } catch {
+              case e: TimeoutException => throw e
+              case _: Throwable        => false
             }
+
+          def firstCandidateAndHit(
+            entry: Func,
+          ): (Option[Candidate], Option[Candidate]) =
+            var first: Option[Candidate] = None
+            var hit: Option[Candidate] = None
+            try {
+              val it = candidatesFor(entry).iterator
+              while (hit.isEmpty && it.hasNext) {
+                checkTimeout()
+                val cand = it.next()
+                if (first.isEmpty) first = Some(cand)
+                if (verifies(cand)) hit = Some(cand)
+              }
+            } catch {
+              case _: NotImplementedError | _: MatchError => ()
+            }
+            (first, hit)
+
+          try {
+            val (firstCandidate, primaryHit) = firstCandidateAndHit(f)
+            checkTimeout()
+
+            primaryHit match
+              case Some(js) =>
+                BranchResult(
+                  f.name,
+                  targetFunc.name,
+                  s"logs/cfg/func/${targetFunc.normalizedName}.cfg",
+                  b.id,
+                  cond.cond,
+                  "ok",
+                  Some(js.js),
+                  elapsedNanos,
+                  "",
+                  Some(js.saturated),
+                  Set(),
+                )
+              case None if firstCandidate.nonEmpty =>
+                // miss — try remaining entries from reverse call graph.
+                val fallbackEntries = entriesFor(b)
+                  .filterNot(_.name == f.name)
+                val fallbackHit = fallbackEntries.iterator
+                  .flatMap { altF =>
+                    checkTimeout()
+                    val (_, hit) = firstCandidateAndHit(altF)
+                    hit.map(js => (altF, js))
+                  }
+                  .nextOption()
+                checkTimeout()
+                fallbackHit match
+                  case Some((altF, js)) =>
+                    BranchResult(
+                      altF.name,
+                      targetFunc.name,
+                      s"logs/cfg/func/${targetFunc.normalizedName}.cfg",
+                      b.id,
+                      cond.cond,
+                      "ok",
+                      Some(js.js),
+                      elapsedNanos,
+                      "",
+                      Some(js.saturated),
+                      Set(),
+                    )
+                  case None =>
+                    val cand = firstCandidate.get
+                    BranchResult(
+                      f.name,
+                      targetFunc.name,
+                      s"logs/cfg/func/${targetFunc.normalizedName}.cfg",
+                      b.id,
+                      cond.cond,
+                      "miss",
+                      Some(cand.js),
+                      elapsedNanos,
+                      "",
+                      Some(cand.saturated),
+                      Set(),
+                    )
+              case None =>
+                var reason = "unknown"
+                var saturatedGoal: Option[List[Formula]] = None
+                var blockingAOs: Set[String] = Set()
+                try {
+                  val interp =
+                    SymbolicInterpreter(
+                      f,
+                      cond,
+                      solveAllTimed,
+                      solver.hasContradiction,
+                    )
+                  val goals = interp.result
+                  checkTimeout()
+                  if (goals.isEmpty)
+                    reason =
+                      if (interp.targetContradiction) "contradiction"
+                      else if (interp.pathContradiction) "pruned"
+                      else if (interp.notImplBlocked.isDefined)
+                        s"no-goals(${interp.notImplBlocked.get})"
+                      else if (interp.loopBlocked) "no-goals(loop)"
+                      else if (interp.cycleBlocked) "no-goals(cycle)"
+                      else if (interp.stepInBlocked) "no-goals(step-in)"
+                      else if (interp.hasVariadic) "no-goals(variadic)"
+                      else if (interp.internalMethodDispatch)
+                        "no-goals(internal-method)"
+                      else "no-goals"
+                  else {
+                    val params = Solve.paramIds(f)
+                    val fs = goals.head
+                    saturatedGoal = Some(fs)
+                    if (Reify.hasUninterpretableApp(fs))
+                      val names = fs.flatMap(Reify.outerAppNames).toSet
+                      blockingAOs = names
+                      reason =
+                        s"uninterp-app(${names.toList.sorted.mkString(",")})"
+                    else
+                      Reify(fs, params).witness match
+                        case None =>
+                          reason = "reify-failed"
+                        case Some(w) =>
+                          checkTimeout()
+                          Reify.toJsCall(f, params, w) match
+                            case None    => reason = "no-js-call"
+                            case Some(_) => reason = "unknown"
+                      checkTimeout()
+                  }
+                } catch {
+                  case e: NotImplementedError =>
+                    val site = e.getStackTrace.headOption
+                      .map(_.getMethodName)
+                      .getOrElse("?")
+                    reason = s"unimpl($site)"
+                  case e: MatchError =>
+                    reason = s"missing-transfer(${e.getMessage.take(60)})"
+                  case e: TimeoutException =>
+                    throw e
+                  case e: Throwable =>
+                    reason = s"error(${e.getClass.getSimpleName})"
+                }
+                BranchResult(
+                  f.name,
+                  targetFunc.name,
+                  s"logs/cfg/func/${targetFunc.normalizedName}.cfg",
+                  b.id,
+                  cond.cond,
+                  "unsolved",
+                  None,
+                  elapsedNanos,
+                  reason,
+                  saturatedGoal,
+                  blockingAOs,
+                )
+          } catch {
+            case _: TimeoutException =>
+              timeoutResult(f, cond)
           }
         }
-        futures.map(Await.result(_, Duration.Inf))
+
+        val completion = ExecutorCompletionService[BranchResult](pool)
+        val targetIter = targets.iterator
+        val resultBuilder = List.newBuilder[BranchResult]
+        var submitted = 0
+        var completed = 0
+
+        def submitNext(): Unit =
+          if (targetIter.hasNext) {
+            val (f, cond) = targetIter.next()
+            completion.submit(new Callable[BranchResult] {
+              def call(): BranchResult = solveTarget(f, cond)
+            })
+            submitted += 1
+          }
+
+        for (_ <- 0 until math.min(nThreads, targets.size)) submitNext()
+
+        while (completed < targets.size) {
+          val done = completion.poll(30, TimeUnit.SECONDS)
+          if (done == null) {
+            println(
+              s"  progress: $completed / ${targets.size} completed " +
+              s"($submitted submitted)",
+            )
+          } else {
+            resultBuilder += done.get()
+            completed += 1
+            submitNext()
+          }
+        }
+        resultBuilder.result().sortBy(r => (r.bid, if (r.side) 0 else 1))
       }
 
       val verifiedResults = results.filter(_.status == "ok")
@@ -407,8 +503,8 @@ class BuiltinBranchTest extends ESMetaTest {
           )
           dumpFile.println(s"  [cfg] ${r.targetCfg}")
           r.js.foreach(js => dumpFile.println(s"  [js] $js"))
-          r.simplified.foreach { fs =>
-            dumpFile.println("  [simplified]")
+          r.saturated.foreach { fs =>
+            dumpFile.println("  [saturated]")
             fs.foreach(f => dumpFile.println(s"    $f"))
           }
           dumpFile.println()
@@ -425,8 +521,8 @@ class BuiltinBranchTest extends ESMetaTest {
             s"Branch[${r.bid}]:${sideString(r.side)} === ${r.reason}",
           )
           dumpFile.println(s"  [cfg] ${r.targetCfg}")
-          r.simplified.foreach { fs =>
-            dumpFile.println("  [simplified]")
+          r.saturated.foreach { fs =>
+            dumpFile.println("  [saturated]")
             fs.foreach(f => dumpFile.println(s"    $f"))
           }
           if (r.blockingAOs.nonEmpty)
@@ -463,7 +559,7 @@ class BuiltinBranchTest extends ESMetaTest {
     check("builtin branches: summary") {
       val total = targets.size
       assert(total > 0)
-      pool.shutdown()
+      pool.shutdownNow()
     }
   }
 

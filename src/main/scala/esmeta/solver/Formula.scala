@@ -21,24 +21,30 @@ enum Formula:
 
   override def toString: String = this match
     case FNot(f) => s"!($f)"
-    case FImply(premise, conclusion) =>
+    case FImply(p, c) =>
       def conj(fs: List[Formula]): String =
         if (fs.isEmpty) "true" else fs.mkString(" /\\ ")
-      s"((${conj(premise)}) => (${conj(conclusion)}))"
+      s"((${conj(p)}) => (${conj(c)}))"
     case FEq(l, r)         => s"($l = $r)"
     case FLt(l, r)         => s"($l < $r)"
     case FExists(b, k)     => s"($b has $k)"
     case FTypeCheck(e, ty) => s"(? $e: $ty)"
 
-  def rewrite(target: SymExpr, rep: SymExpr): Formula = this match
-    case FNot(f) => FNot(f.rewrite(target, rep))
-    case FImply(premise, conclusion) =>
-      FImply(
-        premise.map(_.rewrite(target, rep)),
-        conclusion.map(_.rewrite(target, rep)),
-      )
-    case FEq(l, r) => FEq(l.rewrite(target, rep), r.rewrite(target, rep))
-    case FLt(l, r) => FLt(l.rewrite(target, rep), r.rewrite(target, rep))
+  def rewrite(from: SymExpr, to: SymExpr): Formula = this match
+    case FNot(f) => FNot(f.rewrite(from, to))
+    case FImply(p, c) =>
+      FImply(p.map(_.rewrite(from, to)), c.map(_.rewrite(from, to)))
+    case FEq(l, r) => FEq(l.rewrite(from, to), r.rewrite(from, to))
+    case FLt(l, r) => FLt(l.rewrite(from, to), r.rewrite(from, to))
     case FExists(b, k) =>
-      FExists(b.rewrite(target, rep), k.rewrite(target, rep))
-    case FTypeCheck(e, ty) => FTypeCheck(e.rewrite(target, rep), ty)
+      FExists(b.rewrite(from, to), k.rewrite(from, to))
+    case FTypeCheck(e, ty) => FTypeCheck(e.rewrite(from, to), ty)
+
+case class AOCase(premise: List[Formula], conclusion: List[Formula])
+
+object AOCase:
+  def fromFormula(formula: Formula): Option[AOCase] = formula match
+    case Formula.FImply(p, c) => Some(AOCase(p, c))
+    case _                    => None
+
+case class AOSummary(call: SymExpr, cases: List[AOCase])

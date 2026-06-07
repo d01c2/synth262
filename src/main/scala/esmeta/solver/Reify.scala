@@ -59,11 +59,19 @@ object Reify {
     case Call(fact: Fact)
     case Extensible(value: Boolean)
     case Prototype(lit: LiteralExpr)
+    case Intrinsic(js: String)
+    case NotIntrinsic(js: String)
     case Trap(name: String, fact: Fact)
     case Field(name: String, fact: Fact)
     case FieldExists(name: String, exists: Boolean)
 
   type FactMap = Map[Sym, Set[Fact]]
+
+  def projectedFactFormulas(formulas: List[Formula]): List[Formula] =
+    formulas
+      .filter(hasDirectProjectionTarget)
+      .flatMap(projectDirectFacts)
+      .distinct
 
   private def collectFacts(formulas: List[Formula]): Option[FactMap] =
     val entries = formulas.map(factsOf)
@@ -77,8 +85,73 @@ object Reify {
       )
     else None
 
+  private def projectDirectFacts(formula: Formula): List[Formula] =
+    factsOf(formula).toList.flatten.flatMap(directFormulaOf)
+
+  private val directProjectionAOs: Set[String] =
+    Set("ToIntegerOrInfinity", "ToLength")
+
+  private def hasDirectProjectionTarget(formula: Formula): Boolean =
+    def fromExpr(expr: SymExpr): Boolean = expr match
+      case ValueField(SECall(name, List(_)))
+          if directProjectionAOs.contains(name) =>
+        true
+      case SECall(name, List(_)) if directProjectionAOs.contains(name) =>
+        true
+      case SEField(base, key) =>
+        fromExpr(base) || fromExpr(key)
+      case SEApp(_, args) =>
+        args.exists(fromExpr)
+      case SEList(elems) =>
+        elems.exists(fromExpr)
+      case SERecord(_, fields) =>
+        fields.values.exists(fromExpr)
+      case SEMap(entries) =>
+        entries.exists((key, value) => fromExpr(key) || fromExpr(value))
+      case SETypeOf(term) =>
+        fromExpr(term)
+      case _ => false
+    formula match
+      case FNot(inner) => hasDirectProjectionTarget(inner)
+      case FImply(premise, conclusion) =>
+        (premise ++ conclusion).exists(hasDirectProjectionTarget)
+      case FEq(left, right) =>
+        fromExpr(left) || fromExpr(right)
+      case FLt(left, right) =>
+        fromExpr(left) || fromExpr(right)
+      case FExists(base, key) =>
+        fromExpr(base) || fromExpr(key)
+      case FTypeCheck(expr, _) =>
+        fromExpr(expr)
+
+  private def directFormulaOf(sym: Sym, fact: Fact): Option[Formula] =
+    val term = SESym(sym)
+    fact match
+      case Fact.Type(ty)      => Some(FTypeCheck(term, ty))
+      case Fact.NotType(ty)   => Some(FNot(FTypeCheck(term, ty)))
+      case Fact.Value(lit)    => Some(FEq(term, SELit(lit)))
+      case Fact.NotValue(lit) => Some(FNot(FEq(term, SELit(lit))))
+      case Fact.Lower(lit, true) =>
+        Some(FLt(SELit(lit), term))
+      case Fact.Lower(lit, false) =>
+        Some(FNot(FLt(term, SELit(lit))))
+      case Fact.Upper(lit, true) =>
+        Some(FLt(term, SELit(lit)))
+      case Fact.Upper(lit, false) =>
+        Some(FNot(FLt(SELit(lit), term)))
+      case _ => None
+
   private def factsOf(formula: Formula): Option[List[(Sym, Fact)]] =
     formula match
+      case FTypeCheck(SERecord(tname, _), ty) if RecordT(tname) <= ty =>
+        Some(Nil)
+      case FNot(FTypeCheck(SERecord(tname, _), ty))
+          if (RecordT(tname) && ty).isBottom =>
+        Some(Nil)
+      case FTypeCheck(term, ty) if intrinsicJsExpr(term).isDefined =>
+        Option.when(!(ObjectT && ty).isBottom)(Nil)
+      case FNot(FTypeCheck(term, ty)) if intrinsicJsExpr(term).isDefined =>
+        Option.when((ObjectT && ty).isBottom)(Nil)
       case FTypeCheck(term, ty) =>
         typeFacts(term, ty, positive = true)
       case FNot(FTypeCheck(term, ty)) =>
@@ -87,6 +160,12 @@ object Reify {
         valueFacts(term, lit, positive = true)
       case FNot(FEq(term, SELit(lit))) =>
         valueFacts(term, lit, positive = false)
+      case FEq(l, r) =>
+        intrinsicEqualityFacts(l, r, positive = true)
+          .orElse(intrinsicEqualityFacts(r, l, positive = true))
+      case FNot(FEq(l, r)) =>
+        intrinsicEqualityFacts(l, r, positive = false)
+          .orElse(intrinsicEqualityFacts(r, l, positive = false))
       case FExists(base, SELit(EStr(field))) =>
         existsFacts(base, field, exists = true)
       case FNot(FExists(base, SELit(EStr(field)))) =>
@@ -101,13 +180,25 @@ object Reify {
         termFact(term, Fact.Upper(lit, strict = false))
       case _ => None
 
+  private def intrinsicEqualityFacts(
+    term: SymExpr,
+    intrinsic: SymExpr,
+    positive: Boolean,
+  ): Option[List[(Sym, Fact)]] =
+    intrinsicJsExpr(intrinsic).flatMap { js =>
+      termFact(
+        term,
+        if (positive) Fact.Intrinsic(js) else Fact.NotIntrinsic(js),
+      )
+    }
+
   private def valueFacts(
     term: SymExpr,
     lit: LiteralExpr,
     positive: Boolean,
   ): Option[List[(Sym, Fact)]] =
     term match
-      case SEApp("HasProperty", List(base, key)) =>
+      case SECall("HasProperty", List(base, key)) =>
         lit match
           case EBool(exists) =>
             hasPropertyFact(
@@ -116,7 +207,7 @@ object Reify {
               Fact.Value(EBool(if (positive) exists else !exists)),
             )
           case _ => None
-      case SEApp("HasProperty", base :: _ :: key :: Nil) =>
+      case SECall("HasProperty", base :: _ :: key :: Nil) =>
         lit match
           case EBool(exists) =>
             hasPropertyFact(
@@ -125,7 +216,7 @@ object Reify {
               Fact.Value(EBool(if (positive) exists else !exists)),
             )
           case _ => None
-      case SEApp("IsExtensible", base :: _) =>
+      case SECall("IsExtensible", base :: _) =>
         lit match
           case EBool(value) =>
             termFact(
@@ -133,9 +224,9 @@ object Reify {
               Fact.Extensible(if (positive) value else !value),
             )
           case _ => None
-      case SEApp("GetPrototypeOf", base :: _) if positive =>
+      case SECall("GetPrototypeOf", base :: _) if positive =>
         termFact(base, Fact.Prototype(lit))
-      case SEApp(fname: String, base :: _) if isTrapOnlyMethod(fname) =>
+      case SECall(fname, base :: _) if isTrapOnlyMethod(fname) =>
         termFact(
           base,
           Fact.Trap(
@@ -156,20 +247,20 @@ object Reify {
   ): Option[List[(Sym, Fact)]] =
     val fact = if (positive) Fact.Type(ty) else Fact.NotType(ty)
     term match
-      case SEApp("HasProperty", List(base, key)) =>
+      case SECall("HasProperty", List(base, key)) =>
         if (isDefaultNormal(ty, positive))
           termFact(base, Fact.Type(ObjectT))
         else hasPropertyFact(base, key, fact)
-      case SEApp("HasProperty", base :: _ :: key :: Nil) =>
+      case SECall("HasProperty", base :: _ :: key :: Nil) =>
         if (isDefaultNormal(ty, positive))
           termFact(base, Fact.Type(ObjectT))
         else hasPropertyFact(base, key, fact)
-      case SEApp(fname: String, base :: _)
+      case SECall(fname, base :: _)
           if fname == "IsExtensible" || fname == "GetPrototypeOf" =>
         if (isDefaultNormal(ty, positive))
           termFact(base, Fact.Type(ObjectT))
         else termFact(base, Fact.Trap(fname, fact))
-      case SEApp(fname: String, base :: _) if isTrapOnlyMethod(fname) =>
+      case SECall(fname, base :: _) if isTrapOnlyMethod(fname) =>
         if (isDefaultNormal(ty, positive))
           termFact(base, Fact.Type(ObjectT))
         else termFact(base, Fact.Trap(fname, fact))
@@ -191,49 +282,189 @@ object Reify {
   ): Option[List[(Sym, Fact)]] = term match
     case SESym(sym) =>
       Some(List(sym -> fact))
-    case ValueField(SEApp("Get", List(base, key))) =>
+    case ValueField(SECall("LengthOfArrayLike", List(obj))) =>
+      lengthOfArrayLikeValueFact(obj, fact)
+    case ValueField(SECall("ToLength", List(x))) =>
+      toLengthValueFact(x, fact)
+    case ValueField(SECall("ToIntegerOrInfinity", List(x))) =>
+      numericAOValueFact(x, fact)
+    case SECall("LengthOfArrayLike", List(obj)) =>
+      lengthOfArrayLikeCompletionFact(obj, fact)
+    case SECall("ToLength", List(x)) =>
+      numericAOCompletionFact(x, fact)
+    case SECall("ToIntegerOrInfinity", List(x)) =>
+      numericAOCompletionFact(x, fact)
+    case ValueField(SECall("Get", List(base, key))) =>
       getFact(base, key, fact)
-    case ValueField(SEApp("Get", base :: _ :: key :: _)) =>
+    case ValueField(SECall("Get", base :: _ :: key :: _)) =>
       getFact(base, key, fact)
-    case ValueField(SEApp("GetV", List(base, key))) =>
+    case ValueField(SECall("GetV", List(base, key))) =>
       getFact(base, key, fact)
-    case ValueField(SEApp("GetMethod", List(base, key))) =>
+    case ValueField(SECall("GetMethod", List(base, key))) =>
       getFact(base, key, fact)
-    case ValueField(SEApp("HasProperty", List(base, key))) =>
+    case ValueField(SECall("HasProperty", List(base, key))) =>
       hasPropertyFact(base, key, fact)
-    case ValueField(SEApp("HasProperty", base :: _ :: key :: Nil)) =>
+    case ValueField(SECall("HasProperty", base :: _ :: key :: Nil)) =>
       hasPropertyFact(base, key, fact)
-    case ValueField(SEApp("Call", fn :: _)) =>
+    case ValueField(SECall("Call", fn :: _)) =>
       termFact(fn, Fact.Call(fact))
-    case ValueField(SEApp("Construct", ctor :: _)) =>
+    case ValueField(SECall("Construct", ctor :: _)) =>
       termFact(ctor, Fact.Trap("Construct", fact))
-    case ValueField(SEApp("GetPrototypeOf", base :: _)) =>
+    case ValueField(SECall("GetPrototypeOf", base :: _)) =>
       fact match
         case Fact.Value(lit) => termFact(base, Fact.Prototype(lit))
         case _ => termFact(base, Fact.Trap("GetPrototypeOf", fact))
-    case ValueField(SEApp("IsExtensible", base :: _)) =>
+    case ValueField(SECall("IsExtensible", base :: _)) =>
       fact match
         case Fact.Value(EBool(value)) =>
           termFact(base, Fact.Extensible(value))
         case Fact.NotValue(EBool(value)) =>
           termFact(base, Fact.Extensible(!value))
         case _ => termFact(base, Fact.Trap("IsExtensible", fact))
-    case ValueField(SEApp(fname: String, base :: _))
-        if isTrapOnlyMethod(fname) =>
+    case ValueField(SECall(fname, base :: _)) if isTrapOnlyMethod(fname) =>
       termFact(base, Fact.Trap(fname, fact))
-    case SEApp("Get", List(base, key)) =>
+    case SECall("Get", List(base, key)) =>
       getFact(base, key, fact)
-    case SEApp("Get", base :: _ :: key :: _) =>
+    case SECall("Get", base :: _ :: key :: _) =>
       getFact(base, key, fact)
-    case SEApp("Call", fn :: _) =>
+    case SECall("Call", fn :: _) =>
       termFact(fn, Fact.Call(fact))
-    case SEApp("Construct", ctor :: _) =>
+    case SECall("Construct", ctor :: _) =>
       termFact(ctor, Fact.Trap("Construct", fact))
-    case SEApp(fname: String, base :: _) if isTrapOnlyMethod(fname) =>
+    case SECall(fname, base :: _) if isTrapOnlyMethod(fname) =>
       termFact(base, Fact.Trap(fname, fact))
-    case SEField(base, field) =>
+    case StaticField(base, field) =>
       termFact(base, Fact.Field(field, fact))
     case _ => None
+
+  private def lengthOfArrayLikeValueFact(
+    obj: SymExpr,
+    fact: Fact,
+  ): Option[List[(Sym, Fact)]] =
+    toLengthInputFacts(fact).flatMap { facts =>
+      termFacts(obj, facts.map(Fact.Prop("length", _)))
+    }
+
+  private def toLengthValueFact(
+    x: SymExpr,
+    fact: Fact,
+  ): Option[List[(Sym, Fact)]] =
+    toLengthInputFacts(fact).flatMap(termFacts(x, _))
+
+  private val MaxSafeLengthNumber: BigDecimal =
+    BigDecimal("9007199254740991")
+
+  private val MaxSafeLengthLit: LiteralExpr =
+    EMath(MaxSafeLengthNumber)
+
+  private def toLengthInputFacts(fact: Fact): Option[List[Fact]] =
+    fact match
+      case Fact.Value(lit) if isMaxSafeLength(lit) =>
+        Some(List(Fact.Type(NumberT), Fact.Lower(MaxSafeLengthLit, true)))
+      case Fact.Value(lit) if isNumericLiteral(lit) =>
+        Some(List(Fact.Type(NumberT), Fact.Value(numericWitnessLiteral(lit))))
+      case Fact.NotValue(lit) if numValue(lit).contains(BigDecimal(0)) =>
+        Some(List(Fact.Type(NumberT), Fact.Lower(EMath(0), true)))
+      case Fact.NotValue(lit) if isNumericLiteral(lit) =>
+        Some(
+          List(Fact.Type(NumberT), Fact.NotValue(numericWitnessLiteral(lit))),
+        )
+      case Fact.Lower(EInfinity(false), _) =>
+        Some(Nil)
+      case Fact.Upper(EInfinity(true), _) =>
+        Some(Nil)
+      case Fact.Lower(lit, strict) if isNumericLiteral(lit) =>
+        Some(List(Fact.Type(NumberT), Fact.Lower(lit, strict)))
+      case Fact.Upper(lit, strict) if isNumericLiteral(lit) =>
+        Some(List(Fact.Type(NumberT), Fact.Upper(lit, strict)))
+      case Fact.Type(ty) if !(ty && NumberT).isBottom =>
+        Some(List(Fact.Type(NumberT)))
+      case Fact.NotType(ty) if !(ty && NumberT).isBottom =>
+        Some(List(Fact.NotType(NumberT)))
+      case Fact.Type(ty) if ty <= NormalT =>
+        Some(Nil)
+      case Fact.NotType(ty) if ty <= AbruptT =>
+        Some(Nil)
+      case Fact.Type(ty) if ty <= AbruptT =>
+        Some(List(Fact.Type(AbruptT)))
+      case Fact.NotType(ty) if ty <= NormalT =>
+        Some(List(Fact.Type(AbruptT)))
+      case _ => None
+
+  private def numericAOValueFact(
+    x: SymExpr,
+    fact: Fact,
+  ): Option[List[(Sym, Fact)]] =
+    numericAOValueFacts(fact).flatMap(termFacts(x, _))
+
+  private def numericAOValueFacts(fact: Fact): Option[List[Fact]] =
+    fact match
+      case Fact.Lower(EInfinity(false), _) =>
+        Some(Nil)
+      case Fact.Upper(EInfinity(true), _) =>
+        Some(Nil)
+      case Fact.Value(lit) if isNumericLiteral(lit) =>
+        Some(List(Fact.Type(NumberT), Fact.Value(numericWitnessLiteral(lit))))
+      case Fact.NotValue(lit) if isNumericLiteral(lit) =>
+        Some(
+          List(Fact.Type(NumberT), Fact.NotValue(numericWitnessLiteral(lit))),
+        )
+      case Fact.Lower(lit, strict) if isNumericLiteral(lit) =>
+        Some(List(Fact.Type(NumberT), Fact.Lower(lit, strict)))
+      case Fact.Upper(lit, strict) if isNumericLiteral(lit) =>
+        Some(List(Fact.Type(NumberT), Fact.Upper(lit, strict)))
+      case Fact.Type(ty) if !(ty && NumberT).isBottom =>
+        Some(List(Fact.Type(NumberT)))
+      case Fact.NotType(ty) if !(ty && NumberT).isBottom =>
+        Some(List(Fact.NotType(NumberT)))
+      case Fact.Type(ty) if ty <= NormalT =>
+        Some(Nil)
+      case Fact.NotType(ty) if ty <= AbruptT =>
+        Some(Nil)
+      case Fact.Type(ty) if ty <= AbruptT =>
+        Some(List(Fact.Type(AbruptT)))
+      case Fact.NotType(ty) if ty <= NormalT =>
+        Some(List(Fact.Type(AbruptT)))
+      case _ => None
+
+  private def lengthOfArrayLikeCompletionFact(
+    obj: SymExpr,
+    fact: Fact,
+  ): Option[List[(Sym, Fact)]] =
+    fact match
+      case Fact.Type(ty) if ty <= NormalT =>
+        Some(Nil)
+      case Fact.NotType(ty) if ty <= AbruptT =>
+        Some(Nil)
+      case Fact.Type(ty) if ty <= AbruptT =>
+        termFact(obj, Fact.Prop("length", Fact.Type(AbruptT)))
+      case Fact.NotType(ty) if ty <= NormalT =>
+        termFact(obj, Fact.Prop("length", Fact.Type(AbruptT)))
+      case _ => None
+
+  private def numericAOCompletionFact(
+    x: SymExpr,
+    fact: Fact,
+  ): Option[List[(Sym, Fact)]] =
+    fact match
+      case Fact.Type(ty) if ty <= NormalT =>
+        Some(Nil)
+      case Fact.NotType(ty) if ty <= AbruptT =>
+        Some(Nil)
+      case Fact.Type(ty) if ty <= AbruptT =>
+        termFact(x, Fact.Type(AbruptT))
+      case Fact.NotType(ty) if ty <= NormalT =>
+        termFact(x, Fact.Type(AbruptT))
+      case _ => None
+
+  private def termFacts(
+    term: SymExpr,
+    facts: Iterable[Fact],
+  ): Option[List[(Sym, Fact)]] =
+    facts.foldLeft(Option(List.empty[(Sym, Fact)])) {
+      case (Some(acc), fact) => termFact(term, fact).map(acc ++ _)
+      case (None, _)         => None
+    }
 
   private def getFact(
     base: SymExpr,
@@ -432,6 +663,8 @@ object Reify {
     parts.calls.isEmpty &&
     parts.extensible.isEmpty &&
     parts.prototypes.isEmpty &&
+    parts.intrinsics.isEmpty &&
+    parts.excludedIntrinsics.isEmpty &&
     parts.traps.isEmpty &&
     parts.fields.isEmpty &&
     parts.fieldExists.isEmpty
@@ -451,6 +684,8 @@ object Reify {
     calls: Set[Fact],
     extensible: Set[Boolean],
     prototypes: Set[LiteralExpr],
+    intrinsics: Set[String],
+    excludedIntrinsics: Set[String],
     traps: Map[String, Set[Fact]],
     fields: Map[String, Set[Fact]],
     fieldExists: Map[String, Set[Boolean]],
@@ -481,6 +716,8 @@ object Reify {
       calls = facts.collect { case Fact.Call(fact) => fact },
       extensible = facts.collect { case Fact.Extensible(value) => value },
       prototypes = facts.collect { case Fact.Prototype(lit) => lit },
+      intrinsics = facts.collect { case Fact.Intrinsic(js) => js },
+      excludedIntrinsics = facts.collect { case Fact.NotIntrinsic(js) => js },
       traps = facts
         .collect { case Fact.Trap(name, fact) => name -> fact }
         .groupMap(_._1)(_._2)
@@ -516,7 +753,9 @@ object Reify {
       case None =>
         val requiredTy = requiredValueType(parts)
         val avoidedTys = avoidedValueTypes(parts)
-        if (!validInternalFieldExistence(parts)) None
+        if (parts.intrinsics.nonEmpty)
+          renderIntrinsic(parts, requiredTy, avoidedTys)
+        else if (!validInternalFieldExistence(parts)) None
         else if (requiredTy.isBottom) None
         else if (hasNumericBounds(parts))
           renderNumber(parts, requiredTy, avoidedTys)
@@ -542,6 +781,29 @@ object Reify {
             .flatMap(renderObjectLike(_, parts))
         else defaultFor(requiredTy, parts.excluded, avoidedTys)
 
+  private def renderIntrinsic(
+    parts: FactParts,
+    requiredTy: ValueTy,
+    avoidedTys: List[ValueTy],
+  ): Option[String] =
+    parts.intrinsics.headOption.filter { js =>
+      parts.intrinsics.size == 1 &&
+      !parts.excludedIntrinsics(js) &&
+      parts.values.isEmpty &&
+      parts.excluded.isEmpty &&
+      parts.lowers.isEmpty &&
+      parts.uppers.isEmpty &&
+      parts.props.isEmpty &&
+      parts.propExists.isEmpty &&
+      parts.calls.isEmpty &&
+      parts.extensible.isEmpty &&
+      parts.prototypes.isEmpty &&
+      parts.traps.isEmpty &&
+      parts.fields.isEmpty &&
+      parts.fieldExists.isEmpty &&
+      concreteCandidateAllowed(ObjectT, requiredTy, avoidedTys, js)
+    }
+
   private def renderFunction(callFacts: Set[Fact]): Option[String] =
     val parts = partitionFacts(callFacts)
     val throws = parts.types.exists(_ <= AbruptT) ||
@@ -551,6 +813,58 @@ object Reify {
       val returnFacts = dropNormalCompletionFacts(callFacts)
       if (returnFacts.isEmpty) Some("() => {}")
       else renderFacts(returnFacts).map(js => s"() => { return $js; }")
+
+  private def renderPropertyFunction(
+    key: String,
+    callFacts: Set[Fact],
+  ): Option[String] =
+    if (key == "next")
+      renderFiniteIteratorNext(callFacts).orElse(renderFunction(callFacts))
+    else renderFunction(callFacts)
+
+  private def renderFiniteIteratorNext(
+    callFacts: Set[Fact],
+  ): Option[String] =
+    val parts = partitionFacts(callFacts)
+    val throws = parts.types.exists(_ <= AbruptT) ||
+      parts.avoidedTypes.exists(_ <= NormalT)
+    if (throws) None
+    else {
+      val returnFacts = dropNormalCompletionFacts(callFacts)
+      val returnParts = partitionFacts(returnFacts)
+      val requiredTy = requiredValueType(returnParts)
+      val avoidedTys = avoidedValueTypes(returnParts)
+      val canReturnObject =
+        !(requiredTy && ObjectT).isBottom &&
+        avoidedTys.forall(ty => (ty && ObjectT).isBottom)
+      if (!canReturnObject) None
+      else {
+        val firstFacts = finiteIteratorFirstResultFacts(returnFacts)
+        renderFacts(firstFacts).map { first =>
+          s"(()=>{let i=0;return()=>i++?{done: true}:$first})()"
+        }
+      }
+    }
+
+  private def finiteIteratorFirstResultFacts(
+    returnFacts: Set[Fact],
+  ): Set[Fact] =
+    val parts = partitionFacts(returnFacts)
+    val withDone =
+      if (canAddOrdinaryProperty(parts, "done"))
+        returnFacts + Fact.Prop("done", Fact.Value(EBool(false)))
+      else returnFacts
+    val withDoneParts = partitionFacts(withDone)
+    if (canAddOrdinaryProperty(withDoneParts, "value"))
+      withDone + Fact.Prop("value", Fact.Value(EMath(0)))
+    else withDone
+
+  private def canAddOrdinaryProperty(
+    parts: FactParts,
+    key: String,
+  ): Boolean =
+    !parts.props.contains(key) &&
+    !parts.propExists.get(key).exists(_.contains(false))
 
   private def dropNormalCompletionFacts(facts: Set[Fact]): Set[Fact] =
     facts.filter {
@@ -564,6 +878,7 @@ object Reify {
     parts.propExists.exists(_._2.contains(true)) ||
     parts.extensible.nonEmpty ||
     parts.prototypes.nonEmpty ||
+    parts.intrinsics.nonEmpty ||
     parts.fields.nonEmpty ||
     hasRequiredInternalFields(parts)
 
@@ -623,7 +938,8 @@ object Reify {
     val throws = parts.types.exists(_ <= AbruptT) ||
       parts.avoidedTypes.exists(_ <= NormalT)
     if (parts.calls.nonEmpty)
-      renderFunction(parts.calls).map(js => Some(valueProperty(key, js)))
+      renderPropertyFunction(key, parts.calls)
+        .map(js => Some(valueProperty(key, js)))
     else
       parts.values.headOption match
         case Some(lit) =>
@@ -662,6 +978,8 @@ object Reify {
     parts.calls.isEmpty &&
     parts.extensible.isEmpty &&
     parts.prototypes.isEmpty &&
+    parts.intrinsics.isEmpty &&
+    parts.excludedIntrinsics.isEmpty &&
     parts.traps.isEmpty &&
     parts.fields.isEmpty &&
     parts.fieldExists.isEmpty &&
@@ -1110,6 +1428,8 @@ object Reify {
     parts.calls.isEmpty &&
     parts.extensible.isEmpty &&
     parts.prototypes.isEmpty &&
+    parts.intrinsics.isEmpty &&
+    parts.excludedIntrinsics.isEmpty &&
     parts.traps.isEmpty &&
     parts.fields.isEmpty &&
     parts.fieldExists.isEmpty &&
@@ -1136,6 +1456,8 @@ object Reify {
     parts.calls.isEmpty &&
     parts.extensible.isEmpty &&
     parts.prototypes.isEmpty &&
+    parts.intrinsics.isEmpty &&
+    parts.excludedIntrinsics.isEmpty &&
     parts.traps.isEmpty &&
     parts.fields.isEmpty &&
     parts.fieldExists.isEmpty
@@ -1149,10 +1471,31 @@ object Reify {
     avoidedTys: List[ValueTy],
   ): Option[String] =
     if ((requiredTy && NumberT).isBottom) None
-    else if (avoidedTys.exists(avoidTy => !(NumberT && avoidTy).isBottom)) None
-    else pickNumber(parts).flatMap(n => litToJs(EMath(n)))
+    else
+      pickNumber(parts, n => numberCandidateAllowed(n, requiredTy, avoidedTys))
+        .flatMap(n => litToJs(EMath(n)))
 
-  private def pickNumber(parts: FactParts): Option[BigDecimal] =
+  private def numberCandidateAllowed(
+    n: BigDecimal,
+    requiredTy: ValueTy,
+    avoidedTys: List[ValueTy],
+  ): Boolean =
+    val candidateTy = NumberT(esmeta.state.Number(n.toDouble))
+    !(candidateTy && requiredTy).isBottom &&
+    avoidedTys.forall(numberCandidateAvoids(n, candidateTy, _))
+
+  private def numberCandidateAvoids(
+    n: BigDecimal,
+    candidateTy: ValueTy,
+    avoidTy: ValueTy,
+  ): Boolean =
+    (avoidTy <= NumberIntT && !n.isWhole) ||
+    (candidateTy && avoidTy).isBottom
+
+  private def pickNumber(
+    parts: FactParts,
+    allowed: BigDecimal => Boolean,
+  ): Option[BigDecimal] =
     def parseBounds(
       bounds: Set[(LiteralExpr, Boolean)],
     ): Option[Set[(BigDecimal, Boolean)]] =
@@ -1164,19 +1507,26 @@ object Reify {
     for {
       lowers <- parseBounds(parts.lowers)
       uppers <- parseBounds(parts.uppers)
-      pick <- pickNumber(lowers, uppers, parts.excluded.flatMap(numValue))
+      pick <- pickNumber(
+        lowers,
+        uppers,
+        parts.excluded.flatMap(numValue),
+        allowed,
+      )
     } yield pick
 
   private def pickNumber(
     lowers: Set[(BigDecimal, Boolean)],
     uppers: Set[(BigDecimal, Boolean)],
     excluded: Set[BigDecimal],
+    allowed: BigDecimal => Boolean,
   ): Option[BigDecimal] =
     val lower = lowers.toList.sortBy(_._1).lastOption
     val upper = uppers.toList.sortBy(_._1).headOption
 
     def valid(v: BigDecimal): Boolean =
       !excluded(v) &&
+      allowed(v) &&
       lowers.forall((n, strict) => if (strict) n < v else n <= v) &&
       uppers.forall((n, strict) => if (strict) v < n else v <= n)
 
@@ -1191,10 +1541,16 @@ object Reify {
     val nearBounds =
       List(
         lower.map((n, strict) => if (strict) n + 1 else n),
+        lower.map((n, _) => n + BigDecimal("0.5")),
         upper.map((n, strict) => if (strict) n - 1 else n),
+        upper.map((n, _) => n - BigDecimal("0.5")),
         Some(BigDecimal(0)),
+        Some(BigDecimal("0.5")),
+        Some(BigDecimal("-0.5")),
         Some(BigDecimal(1)),
+        Some(BigDecimal("1.5")),
         Some(BigDecimal(-1)),
+        Some(BigDecimal("-1.5")),
       ).flatten.distinct
 
     nearBounds
@@ -1215,6 +1571,38 @@ object Reify {
     case EMath(n)                                => Some(n)
     case ENumber(d) if !d.isNaN && !d.isInfinite => Some(BigDecimal(d))
     case _                                       => None
+
+  private def isNumericLiteral(lit: LiteralExpr): Boolean = lit match
+    case EInfinity(_) => true
+    case _            => numValue(lit).isDefined
+
+  private def numericWitnessLiteral(lit: LiteralExpr): LiteralExpr = lit match
+    case EInfinity(true)  => ENumber(Double.PositiveInfinity)
+    case EInfinity(false) => ENumber(Double.NegativeInfinity)
+    case _                => lit
+
+  private def intrinsicJsExpr(expr: SymExpr): Option[String] = expr match
+    case StaticField(
+          StaticField(
+            StaticField(
+              SEField(SEGlobal("EXECUTION_STACK"), SELit(EMath(n))),
+              "Realm",
+            ),
+            "Intrinsics",
+          ),
+          name,
+        ) if n == BigDecimal(0) =>
+      intrinsicPathJs(name)
+    case _ => None
+
+  private def intrinsicPathJs(name: String): Option[String] =
+    if (name.startsWith("%") && name.endsWith("%")) {
+      val body = name.drop(1).dropRight(1)
+      Option.when(body.nonEmpty)(body)
+    } else None
+
+  private def isMaxSafeLength(lit: LiteralExpr): Boolean =
+    numValue(lit).contains(MaxSafeLengthNumber)
 
   private val wellKnownSymbols: Set[String] = Set(
     "iterator",
@@ -1306,6 +1694,15 @@ object Reify {
   )
 
   val internalMethods: Set[String] = proxyTrapName.keySet
+
+  val reifiableAOs: Set[String] = Set(
+    "LengthOfArrayLike",
+    "ToLength",
+    "ToIntegerOrInfinity",
+  )
+
+  def isReifiableAO(name: String): Boolean =
+    reifiableAOs.contains(name)
 
   def isInternalMethod(fname: String): Boolean =
     internalMethods.contains(fname)
@@ -1483,13 +1880,14 @@ object Reify {
 
   def hasUninterpretableApp(fs: List[Formula]): Boolean =
     def fromExpr(t: SymExpr): Set[String] = t match
-      case SEApp(fname: String, args) => Set(fname) ++ args.flatMap(fromExpr)
-      case SEApp(_, args)             => args.flatMap(fromExpr).toSet
-      case SEGlobal(_)                => Set()
-      case SEProj(base, key)          => fromExpr(base) ++ fromExpr(key)
-      case SEField(base, _)           => fromExpr(base)
-      case SEList(elems)              => elems.flatMap(fromExpr).toSet
-      case SERecord(_, fs)            => fs.values.flatMap(fromExpr).toSet
+      case SECall(fname, args) => Set(fname) ++ args.flatMap(fromExpr)
+      case SEResidual(name, args) =>
+        Set(name) ++ args.flatMap(fromExpr)
+      case SEApp(_, args)     => args.flatMap(fromExpr).toSet
+      case SEGlobal(_)        => Set()
+      case SEField(base, key) => fromExpr(base) ++ fromExpr(key)
+      case SEList(elems)      => elems.flatMap(fromExpr).toSet
+      case SERecord(_, fs)    => fs.values.flatMap(fromExpr).toSet
       case SEMap(es) =>
         es.flatMap((k, v) => fromExpr(k) ++ fromExpr(v)).toSet
       case SETypeOf(t) => fromExpr(t)
@@ -1506,13 +1904,13 @@ object Reify {
 
   def outerAppNames(f: Formula): Set[String] =
     def fromExpr(t: SymExpr): Set[String] = t match
-      case SEApp(fname: String, _) if !isKnownApp(fname) => Set(fname)
-      case SEApp(_, args)    => args.flatMap(fromExpr).toSet
-      case SEGlobal(_)       => Set()
-      case SEProj(base, key) => fromExpr(base) ++ fromExpr(key)
-      case SEField(base, _)  => fromExpr(base)
-      case SEList(elems)     => elems.flatMap(fromExpr).toSet
-      case SERecord(_, fs)   => fs.values.flatMap(fromExpr).toSet
+      case SECall(fname, _) if !isKnownApp(fname) => Set(fname)
+      case SEResidual(name, _)                    => Set(name)
+      case SEApp(_, args)     => args.flatMap(fromExpr).toSet
+      case SEGlobal(_)        => Set()
+      case SEField(base, key) => fromExpr(base) ++ fromExpr(key)
+      case SEList(elems)      => elems.flatMap(fromExpr).toSet
+      case SERecord(_, fs)    => fs.values.flatMap(fromExpr).toSet
       case SEMap(es) =>
         es.flatMap((k, v) => fromExpr(k) ++ fromExpr(v)).toSet
       case SETypeOf(t) => fromExpr(t)
@@ -1527,7 +1925,8 @@ object Reify {
       case FTypeCheck(e, _) => fromExpr(e)
 
   private def isKnownApp(name: String): Boolean =
-    internalMethods.contains(name)
+    internalMethods.contains(name) ||
+    isReifiableAO(name)
 
   /** JS expression to access a builtin function */
   def funcAccessExpr(f: Func): Option[String] =

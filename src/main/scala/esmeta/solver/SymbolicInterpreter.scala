@@ -11,7 +11,8 @@ import scala.collection.mutable.{Set => MSet, Queue}
 class SymbolicInterpreter(
   entryFunc: Func,
   target: Cond,
-  solveGoal: Goal => LazyList[Goal],
+  solvePC: List[Formula] => LazyList[List[Formula]],
+  hasContradiction: List[Formula] => Boolean,
 )(using cfg: CFG) {
   import SymbolicInterpreter.*, Formula.*, SymExpr.*
   private val Cond(branch, side) = target
@@ -64,10 +65,10 @@ class SymbolicInterpreter(
     }
   ) ).toMap.withDefaultValue(Set())
 
-  lazy val result: LazyList[Goal] =
+  lazy val result: LazyList[List[Formula]] =
     if (whitelist(entryFunc).isEmpty) { whitelistEmpty = true; LazyList() }
     else {
-      var stack = List[(Cond, List[Goal], State)]()
+      var stack = List[(Cond, List[List[Formula]], State)]()
 
       // env, call context initialization
       env = entryFunc.head match
@@ -87,16 +88,19 @@ class SymbolicInterpreter(
       callCtxt = None
 
       // path constraint
-      def convertDNF(lhs: List[Goal], rhs: List[Goal]): List[Goal] =
+      def convertDNF(
+        lhs: List[List[Formula]],
+        rhs: List[List[Formula]],
+      ): List[List[Formula]] =
         for {
           l <- lhs
           r <- rhs
           goal = l ++ r
-          if !Solver.hasContradiction(goal)
+          if !hasContradiction(goal)
         } yield goal
 
-      def pc: List[Goal] =
-        stack.reverseIterator.foldLeft(List(List()): List[Goal]) {
+      def pc: List[List[Formula]] =
+        stack.reverseIterator.foldLeft(List(List()): List[List[Formula]]) {
           (goals, frame) => convertDNF(goals, frame._2)
         }
 
@@ -167,25 +171,25 @@ class SymbolicInterpreter(
                     Some(callee.entry).filter(feasible)
                   case Some(callee) if stepInFuncs.contains(callee) =>
                     cycleBlocked = true
-                    env += (ret -> SEApp(fname, args.map(eval)))
+                    env += (ret -> SECall(fname, args.map(eval)))
                     call.next.filter(feasible)
                   case _ =>
                     if (cfg.fnameMap.get(fname).exists(stepInFuncs.contains))
                       stepInBlocked = true
-                    env += (ret -> SEApp(fname, args.map(eval)))
+                    env += (ret -> SECall(fname, args.map(eval)))
                     call.next.filter(feasible)
               case ICall(_, ERef(Field(base, EStr(method))), args) =>
                 internalMethodDispatch = true
-                env += (ret -> SEApp(method, eval(base) :: args.map(eval)))
+                env += (ret -> SECall(method, eval(base) :: args.map(eval)))
                 call.next.filter(feasible)
               case ISdoCall(_, base, op, args) =>
                 internalMethodDispatch = true
-                env += (ret -> SEApp(op, eval(base) :: args.map(eval)))
+                env += (ret -> SECall(op, eval(base) :: args.map(eval)))
                 call.next.filter(feasible)
               case _ => env -= ret; call.next.filter(feasible)
 
       // collect path constraints
-      def collectGoal(node: Node): Option[List[Goal]] =
+      def collectGoal(node: Node): Option[List[List[Formula]]] =
         try {
           node match
             case b: Branch if b.id == branch.id =>
@@ -222,18 +226,19 @@ class SymbolicInterpreter(
         }
 
       var cur: Option[Node] = Some(entryFunc.entry)
-      def solveGoals(goals: List[Goal]): LazyList[Goal] = goals match
-        case Nil =>
-          cur = backtrack()
-          nextGoals
-        case goal :: rest =>
-          val solved = solveGoal(goal)
-          if (solved.isEmpty) {
-            targetContradiction = true
-            solveGoals(rest)
-          } else solved #::: solveGoals(rest)
+      def solveGoals(goals: List[List[Formula]]): LazyList[List[Formula]] =
+        goals match
+          case Nil =>
+            cur = backtrack()
+            nextGoals
+          case goal :: rest =>
+            val solved = solvePC(goal)
+            if (solved.isEmpty) {
+              targetContradiction = true
+              solveGoals(rest)
+            } else solved #::: solveGoals(rest)
 
-      def nextGoals: LazyList[Goal] = cur match
+      def nextGoals: LazyList[List[Formula]] = cur match
         case None => LazyList()
         case Some(node) =>
           collectGoal(node) match
@@ -296,11 +301,14 @@ class SymbolicInterpreter(
           env += (x -> (if (front) SEList(t :: es) else SEList(es :+ t)))
         case _ => ()
     case _: IPush => () // non-local list
-    case IPop(lhs, ERef(x: Local), _) =>
+    case IPop(lhs, ERef(x: Local), front) =>
       env.get(x) match
         case Some(SEList(es)) if es.nonEmpty =>
-          env += (lhs -> es.head)
-          env += (x -> SEList(es.tail))
+          val (popped, rest) =
+            if (front) (es.head, es.tail)
+            else (es.last, es.init)
+          env += (lhs -> popped)
+          env += (x -> SEList(rest))
         case _ => env -= lhs
     case IPop(lhs, _, _) => env -= lhs
     case IExpr(EYet(_))  => throw NotImplementedError("EYet")
@@ -311,24 +319,19 @@ class SymbolicInterpreter(
       throw NotImplementedError("syntactic")
     case _: EYet => throw NotImplementedError("EYet")
     case EContains(list, elem) =>
-      simplify(SEApp("[ir:contains]", List(eval(list), eval(elem))))
+      fold(SEResidual("contains", List(eval(list), eval(elem))))
     case ESubstring(base, from, to) =>
       val args = List(eval(base), eval(from)) ++ to.map(eval)
-      simplify(SEApp("[ir:substring]", args))
+      fold(SEResidual("substring", args))
     case ETrim(base, isStarting) =>
-      val op = if (isStarting) "[ir:trim-start]" else "[ir:trim-end]"
-      simplify(SEApp(op, List(eval(base))))
-    case ERef(ref) => eval(ref)
-    case EUnary(op, e) =>
-      simplify(SEApp(op, List(eval(e))))
-    case EBinary(op, lhs, rhs) =>
-      simplify(SEApp(op, List(eval(lhs), eval(rhs))))
-    case EVariadic(op, exprs) =>
-      simplify(SEApp(op, exprs.map(eval)))
-    case EMathOp(mop, args) =>
-      simplify(SEApp(mop, args.map(eval)))
-    case EConvert(cop, e) =>
-      simplify(SEApp(cop, List(eval(e))))
+      val op = if (isStarting) "trim-start" else "trim-end"
+      fold(SEResidual(op, List(eval(base))))
+    case ERef(ref)             => eval(ref)
+    case EUnary(op, e)         => fold(SEOp(op, List(eval(e))))
+    case EBinary(op, lhs, rhs) => fold(SEOp(op, List(eval(lhs), eval(rhs))))
+    case EVariadic(op, exprs)  => fold(SEOp(op, exprs.map(eval)))
+    case EMathOp(mop, args)    => fold(SEOp(mop, args.map(eval)))
+    case EConvert(cop, e)      => fold(SEOp(cop, List(eval(e))))
     case EExists(ref) =>
       ref match
         case x: Local => SELit(EBool(env.contains(x)))
@@ -338,16 +341,16 @@ class SymbolicInterpreter(
               SELit(EBool(fs.contains(f)))
             case (SEMap(es), k) =>
               SELit(EBool(es.exists(_._1 == k)))
-            case (t, k) => SEApp("[ir:exists]", List(t, k))
+            case (t, k) => SEResidual("exists", List(t, k))
         case _ => SELit(EBool(true))
     case ETypeOf(e)     => SETypeOf(eval(e))
     case _: EInstanceOf => throw NotImplementedError("EInstanceOf")
     case ETypeCheck(e, ty) =>
-      simplify(SEApp(BOp.Eq, List(SETypeOf(eval(e)), SEType(ty.toValue))))
+      fold(SEOp(BOp.Eq, List(SETypeOf(eval(e)), SEType(ty.toValue))))
     case ESizeOf(e) =>
       eval(e) match
         case SEList(elems) => SELit(EMath(BigDecimal(elems.size)))
-        case t             => SEApp("[ir:sizeof]", List(t))
+        case t             => SEResidual("sizeof", List(t))
     case _: EClo    => ??? // opaque-closure
     case _: ECont   => ??? // opaque-continuation
     case EDebug(_)  => ??? // debug
@@ -363,7 +366,7 @@ class SymbolicInterpreter(
       eval(map) match
         case SERecord(_, fs) => SEList(fs.keys.map(k => SELit(EStr(k))).toList)
         case SEMap(es)       => SEList(es.map(_._1))
-        case t               => SEApp("[ir:keys]", List(t))
+        case t               => SEResidual("keys", List(t))
     case literal: LiteralExpr => SELit(literal)
 
   private def eval(ref: Ref): SymExpr = ref match
@@ -377,7 +380,7 @@ class SymbolicInterpreter(
         case SEMap(es) =>
           es.collectFirst {
             case (SELit(EStr(`name`)), v) => v
-          }.getOrElse(SEProj(SEMap(es), SELit(EStr(name))))
+          }.getOrElse(SEField(SEMap(es), SELit(EStr(name))))
         case t => SEField(t, name)
     case Field(base, idx) =>
       (eval(base), eval(idx)) match
@@ -386,10 +389,10 @@ class SymbolicInterpreter(
           es(n.toInt)
         case (SEMap(es), k) =>
           es.collectFirst { case (`k`, v) => v }
-            .getOrElse(SEProj(SEMap(es), k))
-        case (b, k) => SEProj(b, k)
+            .getOrElse(SEField(SEMap(es), k))
+        case (b, k) => SEField(b, k)
 
-  private def getConstraints(expr: Expr, pos: Boolean): List[Goal] =
+  private def getConstraints(expr: Expr, pos: Boolean): List[List[Formula]] =
     expr match
       case EUnary(UOp.Not, inner) => getConstraints(inner, !pos)
       case ETypeCheck(base, ty) =>
@@ -437,7 +440,7 @@ class SymbolicInterpreter(
           case (SELit(EStr(s)), SELit(EStr(sub))) =>
             if (s.contains(sub) == pos) List(List()) else Nil
           case (l, r) =>
-            val f = FEq(SEApp("[ir:contains]", List(l, r)), SELit(EBool(true)))
+            val f = FEq(SEResidual("contains", List(l, r)), SELit(EBool(true)))
             List(List(if (pos) f else FNot(f)))
       case ERef(ref) =>
         eval(ref) match
@@ -449,34 +452,34 @@ class SymbolicInterpreter(
           s"getConstraints: ${e.getClass.getSimpleName}",
         )
 
-  // constant folding for literals
-  private def simplify(t: SymExpr): SymExpr = t match
-    case SEApp(op: UOp, List(SELit(lit))) =>
-      foldUOp(op, lit).getOrElse(t)
-    case SEApp(op: BOp, List(SELit(l), SELit(r))) =>
-      foldBOp(op, l, r).getOrElse(t)
-    case SEApp(op: VOp, args) =>
-      foldVOp(op, args).getOrElse(t)
-    case SEApp(op: MOp, args) =>
-      foldMOp(op, args).getOrElse(t)
-    case SEApp(op: COp, List(SELit(lit))) =>
-      foldCOp(op, lit).getOrElse(t)
-    case SEApp(_: COp, List(arg)) => arg
-    case SEApp("[ir:contains]", List(SEList(es), t)) =>
+  // local constant folding for symbolic expressions
+  private def fold(t: SymExpr): SymExpr = t match
+    case SEOp(op: UOp, List(SELit(lit))) =>
+      SymbolicInterpreter.fold(op, lit).getOrElse(t)
+    case SEOp(op: BOp, List(SELit(l), SELit(r))) =>
+      SymbolicInterpreter.fold(op, l, r).getOrElse(t)
+    case SEOp(op: VOp, args) =>
+      SymbolicInterpreter.fold(op, args).getOrElse(t)
+    case SEOp(op: MOp, args) =>
+      SymbolicInterpreter.fold(op, args).getOrElse(t)
+    case SEOp(op: COp, List(SELit(lit))) =>
+      SymbolicInterpreter.fold(op, lit).getOrElse(t)
+    case SEOp(_: COp, List(arg)) => arg
+    case SEResidual("contains", List(SEList(es), t)) =>
       SELit(EBool(es.contains(t)))
-    case SEApp("[ir:contains]", List(SELit(EStr(s)), SELit(EStr(sub)))) =>
+    case SEResidual("contains", List(SELit(EStr(s)), SELit(EStr(sub)))) =>
       SELit(EBool(s.contains(sub)))
-    case SEApp(
-          "[ir:substring]",
-          List(SELit(EStr(s)), SELit(EMath(f)), SELit(EMath(to))),
+    case SEResidual(
+          "substring",
+          List(SELit(EStr(s)), SELit(EMath(from)), SELit(EMath(to))),
         ) =>
       val end = if (s.length < to.toInt) s.length else to.toInt
-      SELit(EStr(s.substring(f.toInt, end)))
-    case SEApp("[ir:substring]", List(SELit(EStr(s)), SELit(EMath(f)))) =>
-      SELit(EStr(s.substring(f.toInt)))
-    case SEApp("[ir:trim-start]", List(SELit(EStr(s)))) =>
+      SELit(EStr(s.substring(from.toInt, end)))
+    case SEResidual("substring", List(SELit(EStr(s)), SELit(EMath(from)))) =>
+      SELit(EStr(s.substring(from.toInt)))
+    case SEResidual("trim-start", List(SELit(EStr(s)))) =>
       SELit(EStr(trimString(s, true, cfg.esParser)))
-    case SEApp("[ir:trim-end]", List(SELit(EStr(s)))) =>
+    case SEResidual("trim-end", List(SELit(EStr(s)))) =>
       SELit(EStr(trimString(s, false, cfg.esParser)))
     case _ => t
 }
@@ -495,11 +498,20 @@ object SymbolicInterpreter {
   def apply(
     entryFunc: Func,
     target: Cond,
-    solveGoal: Goal => LazyList[Goal],
+    solvePC: List[Formula] => LazyList[List[Formula]],
   )(using CFG): SymbolicInterpreter =
-    new SymbolicInterpreter(entryFunc, target, solveGoal)
+    val solver = Solver()
+    new SymbolicInterpreter(entryFunc, target, solvePC, solver.hasContradiction)
 
-  private def foldUOp(op: UOp, lit: LiteralExpr): Option[SymExpr] =
+  def apply(
+    entryFunc: Func,
+    target: Cond,
+    solvePC: List[Formula] => LazyList[List[Formula]],
+    hasContradiction: List[Formula] => Boolean,
+  )(using CFG): SymbolicInterpreter =
+    new SymbolicInterpreter(entryFunc, target, solvePC, hasContradiction)
+
+  private def fold(op: UOp, lit: LiteralExpr): Option[SymExpr] =
     import UOp.*
     (op, lit) match
       case (Abs, EMath(n)) => Some(SELit(EMath(n.abs)))
@@ -516,11 +528,7 @@ object SymbolicInterpreter {
       case (BNot, EBigInt(n))    => Some(SELit(EBigInt(~n)))
       case _                     => None
 
-  private def foldBOp(
-    op: BOp,
-    l: LiteralExpr,
-    r: LiteralExpr,
-  ): Option[SymExpr] =
+  private def fold(op: BOp, l: LiteralExpr, r: LiteralExpr): Option[SymExpr] =
     import BOp.*
     (op, l, r) match
       case (Add, ENumber(a), ENumber(b)) => Some(SELit(ENumber(a + b)))
@@ -568,7 +576,7 @@ object SymbolicInterpreter {
       case (Equal, a, b)                     => Some(SELit(EBool(a == b)))
       case _                                 => None
 
-  private def foldVOp(op: VOp, terms: List[SymExpr]): Option[SymExpr] =
+  private def fold(op: VOp, terms: List[SymExpr]): Option[SymExpr] =
     import VOp.*
     op match
       case Min =>
@@ -606,7 +614,7 @@ object SymbolicInterpreter {
           else None
         }
 
-  private def foldMOp(mop: MOp, terms: List[SymExpr]): Option[SymExpr] =
+  private def fold(mop: MOp, terms: List[SymExpr]): Option[SymExpr] =
     import MOp.*
     val nums = terms.collect { case SELit(EMath(n)) => n.toDouble }
     if (nums.size != terms.size) None
@@ -633,7 +641,7 @@ object SymbolicInterpreter {
         case _                   => None // Acosh, Asinh, Atanh not supported
       r.map(v => SELit(EMath(v)))
 
-  private def foldCOp(cop: COp, lit: LiteralExpr): Option[SymExpr] =
+  private def fold(cop: COp, lit: LiteralExpr): Option[SymExpr] =
     import COp.*
     (cop, lit) match
       case (ToMath, EMath(n))     => Some(SELit(EMath(n)))

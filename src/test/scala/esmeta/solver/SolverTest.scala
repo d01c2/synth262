@@ -9,19 +9,20 @@ import Formula.*, SymExpr.*, Sym.*
 /** test support for solver */
 trait SolverTest extends ESMetaTest {
   given CFG = CFG()
+  protected val solver: Solver = Solver()
   def category: String = "solver"
 
   def solveAndReify(
-    goal: Goal,
+    goal: List[Formula],
     params: List[Sym] = List(SolverTest.x),
   ): Option[Witness] =
-    Solver.solve(goal).flatMap(Reify(_, params).witness)
+    solver.solve(goal).flatMap(Reify(_, params).witness)
 
-  def checkUnsat(desc: String)(goal: Goal): Unit =
-    check(desc)(assert(Solver.solve(goal).isEmpty))
+  def checkUnsat(desc: String)(goal: List[Formula]): Unit =
+    check(desc)(assert(solver.solve(goal).isEmpty))
 
   def checkWitness(desc: String, params: List[Sym] = List(SolverTest.x))(
-    goal: Goal,
+    goal: List[Formula],
   )(assertion: Witness => Unit): Unit =
     check(desc) {
       solveAndReify(goal, params) match
@@ -33,7 +34,7 @@ trait SolverTest extends ESMetaTest {
     desc: String,
     param: Sym = SolverTest.x,
     params: List[Sym] = List(SolverTest.x),
-  )(goal: Goal)(assertion: String => Unit): Unit =
+  )(goal: List[Formula])(assertion: String => Unit): Unit =
     checkWitness(desc, params)(goal) { witness =>
       assertion(witness.getOrElse(param, fail(s"missing witness for $param")))
     }
