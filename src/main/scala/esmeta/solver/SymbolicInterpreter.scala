@@ -304,9 +304,8 @@ class SymbolicInterpreter(
     case IPop(lhs, ERef(x: Local), front) =>
       env.get(x) match
         case Some(SEList(es)) if es.nonEmpty =>
-          val (popped, rest) =
-            if (front) (es.head, es.tail)
-            else (es.last, es.init)
+          val popped = if (front) es.head else es.last
+          val rest = if (front) es.drop(1) else es.dropRight(1)
           env += (lhs -> popped)
           env += (x -> SEList(rest))
         case _ => env -= lhs
