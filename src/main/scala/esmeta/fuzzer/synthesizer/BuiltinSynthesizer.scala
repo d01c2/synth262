@@ -21,7 +21,7 @@ class BuiltinSynthesizer(algorithms: List[Algorithm]) extends Synthesizer {
   /** get initial pool */
   lazy val initPool: Vector[String] = (for {
     case BuiltinHead(path, params, _) <- algorithms.map(_.head)
-    code <- path match
+    raw <- path match
       case YetPath(_) => Nil
       case Getter(base) =>
         getString(base) :: (base match
@@ -57,7 +57,14 @@ class BuiltinSynthesizer(algorithms: List[Algorithm]) extends Synthesizer {
           args = List.fill(argsLen)("0")
           argsStr = args.mkString(", ")
         } yield s"new $pathStr($argsStr);")
-        calls ++ constructs
+        // Reflect.construct calls
+        val reflectConstructs = for {
+          argsLen <- Range(MIN_ARGS, MAX_ARGS).toList
+          argsStr = List.fill(argsLen)("0").mkString(", ")
+        } yield s"Reflect.construct($pathStr, [$argsStr], 0);"
+        calls ++ constructs ++ reflectConstructs
+    // expand the %TypedArray% placeholder over the whole concrete family
+    code <- if (raw.contains(TA)) taCtors.map(raw.replace(TA, _)) else List(raw)
   } yield code).toVector
 
   // get prototype paths and properties
@@ -69,11 +76,29 @@ class BuiltinSynthesizer(algorithms: List[Algorithm]) extends Synthesizer {
         Some((s"${getString(base)}.prototype", s"[Symbol.$symbol]"))
       case _ => None
 
+  // placeholder for %TypedArray%
+  private val TA = "__TA__"
+  private val taCtors: List[String] = List(
+    "Int8Array",
+    "Uint8Array",
+    "Uint8ClampedArray",
+    "Int16Array",
+    "Uint16Array",
+    "Int32Array",
+    "Uint32Array",
+    "BigInt64Array",
+    "BigUint64Array",
+    "Float16Array",
+    "Float32Array",
+    "Float64Array",
+  )
+
   // get string of builtin path
   private def getString(path: BuiltinPath): String =
     (new Appender >> path).toString
   private given builtinPathRule: Rule[BuiltinPath] = (app, path) =>
     path match
+      case Base("TypedArray")       => app >> s"(Object.getPrototypeOf($TA))"
       case Base(name)               => app >> name
       case NormalAccess(base, name) => app >> base >> "." >> name
       case Getter(base)             => app >> base
@@ -85,12 +110,16 @@ class BuiltinSynthesizer(algorithms: List[Algorithm]) extends Synthesizer {
   // get base of builtin path
   private def getBase(path: BuiltinPath): Option[String] = path match
     case NormalAccess(NormalAccess(base, "prototype"), _) =>
-      Some(getString(base))
+      Some(receiver(base))
     case SymbolAccess(NormalAccess(base, "prototype"), _) =>
-      Some(getString(base))
+      Some(receiver(base))
     case Getter(base) => getBase(base)
     case Setter(base) => getBase(base)
     case _            => None
+
+  // receiver of a %TypedArray%.prototype method must be a concrete instance
+  private def receiver(base: BuiltinPath): String =
+    if (base == Base("TypedArray")) TA else getString(base)
 
   /** for syntactic production */
   def apply(
