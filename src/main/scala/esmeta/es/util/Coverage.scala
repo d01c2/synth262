@@ -524,7 +524,7 @@ object Coverage {
     // override eval for node
     override def eval(node: Node): Unit =
       // record touched nodes if it is a target node
-      if (isTargetNode(node, st))
+      if (isTargetNode(node, st) && isBuiltinNearest)
         touchedNodeViews += NodeView(node, getView(node))
       super.eval(node)
 
@@ -641,7 +641,7 @@ object Coverage {
     // override branch move
     override def moveBranch(branch: Branch, b: Boolean): Unit =
       // record touched conditional branch if it is a target branch
-      if (isTargetBranch(branch, st))
+      if (isTargetBranch(branch, st) && isBuiltinNearest)
         val cond = Cond(branch, b)
         val targets = analyzer match
           case Some(_) =>
@@ -669,6 +669,9 @@ object Coverage {
 
     // get nearest target
     private def getNearest: Option[Target] = st.context.nearest
+
+    private def isBuiltinNearest: Boolean =
+      st.context.featureStack.headOption.exists(_.isInstanceOf[BuiltinFeature])
   }
 
   /** meta-information for each script */
