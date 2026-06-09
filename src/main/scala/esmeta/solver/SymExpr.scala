@@ -31,6 +31,7 @@ enum SymExpr:
   case SELit(value: LiteralExpr)
   case SEField(base: SymExpr, key: SymExpr)
   case SEApp(kind: AppKind, args: List[SymExpr])
+  case SEClo(fname: String, captured: Map[Name, SymExpr])
   case SEList(elems: List[SymExpr])
   case SERecord(tname: String, fields: Map[String, SymExpr])
   case SEMap(entries: List[(SymExpr, SymExpr)])
@@ -43,6 +44,7 @@ enum SymExpr:
     case SELit(_)           => Set.empty
     case SEField(base, key) => base.freeVars ++ key.freeVars
     case SEApp(_, args)     => args.flatMap(_.freeVars).toSet
+    case SEClo(_, captured) => captured.values.flatMap(_.freeVars).toSet
     case SEList(elems)      => elems.flatMap(_.freeVars).toSet
     case SERecord(_, fs)    => fs.values.flatMap(_.freeVars).toSet
     case SEMap(es)   => es.flatMap((k, v) => k.freeVars ++ v.freeVars).toSet
@@ -57,6 +59,8 @@ enum SymExpr:
     case SELit(v)           => v.toString
     case SEField(base, key) => s"$base[$key]"
     case SEApp(n, args)     => s"$n(${args.mkString(", ")})"
+    case SEClo(fname, captured) =>
+      s"clo<$fname>{${captured.map((k, v) => s"$k=$v").mkString(", ")}}"
     case SEList(elems)      => s"[${elems.mkString(", ")}]"
     case SERecord(tn, fs) =>
       s"$tn{${fs.map((k, v) => s"$k: $v").mkString(", ")}}"
@@ -74,6 +78,8 @@ enum SymExpr:
         case SEField(base, key) =>
           SEField(base.rewrite(from, to), key.rewrite(from, to))
         case SEApp(op, args) => SEApp(op, args.map(_.rewrite(from, to)))
+        case SEClo(fname, captured) =>
+          SEClo(fname, captured.map((k, v) => k -> v.rewrite(from, to)))
         case SEList(elems)   => SEList(elems.map(_.rewrite(from, to)))
         case SERecord(tn, fs) =>
           SERecord(tn, fs.map((k, v) => k -> v.rewrite(from, to)))

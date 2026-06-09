@@ -160,6 +160,7 @@ class Solver(timeLimit: Option[Int] = None)(using CFG) {
   private def children(e: SymExpr): List[SymExpr] = e match
     case SEField(base, key)  => List(base, key)
     case SEApp(_, args)      => args
+    case SEClo(_, captured)  => captured.values.toList
     case SEList(es)          => es
     case SERecord(_, fields) => fields.values.toList
     case SEMap(entries)      => entries.flatMap((k, v) => List(k, v))
@@ -243,6 +244,11 @@ class Solver(timeLimit: Option[Int] = None)(using CFG) {
                 args.foldLeft(budget - 1) {
                   case (rest, _) if rest < 0 => -1
                   case (rest, arg)           => loop(arg, rest)
+                }
+              case SEClo(_, captured) =>
+                captured.values.foldLeft(budget - 1) {
+                  case (rest, _) if rest < 0 => -1
+                  case (rest, v)             => loop(v, rest)
                 }
               case SEList(elems) =>
                 elems.foldLeft(budget - 1) {
@@ -406,6 +412,7 @@ class Solver(timeLimit: Option[Int] = None)(using CFG) {
   private def hasContradictionRaw(fs: List[Formula]): Boolean =
     val eqSet = fs.collect { case f: FEq => f }.toSet
     val ltSet = fs.collect { case f: FLt => f }.toSet
+    val existsSet = fs.collect { case f: FExists => f }.toSet
     val litBindings = literalBindings(fs)
     val tyBindings = positiveTypeBindings(fs)
     val negTyBindings = negativeTypeBindings(fs)
@@ -431,9 +438,10 @@ class Solver(timeLimit: Option[Int] = None)(using CFG) {
       case FNot(FEq(t, SELit(v))) => litBindings.get(t).exists(_ == v)
       case FNot(FEq(SELit(v), t)) => litBindings.get(t).exists(_ == v)
       // direct positive/negative contradiction
-      case FNot(f: FEq) => eqSet.contains(f)
-      case FNot(f: FLt) => ltSet.contains(f)
-      case _            => false
+      case FNot(f: FEq)     => eqSet.contains(f)
+      case FNot(f: FLt)     => ltSet.contains(f)
+      case FNot(f: FExists) => existsSet.contains(f)
+      case _                => false
     } || tyBindings.exists { (_, tys) =>
       // type contradiction
       tys.reduce(_ && _).isBottom

@@ -159,34 +159,40 @@ class SymbolicInterpreter(
           case call: Call =>
             val ret = call.lhs
             call.callInst match
-              case ICall(_, EClo(fname, _), args) =>
-                cfg.fnameMap.get(fname) match
-                  case Some(callee) if canStepIn(callee, func) =>
-                    val argVals = args.map(eval)
-                    callCtxt = Some(CallContext(call, env, callCtxt))
-                    env = callee.irFunc.params
-                      .zip(argVals)
-                      .map((p, a) => p.lhs -> a)
-                      .toMap
-                    Some(callee.entry).filter(feasible)
-                  case Some(callee) if stepInFuncs.contains(callee) =>
-                    cycleBlocked = true
-                    env += (ret -> SECall(fname, args.map(eval)))
-                    call.next.filter(feasible)
-                  case _ =>
-                    if (cfg.fnameMap.get(fname).exists(stepInFuncs.contains))
-                      stepInBlocked = true
-                    env += (ret -> SECall(fname, args.map(eval)))
-                    call.next.filter(feasible)
               case ICall(_, ERef(Field(base, EStr(method))), args) =>
                 internalMethodDispatch = true
                 env += (ret -> SECall(method, eval(base) :: args.map(eval)))
                 call.next.filter(feasible)
+              case ICall(_, callExpr, args) =>
+                cloOf(callExpr) match
+                  case Some((fname, captured)) =>
+                    val capEnv: Map[Local, SymExpr] =
+                      captured.map((k, v) => (k: Local) -> v)
+                    cfg.fnameMap.get(fname) match
+                      case Some(callee) if canStepIn(callee, func) =>
+                        val argVals = args.map(eval)
+                        callCtxt = Some(CallContext(call, env, callCtxt))
+                        env = capEnv ++ callee.irFunc.params
+                          .zip(argVals)
+                          .map((p, a) => p.lhs -> a)
+                          .toMap
+                        Some(callee.entry).filter(feasible)
+                      case Some(callee) if stepInFuncs.contains(callee) =>
+                        cycleBlocked = true
+                        env += (ret -> SECall(fname, args.map(eval)))
+                        call.next.filter(feasible)
+                      case _ =>
+                        if (
+                          cfg.fnameMap.get(fname).exists(stepInFuncs.contains)
+                        )
+                          stepInBlocked = true
+                        env += (ret -> SECall(fname, args.map(eval)))
+                        call.next.filter(feasible)
+                  case None => env -= ret; call.next.filter(feasible)
               case ISdoCall(_, base, op, args) =>
                 internalMethodDispatch = true
                 env += (ret -> SECall(op, eval(base) :: args.map(eval)))
                 call.next.filter(feasible)
-              case _ => env -= ret; call.next.filter(feasible)
 
       // collect path constraints
       def collectGoal(node: Node): Option[List[List[Formula]]] =
@@ -313,6 +319,14 @@ class SymbolicInterpreter(
     case IExpr(EYet(_))  => throw NotImplementedError("EYet")
     case _               => ()
 
+  // resolve a call target to a closure
+  private def cloOf(e: Expr): Option[(String, Map[Name, SymExpr])] =
+    try {
+      eval(e) match
+        case SEClo(fname, captured) => Some(fname -> captured)
+        case _                      => None
+    } catch case _: NotImplementedError => None
+
   private def eval(expr: Expr): SymExpr = expr match
     case _: EParse | _: EGrammarSymbol | _: ESourceText =>
       throw NotImplementedError("syntactic")
@@ -350,7 +364,8 @@ class SymbolicInterpreter(
       eval(e) match
         case SEList(elems) => SELit(EMath(BigDecimal(elems.size)))
         case t             => SEResidual("sizeof", List(t))
-    case _: EClo    => ??? // opaque-closure
+    case EClo(fname, captured) =>
+      SEClo(fname, captured.flatMap(n => env.get(n).map(v => n -> v)).toMap)
     case _: ECont   => ??? // opaque-continuation
     case EDebug(_)  => ??? // debug
     case _: ERandom => ??? // non-deterministic
