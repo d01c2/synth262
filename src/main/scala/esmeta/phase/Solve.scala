@@ -82,11 +82,7 @@ case object Solve extends Phase[CFG, String] {
         }
       },
     ).result
-    goals.flatMap { solved =>
-      Reify(solved, params).witness.flatMap { witness =>
-        Reify.toJsCall(entry, params, witness)
-      }
-    }
+    goals.flatMap(solved => Reifier(entry, solved, params))
 
   def paramIds(func: Func): List[Sym] =
     val irIds = func.irFunc.params.flatMap { p =>

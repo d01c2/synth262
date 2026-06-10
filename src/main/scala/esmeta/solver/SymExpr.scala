@@ -61,7 +61,7 @@ enum SymExpr:
     case SEApp(n, args)     => s"$n(${args.mkString(", ")})"
     case SEClo(fname, captured) =>
       s"clo<$fname>{${captured.map((k, v) => s"$k=$v").mkString(", ")}}"
-    case SEList(elems)      => s"[${elems.mkString(", ")}]"
+    case SEList(elems) => s"[${elems.mkString(", ")}]"
     case SERecord(tn, fs) =>
       s"$tn{${fs.map((k, v) => s"$k: $v").mkString(", ")}}"
     case SEMap(es)   => s"Map(${es.map((k, v) => s"$k -> $v").mkString(", ")})"
@@ -80,7 +80,7 @@ enum SymExpr:
         case SEApp(op, args) => SEApp(op, args.map(_.rewrite(from, to)))
         case SEClo(fname, captured) =>
           SEClo(fname, captured.map((k, v) => k -> v.rewrite(from, to)))
-        case SEList(elems)   => SEList(elems.map(_.rewrite(from, to)))
+        case SEList(elems) => SEList(elems.map(_.rewrite(from, to)))
         case SERecord(tn, fs) =>
           SERecord(tn, fs.map((k, v) => k -> v.rewrite(from, to)))
         case SEMap(es) =>

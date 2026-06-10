@@ -29,9 +29,7 @@ class Solver(timeLimit: Option[Int] = None)(using CFG) {
       val calls = initCalls.toList.sortBy(_.toString)
       solveCases(seed, calls, initCalls).flatMap { (solved, allCalls) =>
         saturate(expand(solved))
-          .map { solved =>
-            stripCallFactsWithProjectedFacts(solved, allCalls)
-          }
+          .map(solved => stripCallFacts(solved, allCalls))
           .to(LazyList)
       }
     }
@@ -114,17 +112,11 @@ class Solver(timeLimit: Option[Int] = None)(using CFG) {
           }
         }
 
-  private def stripCallFactsWithProjectedFacts(
+  private def stripCallFacts(
     goal: List[Formula],
     calls: Set[SymExpr],
   ): List[Formula] =
-    val kept = mutable.ListBuffer.empty[Formula]
-    val dropped = mutable.ListBuffer.empty[Formula]
-    goal.foreach { formula =>
-      if (containsAnyCall(formula, calls)) dropped += formula
-      else kept += formula
-    }
-    kept.toList ++ Reify.projectedFactFormulas(dropped.toList)
+    goal.filterNot(containsAnyCall(_, calls))
 
   private def containsAnyCall(
     formula: Formula,
@@ -507,4 +499,69 @@ class Solver(timeLimit: Option[Int] = None)(using CFG) {
 object Solver {
   def apply(timeLimit: Option[Int] = None)(using CFG): Solver =
     new Solver(timeLimit)
+
+  // apps the solve+reify pipeline understands: MOP internal methods + a few AOs
+  private val internalMethodApps: Set[String] = Set(
+    "Call",
+    "Construct",
+    "GetPrototypeOf",
+    "SetPrototypeOf",
+    "IsExtensible",
+    "PreventExtensions",
+    "OwnPropertyKeys",
+    "Set",
+    "HasProperty",
+    "DefineOwnProperty",
+    "Delete",
+    "GetOwnProperty",
+  )
+  private val reifiableAOs: Set[String] =
+    Set("LengthOfArrayLike", "ToLength", "ToIntegerOrInfinity")
+  private def isKnownApp(name: String): Boolean =
+    internalMethodApps.contains(name) || reifiableAOs.contains(name)
+
+  // a goal mentions an application the pipeline cannot interpret
+  def hasUninterpretableApp(fs: List[Formula]): Boolean =
+    def fromExpr(t: SymExpr): Set[String] = t match
+      case SECall(fname, args)    => Set(fname) ++ args.flatMap(fromExpr)
+      case SEResidual(name, args) => Set(name) ++ args.flatMap(fromExpr)
+      case SEApp(_, args)         => args.flatMap(fromExpr).toSet
+      case SEGlobal(_)            => Set()
+      case SEField(base, key)     => fromExpr(base) ++ fromExpr(key)
+      case SEList(elems)          => elems.flatMap(fromExpr).toSet
+      case SERecord(_, fs)        => fs.values.flatMap(fromExpr).toSet
+      case SEMap(es)   => es.flatMap((k, v) => fromExpr(k) ++ fromExpr(v)).toSet
+      case SETypeOf(t) => fromExpr(t)
+      case _           => Set()
+    def fromFormula(f: Formula): Set[String] = f match
+      case FNot(inner) => fromFormula(inner)
+      case FImply(premise, conclusion) =>
+        (premise ++ conclusion).flatMap(fromFormula).toSet
+      case FEq(l, r)        => fromExpr(l) ++ fromExpr(r)
+      case FLt(l, r)        => fromExpr(l) ++ fromExpr(r)
+      case FExists(b, _)    => fromExpr(b)
+      case FTypeCheck(e, _) => fromExpr(e)
+    fs.exists(fromFormula(_).exists(!isKnownApp(_)))
+
+  // names of the outermost uninterpretable applications in a formula
+  def outerAppNames(f: Formula): Set[String] =
+    def fromExpr(t: SymExpr): Set[String] = t match
+      case SECall(fname, _) if !isKnownApp(fname) => Set(fname)
+      case SEResidual(name, _)                    => Set(name)
+      case SEApp(_, args)     => args.flatMap(fromExpr).toSet
+      case SEGlobal(_)        => Set()
+      case SEField(base, key) => fromExpr(base) ++ fromExpr(key)
+      case SEList(elems)      => elems.flatMap(fromExpr).toSet
+      case SERecord(_, fs)    => fs.values.flatMap(fromExpr).toSet
+      case SEMap(es)   => es.flatMap((k, v) => fromExpr(k) ++ fromExpr(v)).toSet
+      case SETypeOf(t) => fromExpr(t)
+      case _           => Set()
+    f match
+      case FNot(inner) => outerAppNames(inner)
+      case FImply(premise, conclusion) =>
+        (premise ++ conclusion).flatMap(outerAppNames).toSet
+      case FEq(l, r)        => fromExpr(l) ++ fromExpr(r)
+      case FLt(l, r)        => fromExpr(l) ++ fromExpr(r)
+      case FExists(b, _)    => fromExpr(b)
+      case FTypeCheck(e, _) => fromExpr(e)
 }

@@ -16,7 +16,7 @@ trait SolverTest extends ESMetaTest {
     goal: List[Formula],
     params: List[Sym] = List(SolverTest.x),
   ): Option[Witness] =
-    solver.solve(goal).flatMap(Reify(_, params).witness)
+    solver.solve(goal).flatMap(Reifier.witness(_, params))
 
   def checkUnsat(desc: String)(goal: List[Formula]): Unit =
     check(desc)(assert(solver.solve(goal).isEmpty))

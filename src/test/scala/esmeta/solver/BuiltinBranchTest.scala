@@ -79,7 +79,7 @@ class BuiltinBranchTest extends ESMetaTest {
     val builtins = {
       val futures = allBuiltins.map { f =>
         Future {
-          val ok = Reify.funcAccessExpr(f).exists { js =>
+          val ok = Reifier.funcAccessExpr(f).exists { js =>
             try { cov.run(js + ".call();").supported }
             catch { case _: Throwable => false }
           }
@@ -198,10 +198,7 @@ class BuiltinBranchTest extends ESMetaTest {
             ).result
               .flatMap { fs =>
                 checkTimeout()
-                Reify(fs, params).witness.flatMap { w =>
-                  checkTimeout()
-                  Reify.toJsCall(entry, params, w).map(Candidate(_, fs))
-                }
+                Reifier(entry, fs, params).map(Candidate(_, fs))
               }
               .take(20)
 
@@ -328,20 +325,15 @@ class BuiltinBranchTest extends ESMetaTest {
                     val params = Solve.paramIds(f)
                     val fs = goals.head
                     saturatedGoal = Some(fs)
-                    if (Reify.hasUninterpretableApp(fs))
-                      val names = fs.flatMap(Reify.outerAppNames).toSet
+                    if (Solver.hasUninterpretableApp(fs))
+                      val names = fs.flatMap(Solver.outerAppNames).toSet
                       blockingAOs = names
                       reason =
                         s"uninterp-app(${names.toList.sorted.mkString(",")})"
                     else
-                      Reify(fs, params).witness match
-                        case None =>
-                          reason = "reify-failed"
-                        case Some(w) =>
-                          checkTimeout()
-                          Reify.toJsCall(f, params, w) match
-                            case None    => reason = "no-js-call"
-                            case Some(_) => reason = "unknown"
+                      Reifier(f, fs, params) match
+                        case None    => reason = "reify-failed"
+                        case Some(_) => reason = "unknown"
                       checkTimeout()
                   }
                 } catch {
