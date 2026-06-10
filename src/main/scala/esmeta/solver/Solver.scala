@@ -24,8 +24,8 @@ class Solver(timeLimit: Option[Int] = None)(using CFG) {
   def solveAll(goal: List[Formula]): LazyList[List[Formula]] =
     solveAllTraced(goal).map(_._2)
 
-  /** like solveAll, but pairs each solution with its pre-strip form so
-    * callers can observe what stripCallFacts dropped
+  /** like solveAll, but pairs each solution with its pre-strip form so callers
+    * can observe what stripCallFacts dropped
     */
   def solveAllTraced(
     goal: List[Formula],
@@ -197,11 +197,9 @@ class Solver(timeLimit: Option[Int] = None)(using CFG) {
     calls: Set[SymExpr],
   ): Map[SymExpr, SymExpr] =
     val pairs = goal.collect {
-      case FEq(l, r)
-          if containsCall(l, calls) && !containsCall(r, calls) =>
+      case FEq(l, r) if containsCall(l, calls) && !containsCall(r, calls) =>
         l -> r
-      case FEq(l, r)
-          if containsCall(r, calls) && !containsCall(l, calls) =>
+      case FEq(l, r) if containsCall(r, calls) && !containsCall(l, calls) =>
         r -> l
     }
     pairs.foldLeft(Map[SymExpr, SymExpr]()) {

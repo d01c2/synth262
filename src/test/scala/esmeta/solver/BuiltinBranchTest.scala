@@ -492,7 +492,9 @@ class BuiltinBranchTest extends ESMetaTest {
 
         if (blockingAoFreq.nonEmpty) {
           dumpFile.println("=" * 60)
-          dumpFile.println(s"Blocking/dropped AO frequency ${blockingAoFreq.size}")
+          dumpFile.println(
+            s"Blocking/dropped AO frequency ${blockingAoFreq.size}",
+          )
           for (
             (name, count) <- blockingAoFreq.toList
               .sortBy((name, count) => (-count, name))

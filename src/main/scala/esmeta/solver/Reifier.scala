@@ -19,8 +19,10 @@ case class Model(
   pin: Option[String] = None, // an exact literal JS witness (bypasses `ty`)
   // [Z3] FIXME: iterator NextMethod marker for hardcoded finiteness; see reifyIteratorNext
   iteratorNext: Boolean = false,
-  excluded: Set[LiteralExpr] = Set(), // point exclusions (`!= 0`) the lattice cannot encode
-  excludedTys: List[ValueTy] = Nil, // negated types whose subtraction over-prunes
+  excluded: Set[LiteralExpr] =
+    Set(), // point exclusions (`!= 0`) the lattice cannot encode
+  excludedTys: List[ValueTy] =
+    Nil, // negated types whose subtraction over-prunes
   lower: Option[NumBound] = None, // numeric lower bound
   upper: Option[NumBound] = None, // numeric upper bound
 )
@@ -431,8 +433,8 @@ object Reifier {
     lower: Option[NumBound],
     upper: Option[NumBound],
   ): LazyList[Double] =
-    val ints = LazyList(0.0, 1.0, -1.0, 2.0, -2.0, 3.0, -3.0, 10.0, -10.0,
-      100.0, -100.0)
+    val ints =
+      LazyList(0.0, 1.0, -1.0, 2.0, -2.0, 3.0, -3.0, 10.0, -10.0, 100.0, -100.0)
     val lo = lower.map(_.value).filter(_.isFinite)
     val hi = upper.map(_.value).filter(_.isFinite)
     val mids = (lo, hi) match

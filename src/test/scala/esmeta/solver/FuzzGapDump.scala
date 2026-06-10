@@ -18,10 +18,10 @@ import scala.collection.mutable.{ArrayBuffer, Map => MMap}
 import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration.Duration
 
-/** Dumps pre-/post-solver constraints for branches that fuzzing covers but
-  * the solver misses (`fuzz-result-0fs.txt` minus `solver-result.txt`,
-  * tagged with BBT statuses parsed from `solve-dump.log`), so the failure
-  * cause can be inspected per branch:
+/** Dumps pre-/post-solver constraints for branches that fuzzing covers but the
+  * solver misses (`fuzz-result-0fs.txt` minus `solver-result.txt`, tagged with
+  * BBT statuses parsed from `solve-dump.log`), so the failure cause can be
+  * inspected per branch:
   *   - [pre-solver]: raw path constraint from the symbolic interpreter
   *   - [post-solver]: saturated solution before stripCallFacts
   *   - [dropped-by-stripCallFacts]: formulas the solver dropped
