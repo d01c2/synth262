@@ -244,11 +244,10 @@ class SolverTinyTest extends SolverTest {
       })
     }
 
-    // DEFERRED(z3/numeric): these require the reifier to pick a value satisfying
-    // FLt bounds (< 0, fractional, etc.). The reifier intentionally does NOT
-    // sample bounded numbers; the solver is expected to saturate the bounds to a
-    // concrete value that arrives as a literal (handled by value-pin). Re-enable
-    // once the solver supplies a concrete bounded witness.
+    // DEFERRED(z3): the FLt bound sits on ToIntegerOrInfinity(x)["Value"]; the
+    // solver does not bridge it onto `x` (no `Value = x`-style equality in the
+    // truncating cases), so the reifier never sees an arg-rooted bound.
+    // Re-enable once the solver (or Z3) projects bounds through the AO chain.
     /*
     checkParamWitness(
       "ToIntegerOrInfinity finite bounds reify through the input",
@@ -266,7 +265,10 @@ class SolverTinyTest extends SolverTest {
     ) { js =>
       assert(js == "-1")
     }
+     */
 
+    // the reifier samples a witness from FLt bounds and point exclusions that
+    // the type lattice cannot encode (Model.excluded / excludedTys / bounds)
     checkParamWitness("bounded number reify can choose fractional witness")(
       List(
         isType(xSym, NumberT),
@@ -289,7 +291,6 @@ class SolverTinyTest extends SolverTest {
     ) { js =>
       assert(js == "1.5")
     }
-     */
 
     check("ToUint32 delegates to ToNumber via implications") {
       val toUint32 = SECall("ToUint32", List(xSym))
@@ -454,6 +455,37 @@ class SolverTinyTest extends SolverTest {
       // an ordinary object with a nullish @@iterator suffices (no Proxy needed)
       assert(js.contains("Symbol.iterator"))
       assert(js.contains("null") || js.contains("undefined"))
+    }
+
+    // reify-in-isolation: assuming the solver delivers the abrupt-call fact
+    // (today stripCallFacts drops its GetMethod form), the reifier builds a
+    // throwing @@iterator method on its own
+    checkParamWitness("abrupt @@iterator call reifies as a throwing method")(
+      {
+        val key = SEField(SEGlobal("SYMBOL"), SELit(EStr("iterator")))
+        val method = SEField(SECall("Get", List(xSym, key)), "Value")
+        List(
+          isType(xSym, ObjectT),
+          isType(SECall("Get", List(xSym, key)), NormalT),
+          isNotValue(method, EUndef()),
+          isType(method, ObjectT),
+          isType(SECall("Call", List(method, xSym)), AbruptT),
+        )
+      },
+    ) { js =>
+      assert(js.contains("Symbol.iterator"))
+      assert(js.contains("throw"))
+    }
+
+    // reify-in-isolation: an abrupt property read becomes a throwing getter
+    checkParamWitness("abrupt Get reifies as a throwing getter")(
+      List(
+        isType(xSym, ObjectT),
+        isType(SECall("Get", List(xSym, SELit(EStr("flags")))), AbruptT),
+      ),
+    ) { js =>
+      assert(js.contains("flags"))
+      assert(js.contains("throw"))
     }
 
     checkParamWitness("HasProperty value projection reifies as property shape")(

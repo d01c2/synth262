@@ -58,6 +58,7 @@ object RewriteRules {
     case SECall("ToUint32", List(x))          => toUint32Model(x, call)
     case SECall("ToPropertyKey", List(x))     => toPropertyKeyModel(x, call)
     case SECall("LengthOfArrayLike", List(x)) => lengthOfArrayLikeModel(x, call)
+    case SECall("HasOwnProperty", List(o, k)) => hasOwnPropertyModel(o, k, call)
     case SECall("CreateDataProperty", List(o, p, v)) =>
       createDataPropertyModel(o, p, v, call)
     case SECall("CreateDataPropertyOrThrow", List(o, p, v)) =>
@@ -108,6 +109,7 @@ object RewriteRules {
     case SECall("ToPrimitive", _)                    => true
     case SECall("IsTypedArrayOutOfBounds", List(_))  => true
     case SECall("SameValue", List(_, _))             => true
+    case SECall("HasOwnProperty", List(_, _))        => true
     case SECall("SameValueZero", List(_, _))         => true
     case SECall("ToIntegerOrInfinity", List(_))      => true
     case SECall("ToLength", List(_))                 => true
@@ -172,13 +174,47 @@ object RewriteRules {
       FImply(List(FTypeCheck(x, ObjectT)), List(FEq(ret, t))),
     )
 
+  // https://tc39.es/ecma262/#sec-hasownproperty
+  // HasOwnProperty(O, P) = ? O.[[GetOwnProperty]](P), then desc vs undefined.
+  // The delegation makes abruptness reachable: GetOwnProperty is an internal
+  // method the reifier renders as a throwing Proxy trap.
+  private def hasOwnPropertyModel(
+    o: SymExpr,
+    k: SymExpr,
+    ret: SymExpr,
+  ): List[Formula] =
+    val getOwn = SECall("GetOwnProperty", List(o, k))
+    val desc = SEField(getOwn, "Value")
+    def normal(v: SymExpr): List[Formula] =
+      List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), v))
+    List(
+      FImply(
+        List(FTypeCheck(getOwn, AbruptT)),
+        List(FTypeCheck(ret, ThrowT)),
+      ),
+      FImply(
+        List(FTypeCheck(getOwn, NormalT), FEq(desc, SELit(EUndef()))),
+        normal(SELit(EBool(false))),
+      ),
+      FImply(
+        List(FTypeCheck(getOwn, NormalT), FNot(FEq(desc, SELit(EUndef())))),
+        normal(SELit(EBool(true))),
+      ),
+    )
+
   private def toObjectModel(x: SymExpr, ret: SymExpr): List[Formula] =
     val abrupt = List(FTypeCheck(ret, ThrowT))
     val normal = List(FTypeCheck(ret, NormalT))
     // Wrapper cases return new objects whose internal fields (e.g., Prototype,
     // BooleanData) are visible in CFG but not expressible as type constraints.
     // ret.Value only constrained for Object (identity).
+    // FIXME: toObject's object case should be at last, but for efficiency
+    // put it first so the solver can skip the rest for non-objects
     List(
+      FImply(
+        List(FTypeCheck(x, ObjectT)),
+        List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), x)),
+      ),
       FImply(List(FTypeCheck(x, UndefT)), abrupt),
       FImply(List(FTypeCheck(x, NullT)), abrupt),
       FImply(List(FTypeCheck(x, BoolT)), normal),
@@ -186,10 +222,6 @@ object RewriteRules {
       FImply(List(FTypeCheck(x, StrT)), normal),
       FImply(List(FTypeCheck(x, SymbolT)), normal),
       FImply(List(FTypeCheck(x, BigIntT)), normal),
-      FImply(
-        List(FTypeCheck(x, ObjectT)),
-        List(FTypeCheck(ret, NormalT), FEq(SEField(ret, "Value"), x)),
-      ),
     )
 
   // Shared model for ThisSymbolValue, ThisNumberValue, ThisBigIntValue,
@@ -264,16 +296,27 @@ object RewriteRules {
     val t = SELit(EBool(true))
     val f = SELit(EBool(false))
     val symMatch = SEField(SEGlobal("SYMBOL"), SELit(EStr("match")))
-    // 6 return nodes; dropped 1 inter-proc (1532 via ToBoolean);
-    // 1 analysis dropped (1530).
+    val getMatch = SECall("Get", List(x, symMatch))
+    // 6 return nodes; 1 inter-proc (1532 via ToBoolean) added point-wise as
+    // the @@match-truthy case below; 1 analysis dropped (1530).
     List(
       FImply(List(FNot(FTypeCheck(x, ObjectT))), normal(f)),
       FImply(
         List(
           FTypeCheck(x, ObjectT),
-          FTypeCheck(SECall("Get", List(x, symMatch)), AbruptT),
+          FTypeCheck(getMatch, AbruptT),
         ),
         List(FTypeCheck(ret, ThrowT)),
+      ),
+      // step 3 (truthy @@match): a plain `{ [Symbol.match]: true }` witness
+      // is runnable, unlike a real RegExp ([NotSupported] feature/RegExp)
+      FImply(
+        List(
+          FTypeCheck(x, ObjectT),
+          FTypeCheck(getMatch, NormalT),
+          FEq(SEField(getMatch, "Value"), t),
+        ),
+        normal(t),
       ),
       FImply(
         List(FTypeCheck(x, ObjectT), FExists(x, SELit(EStr("RegExpMatcher")))),

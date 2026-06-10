@@ -19,7 +19,14 @@ case class Model(
   pin: Option[String] = None, // an exact literal JS witness (bypasses `ty`)
   // [Z3] FIXME: iterator NextMethod marker for hardcoded finiteness; see reifyIteratorNext
   iteratorNext: Boolean = false,
+  excluded: Set[LiteralExpr] = Set(), // point exclusions (`!= 0`) the lattice cannot encode
+  excludedTys: List[ValueTy] = Nil, // negated types whose subtraction over-prunes
+  lower: Option[NumBound] = None, // numeric lower bound
+  upper: Option[NumBound] = None, // numeric upper bound
 )
+
+// a numeric bound; `strict` excludes the bound value itself
+case class NumBound(value: Double, strict: Boolean)
 
 object Reifier {
   def apply(entry: Func, goal: List[Formula], syms: List[Sym]): Option[String] =
@@ -86,11 +93,17 @@ object Reifier {
           narrowAt(m, sym, SEField(b, k))(identity)
         case FNot(FExists(b, SELit(EStr(f)))) =>
           narrowAt(m, sym, b)(absentSlot(f))
-        case FNot(FTypeCheck(t, ty)) => narrowAt(m, sym, t)(without(ty))
+        case FNot(FTypeCheck(t, ty)) => narrowAt(m, sym, t)(withoutTy(ty))
         case FNot(FEq(t, SELit(lit))) =>
-          negTy(lit).fold(m)(nt => narrowAt(m, sym, t)(without(nt)))
+          narrowAt(m, sym, t)(byExclusion(lit))
         case FNot(FEq(SELit(lit), t)) =>
-          negTy(lit).fold(m)(nt => narrowAt(m, sym, t)(without(nt)))
+          narrowAt(m, sym, t)(byExclusion(lit))
+        case FLt(t, SELit(lit)) => narrowAt(m, sym, t)(boundAbove(lit, true))
+        case FLt(SELit(lit), t) => narrowAt(m, sym, t)(boundBelow(lit, true))
+        case FNot(FLt(t, SELit(lit))) =>
+          narrowAt(m, sym, t)(boundBelow(lit, false))
+        case FNot(FLt(SELit(lit), t)) =>
+          narrowAt(m, sym, t)(boundAbove(lit, false))
         case _ => m
 
   // narrowings: how one formula constrains the value at a position
@@ -107,9 +120,22 @@ object Reifier {
   // literal would otherwise meet ESValueT to bottom); a non-JS literal (enum,
   // code unit) has no JS form, so fall back to narrowing the type
   private def byLiteral(lit: LiteralExpr): Model => Model =
-    singleJs(litTy(lit)) match
+    litJs(lit) match
       case Some(js) => pinTo(js)
       case None     => meet(litTy(lit))
+
+  // a literal directly as JS, without a round-trip through the type lattice
+  // (whose canon folds -0 into the integer 0 and drops the sign)
+  private def litJs(lit: LiteralExpr): Option[String] = lit match
+    case ENumber(d)   => valueToJs(esmeta.state.Number(d))
+    case EMath(n)     => valueToJs(esmeta.state.Math(n))
+    case EBigInt(n)   => valueToJs(esmeta.state.BigInt(n))
+    case EStr(s)      => valueToJs(esmeta.state.Str(s))
+    case EBool(b)     => valueToJs(esmeta.state.Bool(b))
+    case EUndef()     => Some("undefined")
+    case ENull()      => Some("null")
+    case EInfinity(p) => Some(if (p) "Infinity" else "-Infinity")
+    case _            => None
 
   // the value is NOT of type `ty`; exact for whole types (the unsound point
   // exclusion is filtered out by `negTy`)
@@ -122,6 +148,57 @@ object Reifier {
     case _: EUndef | _: ENull | _: EBool | _: EEnum => Some(litTy(lit))
     case ENumber(d) if d.isNaN                      => Some(litTy(lit))
     case _                                          => None
+
+  // the value differs from `lit`: subtract a whole type when exact, else
+  // record a point exclusion for the sampler (the lattice cannot encode it)
+  private def byExclusion(lit: LiteralExpr): Model => Model =
+    negTy(lit) match
+      case Some(nt) => withoutTy(nt)
+      case None     => m => m.copy(excluded = m.excluded + lit)
+
+  // the value is NOT of type `ty`, routed by how exact the subtraction is:
+  // subtracting a partial number class collapses the sign lattice (e.g.
+  // NumberT -- NumberIntT leaves only NaN), so keep the type and let the
+  // sampler exclude candidates instead
+  private def withoutTy(ty: ValueTy): Model => Model =
+    if (ty.number.isBottom || ty.number.isTop) without(ty)
+    else m => m.copy(excludedTys = m.excludedTys :+ ty)
+
+  // the value is below `lit` (strictly if `strict`)
+  private def boundAbove(lit: LiteralExpr, strict: Boolean): Model => Model =
+    numericValue(lit) match
+      case None => identity
+      case Some(d) =>
+        m => m.copy(upper = tighten(m.upper, NumBound(d, strict), true))
+
+  // the value is above `lit` (strictly if `strict`); `!(t < lit)` is also
+  // satisfied by NaN, but a `>= lit` witness satisfies it either way
+  private def boundBelow(lit: LiteralExpr, strict: Boolean): Model => Model =
+    numericValue(lit) match
+      case None => identity
+      case Some(d) =>
+        m => m.copy(lower = tighten(m.lower, NumBound(d, strict), false))
+
+  // keep the tighter of two bounds on one side
+  private def tighten(
+    cur: Option[NumBound],
+    b: NumBound,
+    upper: Boolean,
+  ): Option[NumBound] =
+    cur match
+      case None => Some(b)
+      case Some(c) =>
+        if (b.value == c.value) Some(if (b.strict) b else c)
+        else if (upper == (b.value < c.value)) Some(b)
+        else Some(c)
+
+  // a literal as a numeric bound value (NaN is unordered: no bound)
+  private def numericValue(lit: LiteralExpr): Option[Double] = lit match
+    case ENumber(d) if !d.isNaN => Some(d)
+    case EMath(n)               => Some(n.toDouble)
+    case EInfinity(p) =>
+      Some(if (p) Double.PositiveInfinity else Double.NegativeInfinity)
+    case _ => None
 
   // the value lacks internal slot `f`
   private def absentSlot(f: String): Model => Model =
@@ -152,7 +229,10 @@ object Reifier {
   // interpret a type-check `(? expr: ty)`: abrupt => the position throws
   // (ty<=AbruptT); normal completion => presence only; else => value meet
   private def byTypeCheck(ty: ValueTy): Model => Model =
-    if (ty <= AbruptT) meet(AbruptT)
+    // abrupt REPLACES the value view: meeting would bottom out (a fresh child
+    // is ESValueT and ESValueT && AbruptT = bottom), which withProps rejects
+    // as unsatisfiable before its throwing-getter case can fire
+    if (ty <= AbruptT) m => m.copy(ty = AbruptT)
     else if (ty <= CompT) identity
     else meet(ty)
 
@@ -294,9 +374,83 @@ object Reifier {
     else if (isObjectLike(v)) reifyObject(v)
     else reifyPrimitive(v)
 
-  // a concrete literal: the pinned singleton value, else a default for `ty`
+  // a concrete literal: the pinned singleton value, else a sample honoring
+  // point exclusions and bounds, else a default for `ty`
   def reifyPrimitive(v: Model): Option[String] =
-    singleJs(v.ty).orElse(defaultFor(v.ty))
+    singleJs(v.ty).orElse(sample(v)).orElse(defaultFor(v.ty))
+
+  // pick a witness honoring the point exclusions and numeric bounds that the
+  // type lattice cannot encode (`!= 0`, `< 0`, not-an-integer, ...)
+  private def sample(v: Model): Option[String] =
+    val unconstrained = v.excluded.isEmpty && v.excludedTys.isEmpty &&
+      v.lower.isEmpty && v.upper.isEmpty
+    if (unconstrained) None
+    else if (v.ty <= NumberT) sampleNumeric(v, true)
+    else if (v.ty <= MathT) sampleNumeric(v, false)
+    else if (v.ty <= BigIntT) sampleBigInt(v)
+    else if (v.ty <= StrT) sampleStr(v)
+    else None
+
+  // literal membership in a type (the `<=` on a number singleton misses the
+  // set-vs-int comparison, so numbers go through `contains`)
+  private def inTy(lit: LiteralExpr, ty: ValueTy): Boolean = lit match
+    case ENumber(d) => ty.number.contains(esmeta.state.Number(d))
+    case EMath(n)   => ty.math.contains(esmeta.state.Math(n))
+    case _          => litTy(lit) <= ty
+
+  private def sampleNumeric(v: Model, number: Boolean): Option[String] =
+    def toLit(d: Double): LiteralExpr =
+      if (number) ENumber(d)
+      else if (d.isInfinite) EInfinity(d > 0)
+      else EMath(BigDecimal(d))
+    def fits(d: Double): Boolean =
+      val lit = toLit(d)
+      inTy(lit, v.ty) &&
+      !v.excludedTys.exists(inTy(lit, _)) &&
+      !v.excluded.exists(sameLit(_, lit)) &&
+      v.lower.forall(b => if (b.strict) d > b.value else d >= b.value) &&
+      v.upper.forall(b => if (b.strict) d < b.value else d <= b.value)
+    candidates(v.lower, v.upper).find(fits).flatMap(d => litJs(toLit(d)))
+
+  // candidate ladder: simple integers, then bound-derived midpoints and
+  // offsets (fractions reach non-integer-constrained positions), then infinities
+  private def candidates(
+    lower: Option[NumBound],
+    upper: Option[NumBound],
+  ): LazyList[Double] =
+    val ints = LazyList(0.0, 1.0, -1.0, 2.0, -2.0, 3.0, -3.0, 10.0, -10.0,
+      100.0, -100.0)
+    val lo = lower.map(_.value).filter(_.isFinite)
+    val hi = upper.map(_.value).filter(_.isFinite)
+    val mids = (lo, hi) match
+      case (Some(a), Some(b)) =>
+        val mid = (a + b) / 2
+        LazyList(mid, (a + mid) / 2, (mid + b) / 2)
+      case _ => LazyList.empty
+    val nearLo =
+      lo.fold(LazyList.empty[Double])(a => LazyList(a, a + 0.5, a + 1, a + 2))
+    val nearHi =
+      hi.fold(LazyList.empty[Double])(b => LazyList(b, b - 0.5, b - 1, b - 2))
+    val infs = LazyList(Double.PositiveInfinity, Double.NegativeInfinity)
+    ints ++ mids ++ nearLo ++ nearHi ++ infs
+
+  // point-exclusion equality: distinguish +-0, identify NaN
+  private def sameLit(a: LiteralExpr, b: LiteralExpr): Boolean = (a, b) match
+    case (ENumber(x), ENumber(y)) => java.lang.Double.compare(x, y) == 0
+    case _                        => a == b
+
+  private def sampleBigInt(v: Model): Option[String] =
+    LazyList(0, 1, -1, 2, -2, 3, -3, 10, -10, 100)
+      .map(BigInt(_))
+      .find(n => !v.excluded.exists(sameLit(_, EBigInt(n))))
+      .map(n => s"${n}n")
+
+  private def sampleStr(v: Model): Option[String] =
+    LazyList("", "a", "b", "c", "x", "0", "1")
+      .find { s =>
+        litTy(EStr(s)) <= v.ty && !v.excluded.exists(sameLit(_, EStr(s)))
+      }
+      .map(s => "\"" + normStr(s) + "\"")
 
   // object from a creation form + ordinary __MAP__ (Prop) children; an internal
   // method constrained to throw makes it a Proxy with a throwing trap
@@ -333,11 +487,14 @@ object Reifier {
         // [[Construct]] only honors an object return; emit it when constrained
         ctorRet.flatMap(reifyValue).filter(_ != default) match
           case Some(js) => Some(s"function() { return ($js); }")
-          case None     => Some("function() {}")
+          case None     => defaultFor(v.ty).orElse(Some("function() {}"))
       else
         callRet match
           case Some(ret) => reifyValue(ret).map(js => s"() => ($js)")
-          case None      => Some("() => {}")
+          // a specific function record (e.g. BuiltinFunctionObject) has its
+          // own default witness; a generic arrow has [[SourceText]] and is
+          // no witness for built-in-only constraints
+          case None => defaultFor(v.ty).orElse(Some("() => {}"))
 
   // [Z3] FIXME: hardcoded finite iterator. The saturated formula only pins a
   // finite prefix of next() calls; termination of the unconstrained tail cannot
@@ -366,13 +523,37 @@ object Reifier {
         if (child.pin.isEmpty && child.ty.isBottom)
           None // unsatisfiable -> no witness
         else if (child.pin.isEmpty && child.ty <= AbruptT)
-          Some(s"get ${jsPropKey(k)}() { throw 0; }")
-        else reifyValue(child).map(js => s"${jsPropKey(k)}: $js")
+          Some(Left(k)) // the property read throws
+        else reifyValue(child).map(js => Right(k -> js))
       }
       Option.when(rendered.forall(_.isDefined)) {
-        val body = rendered.flatten.mkString(", ")
-        if (base == "{}") s"{ $body }" else s"Object.assign($base, { $body })"
+        val getters = rendered.flatten.collect { case Left(k) => k }
+        val datas = rendered.flatten.collect { case Right(kv) => kv }
+        if (base == "{}") {
+          val body = (getters.map(k => s"get ${jsPropKey(k)}() { throw 0; }") ++
+            datas.map((k, js) => s"${jsPropKey(k)}: $js")).mkString(", ")
+          s"{ $body }"
+        } else {
+          // Object.assign would INVOKE a source getter at construction time,
+          // so throwing getters are installed via Object.defineProperty
+          val withData =
+            if (datas.isEmpty) base
+            else {
+              val body =
+                datas.map((k, js) => s"${jsPropKey(k)}: $js").mkString(", ")
+              s"Object.assign($base, { $body })"
+            }
+          getters.foldLeft(withData) { (acc, k) =>
+            s"Object.defineProperty($acc, ${definePropKey(k)}, " +
+            "{ get: () => { throw 0; } })"
+          }
+        }
       }
+
+  // a property key as a first-class JS expression (for defineProperty)
+  private def definePropKey(key: String): String =
+    if (key.startsWith("@@")) s"Symbol.${key.drop(2)}"
+    else "\"" + normStr(key) + "\""
 
   // ----- reify helpers -----
 
@@ -439,6 +620,7 @@ object Reifier {
       if (d.isNaN) Some("NaN")
       else if (d.isPosInfinity) Some("Infinity")
       else if (d.isNegInfinity) Some("-Infinity")
+      else if (d == 0.0 && 1 / d < 0) Some("-0") // -0.0 == 0L hides the sign
       else if (d == d.toLong) Some(d.toLong.toString)
       else Some(d.toString)
     case esmeta.state.Math(n) =>
@@ -453,21 +635,33 @@ object Reifier {
 
   // default JS witness for `ty` (specific records first, then primitives)
   private def defaultFor(ty: ValueTy): Option[String] =
-    if (ty.isBottom) None
-    else if (ty == ESValueT) Some(default) // unconstrained -> safe (undefined)
-    else if (ty == ObjectT) Some("{}") // generic object -> plain object literal
-    else
-      defaults
-        .collectFirst { case (c, js) if ty <= c && c <= ty => js } // exact
-        // a concrete default whose instances satisfy `ty` (e.g. a union like
-        // ArrayBuffer|SharedArrayBuffer picks ArrayBuffer, not the ObjectT catch-all)
-        .orElse(defaults.collectFirst { case (c, js) if c <= ty => js })
-        .orElse(defaults.collectFirst {
-          case (c, js) if ty <= c => js
-        }) // subtype
-        .orElse(defaults.collectFirst {
-          case (c, js) if !(ty && c).isBottom => js
-        })
+    val found =
+      if (ty.isBottom) None
+      else if (ty == ESValueT)
+        Some(default) // unconstrained -> safe (undefined)
+      else if (ty == ObjectT)
+        Some("{}") // generic object -> plain object literal
+      else
+        defaults
+          .collectFirst { case (c, js) if ty <= c && c <= ty => js } // exact
+          // a concrete default whose instances satisfy `ty` (e.g. a union like
+          // ArrayBuffer|SharedArrayBuffer picks ArrayBuffer, not the ObjectT catch-all)
+          .orElse(defaults.collectFirst { case (c, js) if c <= ty => js })
+          .orElse(defaults.collectFirst {
+            case (c, js) if ty <= c => js
+          }) // subtype
+          .orElse(defaults.collectFirst {
+            case (c, js) if !(ty && c).isBottom => js
+          })
+    // function literals carry [[SourceText]]; when the type forbids the
+    // slot, a bound function is the canonical callable without it
+    found.map { js =>
+      if (
+        (js == "() => {}" || js == "function(){}") &&
+        ty.record("SourceText").isAbsent
+      ) "(function(){}).bind()"
+      else js
+    }
 
   private val defaults: List[(ValueTy, String)] = List(
     RecordT("TypedArray") -> "new Int8Array()",
@@ -589,7 +783,6 @@ object Reifier {
     "ForInIteratorPrototype" -> "",
     "GeneratorFunction" -> "(function* () {}).constructor",
     "GeneratorPrototype" -> "Object.getPrototypeOf(function * () {}).prototype",
-    "Iterator" -> "Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]())).constructor",
     "IteratorHelperPrototype" -> "Object.getPrototypeOf(Iterator.from([]).drop(0))",
     "MapIteratorPrototype" -> "Object.getPrototypeOf(new Map()[Symbol.iterator]())",
     "SetIteratorPrototype" -> "Object.getPrototypeOf(new Set()[Symbol.iterator]())",
