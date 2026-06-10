@@ -32,7 +32,10 @@ object Reifier {
   private val default = "undefined" // fallback witness
 
   // per-sym witnesses; None if any sym cannot be reified (unsatisfiable shape)
-  def witness(formulas: List[Formula], syms: List[Sym]): Option[Map[Sym, String]] =
+  def witness(
+    formulas: List[Formula],
+    syms: List[Sym],
+  ): Option[Map[Sym, String]] =
     val pairs = syms.map(sym => sym -> reifyValue(model(sym, formulas)))
     Option.when(pairs.forall(_._2.isDefined)) {
       pairs.collect { case (s, Some(js)) => s -> js }.toMap
@@ -54,26 +57,36 @@ object Reifier {
         // result `done` constraint (then the call-return path reifies a finite
         // iterator on its own and this case can be deleted).
         case FTypeCheck(SERecord("IteratorRecord", fields), _) =>
-          fields.get("NextMethod").fold(m)(n => narrowAt(m, sym, n)(markIteratorNext))
-        case FTypeCheck(t, ty)                => narrowAt(m, sym, t)(byTypeCheck(ty))
-        case FEq(SELit(_), SELit(_))          => m
+          fields
+            .get("NextMethod")
+            .fold(m)(n => narrowAt(m, sym, n)(markIteratorNext))
+        case FTypeCheck(t, ty)       => narrowAt(m, sym, t)(byTypeCheck(ty))
+        case FEq(SELit(_), SELit(_)) => m
         // HasProperty(base, key) == bool: ordinary property presence/absence
-        case FEq(ValueField(SECall("HasProperty", b :: rest)), SELit(EBool(exists))) =>
+        case FEq(
+              ValueField(SECall("HasProperty", b :: rest)),
+              SELit(EBool(exists)),
+            ) =>
           hasProperty(m, sym, b, rest, exists)
-        case FEq(SELit(EBool(exists)), ValueField(SECall("HasProperty", b :: rest))) =>
+        case FEq(
+              SELit(EBool(exists)),
+              ValueField(SECall("HasProperty", b :: rest)),
+            ) =>
           hasProperty(m, sym, b, rest, exists)
         case FEq(SECall("HasProperty", b :: rest), SELit(EBool(exists))) =>
           hasProperty(m, sym, b, rest, exists)
         case FEq(SELit(EBool(exists)), SECall("HasProperty", b :: rest)) =>
           hasProperty(m, sym, b, rest, exists)
-        case FEq(t, SELit(lit))               => narrowAt(m, sym, t)(byLiteral(lit))
-        case FEq(SELit(lit), t)               => narrowAt(m, sym, t)(byLiteral(lit))
+        case FEq(t, SELit(lit)) => narrowAt(m, sym, t)(byLiteral(lit))
+        case FEq(SELit(lit), t) => narrowAt(m, sym, t)(byLiteral(lit))
         // value identical to a realm intrinsic: pin its JS access expression
         case FEq(t, intrinsicJs(js)) => narrowAt(m, sym, t)(pinTo(js))
         case FEq(intrinsicJs(js), t) => narrowAt(m, sym, t)(pinTo(js))
-        case FExists(b, k @ SELit(EStr(_)))   => narrowAt(m, sym, SEField(b, k))(identity)
-        case FNot(FExists(b, SELit(EStr(f)))) => narrowAt(m, sym, b)(absentSlot(f))
-        case FNot(FTypeCheck(t, ty))          => narrowAt(m, sym, t)(without(ty))
+        case FExists(b, k @ SELit(EStr(_))) =>
+          narrowAt(m, sym, SEField(b, k))(identity)
+        case FNot(FExists(b, SELit(EStr(f)))) =>
+          narrowAt(m, sym, b)(absentSlot(f))
+        case FNot(FTypeCheck(t, ty)) => narrowAt(m, sym, t)(without(ty))
         case FNot(FEq(t, SELit(lit))) =>
           negTy(lit).fold(m)(nt => narrowAt(m, sym, t)(without(nt)))
         case FNot(FEq(SELit(lit), t)) =>
@@ -112,7 +125,10 @@ object Reifier {
 
   // the value lacks internal slot `f`
   private def absentSlot(f: String): Model => Model =
-    m => m.copy(ty = m.ty.copied(record = m.ty.record.update(f, Binding.Absent, true)))
+    m =>
+      m.copy(ty =
+        m.ty.copied(record = m.ty.record.update(f, Binding.Absent, true)),
+      )
 
   // [Z3] FIXME: mark an iterator's NextMethod for hardcoded finite reification
   private def markIteratorNext: Model => Model =
@@ -144,8 +160,9 @@ object Reifier {
 
   // the access path from `sym` to `expr`, or None if `expr` is not rooted at `sym`
   private def pathTo(sym: Sym, expr: SymExpr): Option[List[Access]] = expr match
-    case SESym(s)                     => Option.when(s == sym)(Nil)
-    case ValueField(c @ SECall(_, _)) => pathTo(sym, c) // strip completion .Value
+    case SESym(s) => Option.when(s == sym)(Nil)
+    case ValueField(c @ SECall(_, _)) =>
+      pathTo(sym, c) // strip completion .Value
     case SECall("Get" | "GetV" | "GetMethod", args) =>
       getKey(args).flatMap((b, k) => pathTo(sym, b).map(_ :+ Access.Prop(k)))
     case SECall(name, b :: rest) if internalMethods(name) =>
@@ -158,23 +175,33 @@ object Reifier {
   // applying: narrow `m` at a located position
 
   // narrow `m` at `expr`'s position (relative to `sym`); no-op if not rooted at `sym`
-  private def narrowAt(m: Model, sym: Sym, expr: SymExpr)(narrow: Model => Model): Model =
+  private def narrowAt(m: Model, sym: Sym, expr: SymExpr)(
+    narrow: Model => Model,
+  ): Model =
     pathTo(sym, expr).fold(m)(walk(m, _, narrow))
 
   // walk `path` from `m`, narrowing each container's kind, applying `narrow` at the leaf
-  private def walk(m: Model, path: List[Access], narrow: Model => Model): Model =
+  private def walk(
+    m: Model,
+    path: List[Access],
+    narrow: Model => Model,
+  ): Model =
     path match
       case Nil            => narrow(m)
       case access :: rest => descend(m, access, walk(_, rest, narrow))
 
   // one access step into `m`: narrow the container's kind, recurse into the child
   private def descend(m: Model, access: Access, narrow: Model => Model): Model =
-    m.copy(ty = kindOf(m.ty, access), children = entry(m.children, access, narrow))
+    m.copy(
+      ty = kindOf(m.ty, access),
+      children = entry(m.children, access, narrow),
+    )
 
   // narrow the container's ty for the access taken into it
   private def kindOf(ty: ValueTy, access: Access): ValueTy = access match
-    case Access.Slot(f) => ValueTy(record = ty.record.update(f, Binding.Exist, true))
-    case _              => ty && ObjectT // prop/method => the container is an object
+    case Access.Slot(f) =>
+      ValueTy(record = ty.record.update(f, Binding.Exist, true))
+    case _ => ty && ObjectT // prop/method => the container is an object
 
   // narrow one child entry (`top` if absent)
   private def entry(
@@ -187,16 +214,26 @@ object Reifier {
   // resolving keys and method names
 
   // Get(base, key) | Get(base, receiver, key) -> (base, key)
-  private def getKey(args: List[SymExpr]): Option[(SymExpr, String)] = args match
-    case b :: k :: Nil      => propKey(k).map(b -> _)
-    case b :: _ :: k :: Nil => propKey(k).map(b -> _)
-    case _                  => None
+  private def getKey(args: List[SymExpr]): Option[(SymExpr, String)] =
+    args match
+      case b :: k :: Nil      => propKey(k).map(b -> _)
+      case b :: _ :: k :: Nil => propKey(k).map(b -> _)
+      case _                  => None
 
   // internal methods reached as a Method access (Get-family stays a Prop)
   private val internalMethods: Set[String] = Set(
-    "Call", "Construct", "GetPrototypeOf", "SetPrototypeOf", "IsExtensible",
-    "PreventExtensions", "OwnPropertyKeys", "Set", "HasProperty",
-    "DefineOwnProperty", "Delete", "GetOwnProperty",
+    "Call",
+    "Construct",
+    "GetPrototypeOf",
+    "SetPrototypeOf",
+    "IsExtensible",
+    "PreventExtensions",
+    "OwnPropertyKeys",
+    "Set",
+    "HasProperty",
+    "DefineOwnProperty",
+    "Delete",
+    "GetOwnProperty",
   )
 
   // the singleton ValueTy of a literal
@@ -218,8 +255,9 @@ object Reifier {
     case SELit(EMath(n)) if n.isValidInt && n >= 0 => Some(n.toInt.toString)
     case SELit(ENumber(d)) if d >= 0 && d == d.toLong && !d.isInfinite =>
       Some(d.toLong.toString)
-    case StaticField(SEGlobal("SYMBOL"), name) => Some("@@" + name) // well-known symbol
-    case _                                     => None
+    case StaticField(SEGlobal("SYMBOL"), name) =>
+      Some("@@" + name) // well-known symbol
+    case _ => None
 
   // a realm intrinsic reference (`...Intrinsics["%Name%"]`) -> its JS access
   // expression; a dotted name is itself JS, an unnameable one maps via globalAlias
@@ -237,7 +275,6 @@ object Reifier {
       case _ => None
   }
 
-
   /** reify: build a JS expression that witnesses a Model */
   // TODO: NEEDS CODE REVIEW
 
@@ -248,7 +285,11 @@ object Reifier {
     // [Z3] FIXME: `v.iteratorNext ||` routes hardcoded finite iterators here;
     // remove it (revert to the line below) once Z3 supplies `done` constraints.
     // else if (callReturn(v).isDefined || isConstructor(v) || v.ty <= FunctionT)
-    else if (v.iteratorNext || callReturn(v).isDefined || isConstructor(v) || v.ty <= FunctionT)
+    else if (
+      v.iteratorNext || callReturn(v).isDefined || isConstructor(
+        v,
+      ) || v.ty <= FunctionT
+    )
       reifyFunction(v)
     else if (isObjectLike(v)) reifyObject(v)
     else reifyPrimitive(v)
@@ -261,7 +302,9 @@ object Reifier {
   // method constrained to throw makes it a Proxy with a throwing trap
   def reifyObject(v: Model): Option[String] =
     if (isRevokedProxy(v))
-      Some("(() => { const r = Proxy.revocable({}, {}); r.revoke(); return r.proxy; })()")
+      Some(
+        "(() => { const r = Proxy.revocable({}, {}); r.revoke(); return r.proxy; })()",
+      )
     else
       throwingTraps(v) match
         case traps if traps.nonEmpty =>
@@ -303,7 +346,9 @@ object Reifier {
   // regular call-return path reify a terminating iterator.
   def reifyIteratorNext(v: Model): Option[String] =
     val first = callReturn(v).flatMap(reifyValue).getOrElse("{}")
-    Some(s"(() => { let i = 0; return () => (i++ ? { done: true } : $first); })()")
+    Some(
+      s"(() => { let i = 0; return () => (i++ ? { done: true } : $first); })()",
+    )
 
   // creation form from the value's record type ([[Prototype]] / exotic / `{}`);
   // a non-object record (e.g. Symbol) is built from its own type, an ordinary
@@ -318,7 +363,8 @@ object Reifier {
     if (props.isEmpty) Some(base)
     else
       val rendered = props.toList.sortBy(_._1).map { (k, child) =>
-        if (child.pin.isEmpty && child.ty.isBottom) None // unsatisfiable -> no witness
+        if (child.pin.isEmpty && child.ty.isBottom)
+          None // unsatisfiable -> no witness
         else if (child.pin.isEmpty && child.ty <= AbruptT)
           Some(s"get ${jsPropKey(k)}() { throw 0; }")
         else reifyValue(child).map(js => s"${jsPropKey(k)}: $js")
@@ -358,18 +404,28 @@ object Reifier {
 
   // proxy trap names for internal methods whose result is constrained abrupt
   private def throwingTraps(v: Model): List[String] =
-    v.children.toList.collect {
-      case (Access.Method(name, _), m) if m.ty <= AbruptT && proxyTraps.contains(name) =>
-        proxyTraps(name)
-    }.distinct.sorted
+    v.children.toList
+      .collect {
+        case (Access.Method(name, _), m)
+            if m.ty <= AbruptT && proxyTraps.contains(name) =>
+          proxyTraps(name)
+      }
+      .distinct
+      .sorted
 
   // internal method -> Proxy trap (Call/Construct omitted: those reify as functions)
   private val proxyTraps: Map[String, String] = Map(
-    "Get" -> "get", "Set" -> "set", "HasProperty" -> "has",
-    "DefineOwnProperty" -> "defineProperty", "Delete" -> "deleteProperty",
-    "GetOwnProperty" -> "getOwnPropertyDescriptor", "OwnPropertyKeys" -> "ownKeys",
-    "GetPrototypeOf" -> "getPrototypeOf", "SetPrototypeOf" -> "setPrototypeOf",
-    "IsExtensible" -> "isExtensible", "PreventExtensions" -> "preventExtensions",
+    "Get" -> "get",
+    "Set" -> "set",
+    "HasProperty" -> "has",
+    "DefineOwnProperty" -> "defineProperty",
+    "Delete" -> "deleteProperty",
+    "GetOwnProperty" -> "getOwnPropertyDescriptor",
+    "OwnPropertyKeys" -> "ownKeys",
+    "GetPrototypeOf" -> "getPrototypeOf",
+    "SetPrototypeOf" -> "setPrototypeOf",
+    "IsExtensible" -> "isExtensible",
+    "PreventExtensions" -> "preventExtensions",
   )
 
   // the pinned singleton value of `ty` as JS, if any
@@ -406,8 +462,12 @@ object Reifier {
         // a concrete default whose instances satisfy `ty` (e.g. a union like
         // ArrayBuffer|SharedArrayBuffer picks ArrayBuffer, not the ObjectT catch-all)
         .orElse(defaults.collectFirst { case (c, js) if c <= ty => js })
-        .orElse(defaults.collectFirst { case (c, js) if ty <= c => js }) // subtype
-        .orElse(defaults.collectFirst { case (c, js) if !(ty && c).isBottom => js })
+        .orElse(defaults.collectFirst {
+          case (c, js) if ty <= c => js
+        }) // subtype
+        .orElse(defaults.collectFirst {
+          case (c, js) if !(ty && c).isBottom => js
+        })
 
   private val defaults: List[(ValueTy, String)] = List(
     RecordT("TypedArray") -> "new Int8Array()",
@@ -487,7 +547,9 @@ object Reifier {
             val value = witness.getOrElse(Sym.Arg(0), default)
             Some(s"${descriptor(base)}.set.call($thisArg, $value);")
           case _ =>
-            access(path).map(fn =>s"$fn.call(${(thisArg :: args).mkString(", ")});")
+            access(path).map(fn =>
+              s"$fn.call(${(thisArg :: args).mkString(", ")});",
+            )
       }
     }
 
