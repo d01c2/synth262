@@ -25,18 +25,18 @@
     <circle class="circle fuzz" cx="440" cy="420" r="178" />
 
     <text class="set-label" x="270" y="122">Solver</text>
-    <text class="set-size" x="270" y="144">2,436</text>
+    <text class="set-size" x="270" y="144">2,810</text>
     <text class="set-label" x="610" y="122">Test262</text>
     <text class="set-size" x="610" y="144">4,427</text>
     <text class="set-label" x="440" y="630">Fuzz</text>
     <text class="set-size" x="440" y="652">4,128</text>
 
-    <text class="count" x="272" y="290">21</text>
-    <text class="count" x="608" y="290">693</text>
-    <text class="count" x="440" y="535">191</text>
-    <text class="small-count" x="440" y="218">75</text>
-    <text class="small-count" x="342" y="405">278</text>
-    <text class="small-count" x="538" y="405">1,597</text>
-    <text class="count" x="440" y="340">2,062</text>
+    <text class="count" x="272" y="290">30</text>
+    <text class="count" x="608" y="290">660</text>
+    <text class="count" x="440" y="535">96</text>
+    <text class="small-count" x="440" y="218">108</text>
+    <text class="small-count" x="342" y="405">373</text>
+    <text class="small-count" x="538" y="405">1,360</text>
+    <text class="count" x="440" y="340">2,299</text>
   </g>
 </svg>
