@@ -1,4 +1,4 @@
 {
-  "builtin branches: solve and verify" : true,
+  "builtin branches: solve and verify" : false,
   "builtin branches: summary" : true
 }

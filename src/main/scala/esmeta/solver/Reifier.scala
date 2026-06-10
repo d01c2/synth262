@@ -17,8 +17,6 @@ case class Model(
   ty: ValueTy = ESValueT,
   children: Map[Access, Model] = Map(),
   pin: Option[String] = None, // an exact literal JS witness (bypasses `ty`)
-  // [Z3] FIXME: iterator NextMethod marker for hardcoded finiteness; see reifyIteratorNext
-  iteratorNext: Boolean = false,
   excluded: Set[LiteralExpr] =
     Set(), // point exclusions (`!= 0`) the lattice cannot encode
   excludedTys: List[ValueTy] =
@@ -62,13 +60,6 @@ object Reifier {
     if (!formula.freeVars.contains(sym)) m
     else
       formula match
-        // [Z3] FIXME: hardcoded iterator finiteness; remove when Z3 supplies the
-        // result `done` constraint (then the call-return path reifies a finite
-        // iterator on its own and this case can be deleted).
-        case FTypeCheck(SERecord("IteratorRecord", fields), _) =>
-          fields
-            .get("NextMethod")
-            .fold(m)(n => narrowAt(m, sym, n)(markIteratorNext))
         case FTypeCheck(t, ty)       => narrowAt(m, sym, t)(byTypeCheck(ty))
         case FEq(SELit(_), SELit(_)) => m
         // HasProperty(base, key) == bool: ordinary property presence/absence
@@ -219,10 +210,6 @@ object Reifier {
       m.copy(ty =
         m.ty.copied(record = m.ty.record.update(f, Binding.Absent, true)),
       )
-
-  // [Z3] FIXME: mark an iterator's NextMethod for hardcoded finite reification
-  private def markIteratorNext: Model => Model =
-    m => m.copy(iteratorNext = true)
 
   // HasProperty(base, key) == bool: present -> add the ordinary property (an
   // own data property makes `key in base` true); absent -> a plain object lacks it
@@ -377,14 +364,7 @@ object Reifier {
   def reifyValue(v: Model): Option[String] =
     if (v.pin.isDefined) v.pin // an exact literal value
     else if (v.ty.isBottom) None
-    // [Z3] FIXME: `v.iteratorNext ||` routes hardcoded finite iterators here;
-    // remove it (revert to the line below) once Z3 supplies `done` constraints.
-    // else if (callReturn(v).isDefined || isConstructor(v) || v.ty <= FunctionT)
-    else if (
-      v.iteratorNext || callReturn(v).isDefined || isConstructor(
-        v,
-      ) || v.ty <= FunctionT
-    )
+    else if (callReturn(v).isDefined || isConstructor(v) || v.ty <= FunctionT)
       reifyFunction(v)
     else if (isObjectLike(v)) reifyObject(v)
     else reifyPrimitive(v)
@@ -489,38 +469,22 @@ object Reifier {
   // a callable: `() => return` (throwing if the call is abrupt); a constructor
   // becomes `function() {}` (arrows lack [[Construct]]), throwing if construct is abrupt
   def reifyFunction(v: Model): Option[String] =
-    // [Z3] FIXME: hardcoded finite-iterator branch; remove once Z3 supplies the
-    // result `done` constraint (the call-return path below then reifies a
-    // terminating iterator), then delete reifyIteratorNext.
-    if (v.iteratorNext) reifyIteratorNext(v)
+    val callRet = callReturn(v)
+    val ctorRet = constructReturn(v)
+    if (callRet.exists(_.ty <= AbruptT)) Some("() => { throw 0; }")
+    else if (ctorRet.exists(_.ty <= AbruptT)) Some("function() { throw 0; }")
+    else if (isConstructor(v))
+      // [[Construct]] only honors an object return; emit it when constrained
+      ctorRet.flatMap(reifyValue).filter(_ != default) match
+        case Some(js) => Some(s"function() { return ($js); }")
+        case None     => defaultFor(v.ty).orElse(Some("function() {}"))
     else
-      val callRet = callReturn(v)
-      val ctorRet = constructReturn(v)
-      if (callRet.exists(_.ty <= AbruptT)) Some("() => { throw 0; }")
-      else if (ctorRet.exists(_.ty <= AbruptT)) Some("function() { throw 0; }")
-      else if (isConstructor(v))
-        // [[Construct]] only honors an object return; emit it when constrained
-        ctorRet.flatMap(reifyValue).filter(_ != default) match
-          case Some(js) => Some(s"function() { return ($js); }")
-          case None     => defaultFor(v.ty).orElse(Some("function() {}"))
-      else
-        callRet match
-          case Some(ret) => reifyValue(ret).map(js => s"() => ($js)")
-          // a specific function record (e.g. BuiltinFunctionObject) has its
-          // own default witness; a generic arrow has [[SourceText]] and is
-          // no witness for built-in-only constraints
-          case None => defaultFor(v.ty).orElse(Some("() => {}"))
-
-  // [Z3] FIXME: hardcoded finite iterator. The saturated formula only pins a
-  // finite prefix of next() calls; termination of the unconstrained tail cannot
-  // be derived, so we yield the constrained first result once then report done.
-  // Once Z3 supplies the result `done` constraint, delete this and let the
-  // regular call-return path reify a terminating iterator.
-  def reifyIteratorNext(v: Model): Option[String] =
-    val first = callReturn(v).flatMap(reifyValue).getOrElse("{}")
-    Some(
-      s"(() => { let i = 0; return () => (i++ ? { done: true } : $first); })()",
-    )
+      callRet match
+        case Some(ret) => reifyValue(ret).map(js => s"() => ($js)")
+        // a specific function record (e.g. BuiltinFunctionObject) has its
+        // own default witness; a generic arrow has [[SourceText]] and is
+        // no witness for built-in-only constraints
+        case None => defaultFor(v.ty).orElse(Some("() => {}"))
 
   // creation form from the value's record type ([[Prototype]] / exotic / `{}`);
   // a non-object record (e.g. Symbol) is built from its own type, an ordinary

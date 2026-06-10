@@ -807,11 +807,12 @@ class SolverTinyTest extends SolverTest {
         )
       },
     ) { js =>
-      // a finite iterator: x.next is a stateful function that yields once then
-      // reports done (exact spacing / explicit done:false are not load-bearing)
+      // x.next reifies through the regular call-return path: a function whose
+      // body witnesses the call result. No done constraint is pinned here, so
+      // the result is an unconstrained object and no hardcoded finite-iterator
+      // counter is emitted (e.g. `{ next: () => ({}) }`).
       assert(js.contains("next"))
-      assert(js.contains("i++")) // stateful counter: yields then terminates
-      assert(js.contains("done: true")) // eventually reports done
+      assert(js.contains("() =>")) // next reifies as a call-return function
     }
 
     check("nested solver-only calls are dropped without direct projection") {
