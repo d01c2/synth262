@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="920" height="680" viewBox="0 0 920 680" role="img" aria-labelledby="title desc">
   <title id="title">Venn</title>
-  <desc id="desc">Clean Venn diagram for solver-result, test262-result, and fuzz-result branch-side sets.</desc>
+  <desc id="desc">Clean Venn diagram for solver-result, test262-result (0fs, built-ins), and fuzz-result (0fs) branch-side sets, restricted to branch-entry-total.</desc>
   <style>
     .bg { fill: #ffffff; }
     .title { font: 700 28px Arial, sans-serif; fill: #1f2933; }
@@ -25,18 +25,18 @@
     <circle class="circle fuzz" cx="440" cy="420" r="178" />
 
     <text class="set-label" x="270" y="122">Solver</text>
-    <text class="set-size" x="270" y="144">2,327</text>
+    <text class="set-size" x="270" y="144">2,436</text>
     <text class="set-label" x="610" y="122">Test262</text>
-    <text class="set-size" x="610" y="144">4,554</text>
+    <text class="set-size" x="610" y="144">4,427</text>
     <text class="set-label" x="440" y="630">Fuzz</text>
-    <text class="set-size" x="440" y="652">3,850</text>
+    <text class="set-size" x="440" y="652">4,128</text>
 
-    <text class="count" x="272" y="290">81</text>
-    <text class="count" x="608" y="290">860</text>
-    <text class="count" x="440" y="535">136</text>
-    <text class="small-count" x="440" y="218">240</text>
-    <text class="small-count" x="342" y="405">260</text>
-    <text class="small-count" x="538" y="405">1,708</text>
-    <text class="count" x="440" y="340">1,746</text>
+    <text class="count" x="272" y="290">21</text>
+    <text class="count" x="608" y="290">693</text>
+    <text class="count" x="440" y="535">191</text>
+    <text class="small-count" x="440" y="218">75</text>
+    <text class="small-count" x="342" y="405">278</text>
+    <text class="small-count" x="538" y="405">1,597</text>
+    <text class="count" x="440" y="340">2,062</text>
   </g>
 </svg>
