@@ -22,6 +22,14 @@ class Solver(timeLimit: Option[Int] = None)(using CFG) {
     solveAll(goal).headOption
 
   def solveAll(goal: List[Formula]): LazyList[List[Formula]] =
+    solveAllTraced(goal).map(_._2)
+
+  /** like solveAll, but pairs each solution with its pre-strip form so
+    * callers can observe what stripCallFacts dropped
+    */
+  def solveAllTraced(
+    goal: List[Formula],
+  ): LazyList[(List[Formula], List[Formula])] =
     if (timeout) throw TimeoutException("solver")
     val expanded = expand(goal)
     saturate(expanded).to(LazyList).flatMap { seed =>
@@ -29,7 +37,7 @@ class Solver(timeLimit: Option[Int] = None)(using CFG) {
       val calls = initCalls.toList.sortBy(_.toString)
       solveCases(seed, calls, initCalls).flatMap { (solved, allCalls) =>
         saturate(expand(solved))
-          .map(solved => stripCallFacts(solved, allCalls))
+          .map(solved => (solved, stripCallFacts(solved, allCalls)))
           .to(LazyList)
       }
     }
@@ -112,11 +120,105 @@ class Solver(timeLimit: Option[Int] = None)(using CFG) {
           }
         }
 
+  // drop modeled-call facts, but first try to PROJECT them: substitute
+  // modeled-call-rooted terms with equal call-free terms (the bridge
+  // equalities are already in the saturated goal); a fact that becomes clean
+  // survives for the reifier instead of being dropped.
+  // [Z3] the strip interface itself disappears with the Z3 migration.
   private def stripCallFacts(
     goal: List[Formula],
     calls: Set[SymExpr],
   ): List[Formula] =
-    goal.filterNot(containsAnyCall(_, calls))
+    val subst = directProjectionAliases(goal) ++ cleanAliases(goal, calls)
+    goal.flatMap { f =>
+      if (!containsAnyCall(f, calls)) Some(f)
+      else
+        f match
+          case _: FImply => None // model axioms, not path facts
+          case _ =>
+            val g = mapFormula(f, substExpr(_, subst))
+            val trivial = g match
+              case FEq(l, r) => l == r
+              case _         => false
+            Option.when(!containsAnyCall(g, calls) && !trivial)(g)
+    }.distinct
+
+  // single-pass top-down substitution: replacements are call-free, so a
+  // replaced node cannot contain further keys and recursion stops there
+  private def substExpr(
+    e: SymExpr,
+    subst: Map[SymExpr, SymExpr],
+  ): SymExpr =
+    subst.get(e) match
+      case Some(to) => to
+      case None =>
+        e match
+          case SEField(base, key) =>
+            SEField(substExpr(base, subst), substExpr(key, subst))
+          case SEApp(op, args) => SEApp(op, args.map(substExpr(_, subst)))
+          case SEClo(fname, captured) =>
+            SEClo(fname, captured.map((k, v) => k -> substExpr(v, subst)))
+          case SEList(elems) => SEList(elems.map(substExpr(_, subst)))
+          case SERecord(tn, fs) =>
+            SERecord(tn, fs.map((k, v) => k -> substExpr(v, subst)))
+          case SEMap(es) =>
+            SEMap(es.map((k, v) => (substExpr(k, subst), substExpr(v, subst))))
+          case SETypeOf(t) => SETypeOf(substExpr(t, subst))
+          case _           => e
+
+  // [directProjection] coercions that consume their argument directly, so a
+  // constraint on the RESULT soundly guides the ARGUMENT witness: identity-alias
+  // `AO(arg)["Value"] -> arg` lets e.g. `ToIntegerOrInfinity(x) < 0` project to
+  // `x < 0` and survive the call strip. Without it the bound is dropped and the
+  // reifier defaults the argument (e.g. 0 on a `< 0` branch -> wrong side -> MISS).
+  // An over-approximate projection only yields a MISS (verified downstream), never
+  // an unsound cover. (LengthOfArrayLike is excluded: its argument is the object,
+  // not the number, so identity projection would be wrong.)
+  private val directProjectionAOs: Set[String] =
+    Set("ToIntegerOrInfinity", "ToLength")
+
+  // AO(arg)["Value"] -> arg for the whitelisted coercions
+  private def directProjectionAliases(
+    goal: List[Formula],
+  ): Map[SymExpr, SymExpr] =
+    collectExprs(
+      goal,
+      {
+        case ValueField(SECall(ao, List(_))) => directProjectionAOs(ao)
+        case _                               => false
+      },
+    ).collect {
+      case e @ ValueField(SECall(_, List(arg))) => e -> arg
+    }.toMap
+
+  // modeled-call-rooted term -> equal call-free term, from goal equalities
+  private def cleanAliases(
+    goal: List[Formula],
+    calls: Set[SymExpr],
+  ): Map[SymExpr, SymExpr] =
+    val pairs = goal.collect {
+      case FEq(l, r)
+          if containsCall(l, calls) && !containsCall(r, calls) =>
+        l -> r
+      case FEq(l, r)
+          if containsCall(r, calls) && !containsCall(l, calls) =>
+        r -> l
+    }
+    pairs.foldLeft(Map[SymExpr, SymExpr]()) {
+      case (m, (k, v)) => if (m.contains(k)) m else m + (k -> v)
+    }
+
+  private def containsCall(e: SymExpr, calls: Set[SymExpr]): Boolean =
+    calls.contains(e) || children(e).exists(containsCall(_, calls))
+
+  private def mapFormula(f: Formula, m: SymExpr => SymExpr): Formula = f match
+    case FNot(inner) => FNot(mapFormula(inner, m))
+    case FImply(premise, conclusion) =>
+      FImply(premise.map(mapFormula(_, m)), conclusion.map(mapFormula(_, m)))
+    case FEq(l, r)         => FEq(m(l), m(r))
+    case FLt(l, r)         => FLt(m(l), m(r))
+    case FExists(b, k)     => FExists(m(b), m(k))
+    case FTypeCheck(e, ty) => FTypeCheck(m(e), ty)
 
   private def containsAnyCall(
     formula: Formula,

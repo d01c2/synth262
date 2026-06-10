@@ -25,6 +25,8 @@ class SymbolicInterpreter(
   var whitelistEmpty: Boolean = false
   var loopBlocked: Boolean = false
   var internalMethodDispatch: Boolean = false
+  // sample goals rejected as contradictions at the target branch
+  var targetContradictionSamples: List[List[Formula]] = Nil
   val hasVariadic: Boolean = entryFunc.head match
     case Some(h: BuiltinHead) => h.params.exists(_.kind == ParamKind.Variadic)
     case _                    => false
@@ -201,8 +203,14 @@ class SymbolicInterpreter(
             case b: Branch if b.id == branch.id =>
               val constraints = getConstraints(b.cond, side)
               val goals = convertDNF(pc, constraints)
-              if (constraints.nonEmpty && goals.isEmpty)
+              if (constraints.nonEmpty && goals.isEmpty) {
                 targetContradiction = true
+                if (targetContradictionSamples.sizeIs < 3) {
+                  val combos = for { l <- pc; r <- constraints } yield l ++ r
+                  targetContradictionSamples =
+                    (targetContradictionSamples ++ combos).take(3)
+                }
+              }
               Some(goals)
             case _ => step(node).flatMap(collectGoal)
         } catch {
@@ -412,6 +420,14 @@ class SymbolicInterpreter(
       case ETypeCheck(base, ty) =>
         val f = FTypeCheck(eval(base), ty.toValue)
         List(List(if (pos) f else FNot(f)))
+      // [Z3] FIXME: abs comparisons split into sign cases so the formulas
+      // stay plain (in)equalities the current solver can propagate onto the
+      // operand; Z3 handles abs and the disjunction natively (DPLL), so drop
+      // these four cases (and absEqConstraints/absOperands) after migration.
+      case EBinary(BOp.Eq | BOp.Equal, EUnary(UOp.Abs, inner), rhs) =>
+        absEqConstraints(inner, rhs, pos)
+      case EBinary(BOp.Eq | BOp.Equal, lhs, EUnary(UOp.Abs, inner)) =>
+        absEqConstraints(inner, lhs, pos)
       case EBinary(BOp.Eq | BOp.Equal, lhs, rhs) =>
         (lhs, rhs) match
           case (_, EBool(b)) => getConstraints(lhs, if (pos) b else !b)
@@ -419,6 +435,18 @@ class SymbolicInterpreter(
           case _ =>
             val f = FEq(eval(lhs), eval(rhs))
             List(List(if (pos) f else FNot(f)))
+      case EBinary(BOp.Lt, lhs, EUnary(UOp.Abs, inner)) =>
+        // c < |x| <=> (c < x) or (x < -c)
+        val (x, c) = absOperands(inner, lhs)
+        val negC = fold(SEOp(UOp.Neg, List(c)))
+        if (pos) List(List(FLt(c, x)), List(FLt(x, negC)))
+        else List(List(FNot(FLt(c, x)), FNot(FLt(x, negC))))
+      case EBinary(BOp.Lt, EUnary(UOp.Abs, inner), rhs) =>
+        // |x| < c <=> (x < c) and (-c < x)
+        val (x, c) = absOperands(inner, rhs)
+        val negC = fold(SEOp(UOp.Neg, List(c)))
+        if (pos) List(List(FLt(x, c), FLt(negC, x)))
+        else List(List(FNot(FLt(x, c))), List(FNot(FLt(negC, x))))
       case EBinary(BOp.Lt, lhs, rhs) =>
         val f = FLt(eval(lhs), eval(rhs))
         List(List(if (pos) f else FNot(f)))
@@ -465,6 +493,28 @@ class SymbolicInterpreter(
         throw NotImplementedError(
           s"getConstraints: ${e.getClass.getSimpleName}",
         )
+
+  // [Z3] FIXME: delete with the abs cases in getConstraints after migration.
+  // |x| = c <=> (x = c) or (x = -c); the negation is the conjunction of both
+  private def absEqConstraints(
+    inner: Expr,
+    other: Expr,
+    pos: Boolean,
+  ): List[List[Formula]] =
+    val (x, c) = absOperands(inner, other)
+    val negC = fold(SEOp(UOp.Neg, List(c)))
+    if (pos) List(List(FEq(x, c)), List(FEq(x, negC)))
+    else List(List(FNot(FEq(x, c)), FNot(FEq(x, negC))))
+
+  // operands of an abs comparison; `eval` strips a `[math] x` conversion off
+  // the operand, so align the literal side to the operand's Number sort
+  // (a Math literal against a Number term is a false sort contradiction)
+  private def absOperands(inner: Expr, other: Expr): (SymExpr, SymExpr) =
+    val x = eval(inner)
+    val c = eval(other)
+    inner match
+      case EConvert(COp.ToMath, _) => (x, fold(SEOp(COp.ToNumber, List(c))))
+      case _                       => (x, c)
 
   // local constant folding for symbolic expressions
   private def fold(t: SymExpr): SymExpr = t match
