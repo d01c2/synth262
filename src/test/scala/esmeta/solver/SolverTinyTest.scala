@@ -488,6 +488,24 @@ class SolverTinyTest extends SolverTest {
       assert(js.contains("throw"))
     }
 
+    // dropped-fact diagnosis: a fact rooted at an unmodeled AO call is
+    // reported by name, while a consumed call shape (Get path) is not
+    check("droppedAppNames flags only the facts the reifier ignores") {
+      val unmodeled = List(
+        isType(xSym, ObjectT),
+        isType(SECall("NewPromiseCapability", List(xSym)), NormalT),
+      )
+      assert(
+        Reifier.droppedAppNames(unmodeled, List(x)) ==
+        Set("NewPromiseCapability"),
+      )
+      val consumed = List(
+        isType(xSym, ObjectT),
+        isType(SECall("Get", List(xSym, SELit(EStr("p")))), AbruptT),
+      )
+      assert(Reifier.droppedAppNames(consumed, List(x)).isEmpty)
+    }
+
     checkParamWitness("HasProperty value projection reifies as property shape")(
       List(
         isValue(

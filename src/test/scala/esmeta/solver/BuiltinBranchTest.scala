@@ -146,6 +146,10 @@ class BuiltinBranchTest extends ESMetaTest {
 
       def sideString(side: Boolean): String = if (side) "T" else "F"
 
+      // fold the AO-name detail out of a dropped-app reason for aggregation
+      def collapseDropped(reason: String): String =
+        reason.replaceAll("dropped-app:[^)]*", "dropped-app")
+
       println(
         s"  Solving ${targets.size} branch sides from " +
         s"${targetBranchEntries.size} branches with $nThreads threads " +
@@ -281,6 +285,8 @@ class BuiltinBranchTest extends ESMetaTest {
                     )
                   case None =>
                     val cand = firstCandidate.get
+                    val dropped =
+                      Reifier.droppedAppNames(cand.saturated, Solve.paramIds(f))
                     BranchResult(
                       f.name,
                       targetFunc.name,
@@ -290,9 +296,11 @@ class BuiltinBranchTest extends ESMetaTest {
                       "miss",
                       Some(cand.js),
                       elapsedNanos,
-                      "",
+                      if (dropped.isEmpty) ""
+                      else
+                        s"dropped-app:${dropped.toList.sorted.mkString(",")}",
                       Some(cand.saturated),
-                      Set(),
+                      dropped,
                     )
               case None =>
                 var reason = "unknown"
@@ -325,16 +333,15 @@ class BuiltinBranchTest extends ESMetaTest {
                     val params = Solve.paramIds(f)
                     val fs = goals.head
                     saturatedGoal = Some(fs)
-                    if (Solver.hasUninterpretableApp(fs))
-                      val names = fs.flatMap(Solver.outerAppNames).toSet
-                      blockingAOs = names
-                      reason =
-                        s"uninterp-app(${names.toList.sorted.mkString(",")})"
-                    else
-                      Reifier(f, fs, params) match
-                        case None    => reason = "reify-failed"
-                        case Some(_) => reason = "unknown"
-                      checkTimeout()
+                    blockingAOs = Reifier.droppedAppNames(fs, params)
+                    val dropped =
+                      if (blockingAOs.isEmpty) ""
+                      else
+                        s"(dropped-app:${blockingAOs.toList.sorted.mkString(",")})"
+                    Reifier(f, fs, params) match
+                      case None    => reason = s"reify-failed$dropped"
+                      case Some(_) => reason = s"unknown$dropped"
+                    checkTimeout()
                   }
                 } catch {
                   case e: NotImplementedError =>
@@ -419,8 +426,19 @@ class BuiltinBranchTest extends ESMetaTest {
       for (r <- missedResults)
         println(
           f"  [MISS] ${r.fname} Branch[${r.bid}]:${sideString(r.side)}" +
-          f" (${r.elapsed / 1000.0}%.0f us)",
+          f" (${r.elapsed / 1000.0}%.0f us)" +
+          (if (r.reason.isEmpty) "" else s" ${r.reason}"),
         )
+
+      if (missedResults.nonEmpty) {
+        println(f"\n  Miss breakdown:")
+        val missReasons = missedResults.groupMapReduce(r =>
+          if (r.reason.isEmpty) "goal-fully-reified"
+          else collapseDropped(r.reason),
+        )(_ => 1)(_ + _)
+        for ((reason, count) <- missReasons.toList.sortBy(-_._2))
+          println(f"    $count%4d  $reason")
+      }
 
       // timing summary
       if (timings.nonEmpty) {
@@ -437,13 +455,9 @@ class BuiltinBranchTest extends ESMetaTest {
 
       if (reasons.nonEmpty) {
         println(f"\n  Unsolved breakdown:")
-        val uninterpTotal = reasons.iterator.collect {
-          case (reason, count) if reason.startsWith("uninterp-app(") => count
-        }.sum
-        val reasonSummary =
-          reasons.toList.filterNot(_._1.startsWith("uninterp-app(")) ++
-          Option.when(uninterpTotal > 0)("uninterp-app" -> uninterpTotal)
-        for ((reason, count) <- reasonSummary.sortBy(-_._2))
+        val reasonSummary = reasons.toList
+          .groupMapReduce((reason, _) => collapseDropped(reason))(_._2)(_ + _)
+        for ((reason, count) <- reasonSummary.toList.sortBy(-_._2))
           println(f"    $count%4d  $reason")
       }
 
@@ -453,7 +467,7 @@ class BuiltinBranchTest extends ESMetaTest {
       println(f"    non-entry:     ${nonEntryAONames.size}%4d")
 
       if (blockingAoFreq.nonEmpty) {
-        println(f"\n  Blocking AO frequency (top 30):")
+        println(f"\n  Blocking/dropped AO frequency (top 30):")
         for (
           (name, count) <- blockingAoFreq.toList
             .sortBy((name, count) => (-count, name))
@@ -478,7 +492,7 @@ class BuiltinBranchTest extends ESMetaTest {
 
         if (blockingAoFreq.nonEmpty) {
           dumpFile.println("=" * 60)
-          dumpFile.println(s"Blocking AO frequency ${blockingAoFreq.size}")
+          dumpFile.println(s"Blocking/dropped AO frequency ${blockingAoFreq.size}")
           for (
             (name, count) <- blockingAoFreq.toList
               .sortBy((name, count) => (-count, name))
@@ -499,6 +513,10 @@ class BuiltinBranchTest extends ESMetaTest {
             dumpFile.println("  [saturated]")
             fs.foreach(f => dumpFile.println(s"    $f"))
           }
+          if (r.blockingAOs.nonEmpty)
+            dumpFile.println(
+              s"  [dropped-app] ${r.blockingAOs.toList.sorted.mkString(", ")}",
+            )
           dumpFile.println()
         }
         // dump solved cases, including both verified OK and verification MISS.

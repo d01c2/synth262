@@ -106,6 +106,17 @@ object Reifier {
           narrowAt(m, sym, t)(boundAbove(lit, false))
         case _ => m
 
+  // facts `refine` ignores for every sym -- the reifier never folds them into
+  // any model, so the witness silently violates them; detected by reference
+  // equality against the input model (stays in sync with `refine` by
+  // construction), reported by the names of their outermost applications
+  def droppedAppNames(fs: List[Formula], syms: List[Sym]): Set[String] =
+    val init = Model()
+    fs.iterator
+      .filter(f => syms.forall(sym => refine(init, sym, f) eq init))
+      .flatMap(Solver.outerAppNames)
+      .toSet
+
   // narrowings: how one formula constrains the value at a position
 
   // the value is (also) of type `ty`
@@ -220,7 +231,9 @@ object Reifier {
     rest: List[SymExpr],
     exists: Boolean,
   ): Model =
-    if (!exists) m
+    // absence is satisfied by a default object; return a fresh copy so the
+    // reference test in `droppedAppNames` counts the fact as consumed
+    if (!exists) m.copy()
     else
       rest.find(k => propKey(k).isDefined).fold(m) { key =>
         narrowAt(m, sym, SECall("Get", List(base, key)))(identity)
