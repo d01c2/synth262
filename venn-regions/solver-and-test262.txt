@@ -80,9 +80,9 @@ Branch[33268]:F, Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "resizab
 Branch[33273]:F, Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "resizable").get.call(new ArrayBuffer(0));
 Branch[35426]:T, Object.getPrototypeOf(Iterator.from([]).drop(0)).next.call(undefined);
 Branch[35541]:T, Object.getOwnPropertyDescriptor(Iterator.prototype, "constructor").set.call(undefined, undefined);
-Branch[35688]:T, Iterator.prototype.every.call({ get return() { throw 0; }, next: (() => { let i = 0; return () => (i++ ? { done: true } : { done: undefined }); })() }, () => (undefined));
-Branch[36079]:T, Iterator.prototype.reduce.call({ next: (() => { let i = 0; return () => (i++ ? { done: true } : { done: true }); })() }, () => {}, undefined);
-Branch[36146]:T, Iterator.prototype.some.call({ get return() { throw 0; }, next: (() => { let i = 0; return () => (i++ ? { done: true } : { done: undefined }); })() }, () => (true));
+Branch[35688]:T, Iterator.prototype.every.call({ get return() { throw 0; }, next: () => ({ done: undefined }) }, () => (undefined));
+Branch[36079]:T, Iterator.prototype.reduce.call({ next: () => ({ done: true }) }, () => {}, undefined);
+Branch[36146]:T, Iterator.prototype.some.call({ get return() { throw 0; }, next: () => ({ done: undefined }) }, () => (true));
 Branch[36274]:T, Object.getOwnPropertyDescriptor(Iterator.prototype, Symbol.toStringTag).set.call(undefined, undefined);
 Branch[37531]:T, Promise.prototype.then.call(new Promise(() => {}), Symbol(), Symbol());
 Branch[37555]:F, (function* () {}).constructor.call(undefined, undefined);

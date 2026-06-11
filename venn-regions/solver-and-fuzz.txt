@@ -1,8 +1,8 @@
 Branch[29]:T, Function.prototype.toString.call(Array.isArray);
 Branch[34]:T, Function.prototype.toString.call((function(){}).bind());
-Branch[135]:T, Iterator.prototype.find.call({ next: (() => { let i = 0; return () => (i++ ? { done: true } : { done: 0n }); })() }, () => {});
+Branch[135]:T, Iterator.prototype.find.call({ next: () => ({ done: 0n }) }, () => {});
 Branch[136]:T, Object.defineProperty.call(undefined, {}, Symbol(), { enumerable: 0n });
-Branch[136]:F, Iterator.prototype.find.call({ next: (() => { let i = 0; return () => (i++ ? { done: true } : { done: 1n }); })() }, () => {});
+Branch[136]:F, Iterator.prototype.find.call({ next: () => ({ done: 1n }) }, () => {});
 Branch[286]:F, String.prototype.lastIndexOf.call(true, null, NaN);
 Branch[288]:F, String.prototype.lastIndexOf.call(true, null, NaN);
 Branch[307]:T, Math.pow.call(undefined, -Infinity, 1);

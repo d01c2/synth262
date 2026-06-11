@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="920" height="680" viewBox="0 0 920 680" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="700" viewBox="0 0 920 700" role="img" aria-labelledby="title desc">
   <title id="title">Venn</title>
-  <desc id="desc">Clean Venn diagram for solver-result, test262-result (0fs, built-ins), and fuzz-result (0fs) branch-side sets, restricted to branch-entry-total.</desc>
+  <desc id="desc">Clean Venn diagram for solver-result, test262-result (0fs, built-ins), and fuzz-result (0fs) branch-side sets, restricted to the 5,802 BuiltinBranchTest target sides; the enclosing rectangle is that universe and 898 sides lie in no set.</desc>
   <style>
     .bg { fill: #ffffff; }
     .title { font: 700 28px Arial, sans-serif; fill: #1f2933; }
@@ -13,9 +13,16 @@
     .set-size { font: 400 13px Arial, sans-serif; fill: #5b6570; text-anchor: middle; }
     .count { font: 700 20px Arial, sans-serif; fill: #111827; text-anchor: middle; dominant-baseline: middle; }
     .small-count { font: 700 16px Arial, sans-serif; fill: #111827; text-anchor: middle; dominant-baseline: middle; }
+    .universe { fill: none; stroke: #9aa5b1; stroke-width: 1.5; }
+    .universe-count { font: 700 18px Arial, sans-serif; fill: #5b6570; text-anchor: end; }
+    .universe-label { font: 400 11px Arial, sans-serif; fill: #9aa5b1; text-anchor: end; }
   </style>
 
-  <rect class="bg" x="0" y="0" width="920" height="680" />
+  <rect class="bg" x="0" y="0" width="920" height="700" />
+
+  <rect class="universe" x="55" y="72" width="810" height="606" rx="6" />
+  <text class="universe-count" x="850" y="100">898</text>
+  <text class="universe-label" x="850" y="118">not in any set</text>
 
   <text class="title" x="48" y="52">Venn</text>
 
@@ -25,18 +32,18 @@
     <circle class="circle fuzz" cx="440" cy="420" r="178" />
 
     <text class="set-label" x="270" y="122">Solver</text>
-    <text class="set-size" x="270" y="144">2,810</text>
+    <text class="set-size" x="270" y="144">2,809</text>
     <text class="set-label" x="610" y="122">Test262</text>
-    <text class="set-size" x="610" y="144">4,427</text>
+    <text class="set-size" x="610" y="144">4,409</text>
     <text class="set-label" x="440" y="630">Fuzz</text>
-    <text class="set-size" x="440" y="652">4,128</text>
+    <text class="set-size" x="440" y="652">4,106</text>
 
     <text class="count" x="272" y="290">30</text>
     <text class="count" x="608" y="290">660</text>
-    <text class="count" x="440" y="535">96</text>
+    <text class="count" x="440" y="535">92</text>
     <text class="small-count" x="440" y="218">108</text>
     <text class="small-count" x="342" y="405">373</text>
-    <text class="small-count" x="538" y="405">1,360</text>
-    <text class="count" x="440" y="340">2,299</text>
+    <text class="small-count" x="538" y="405">1,343</text>
+    <text class="count" x="440" y="340">2,298</text>
   </g>
 </svg>

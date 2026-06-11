@@ -1,13 +1,9 @@
-# fuzz-only (96 @ solver=2810)
+# fuzz-only (92 @ solver=2809)
 # format: Branch[id]:side | STATUS | target-func | fuzz-program
 
 Branch[1277]:T | unsolved:no-goals | ToUint16 | String . fromCharCode ( 0n ) ;
 Branch[1943]:T | miss | SetIntegrityLevel | Object . seal ( ( new Proxy ( [ ] , { defineProperty : 0 } ) ) ) ;
 Branch[8179]:T | unsolved:no-goals | UTF16EncodeCodePoint | String . fromCodePoint ( 0 ) ;
-Branch[13585]:T | not-in-dump |  | ; for ( x in ( new Proxy ( { } , { ownKeys : 1 } ) ) ) ;
-Branch[13600]:T | not-in-dump |  | ; for ( x in ( new Proxy ( [ ] , { getOwnPropertyDescriptor : 1 } ) ) ) ;
-Branch[13604]:F | not-in-dump |  | ; for ( x in ( new Proxy ( this , { getOwnPropertyDescriptor : x => { } } ) ) ) ;
-Branch[13614]:T | not-in-dump |  | ; for ( x in ( new Proxy ( { } , { getPrototypeOf : 1 } ) ) ) ; ;
 Branch[17788]:T | unsolved:no-goals | PerformEval | eval . call ( 0 , '' ) ;
 Branch[17847]:F | unsolved:no-goals | PerformEval | eval . call ( 0 , "0" ) ;
 Branch[18727]:T | miss | INTRINSICS.Object.isFrozen | Object . isFrozen ( ( new Proxy ( { } , { isExtensible : 1 } ) ) ) ;

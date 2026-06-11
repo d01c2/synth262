@@ -1,10 +1,6 @@
 Branch[1277]:T, String . fromCharCode ( 0n ) ;
 Branch[1943]:T, Object . seal ( ( new Proxy ( [ ] , { defineProperty : 0 } ) ) ) ;
 Branch[8179]:T, String . fromCodePoint ( 0 ) ;
-Branch[13585]:T, ; for ( x in ( new Proxy ( { } , { ownKeys : 1 } ) ) ) ;
-Branch[13600]:T, ; for ( x in ( new Proxy ( [ ] , { getOwnPropertyDescriptor : 1 } ) ) ) ;
-Branch[13604]:F, ; for ( x in ( new Proxy ( this , { getOwnPropertyDescriptor : x => { } } ) ) ) ;
-Branch[13614]:T, ; for ( x in ( new Proxy ( { } , { getPrototypeOf : 1 } ) ) ) ; ;
 Branch[17788]:T, eval . call ( 0 , '' ) ;
 Branch[17847]:F, eval . call ( 0 , "0" ) ;
 Branch[18727]:T, Object . isFrozen ( ( new Proxy ( { } , { isExtensible : 1 } ) ) ) ;

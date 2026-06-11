@@ -40,7 +40,6 @@ Branch[136]:T
 Branch[136]:F
 Branch[139]:T
 Branch[139]:F
-Branch[140]:T
 Branch[140]:F
 Branch[143]:T
 Branch[143]:F
