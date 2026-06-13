@@ -55,6 +55,8 @@ class Solver(timeLimit: Option[Int] = None)(using CFG) {
     if (hasContradictionRaw(saturated)) None else Some(saturated)
 
   private def canonicalize(f: Formula): Formula = f match
+    case FAnd(left, right) => ???
+    case FOr(left, right)  => ???
     case FImply(premise, conclusion) =>
       FImply(premise.map(canonicalize), conclusion.map(canonicalize))
     // double negation elimination
@@ -210,7 +212,9 @@ class Solver(timeLimit: Option[Int] = None)(using CFG) {
     calls.contains(e) || children(e).exists(containsCall(_, calls))
 
   private def mapFormula(f: Formula, m: SymExpr => SymExpr): Formula = f match
-    case FNot(inner) => FNot(mapFormula(inner, m))
+    case FNot(inner)       => FNot(mapFormula(inner, m))
+    case FAnd(left, right) => ???
+    case FOr(left, right)  => ???
     case FImply(premise, conclusion) =>
       FImply(premise.map(mapFormula(_, m)), conclusion.map(mapFormula(_, m)))
     case FEq(l, r)         => FEq(m(l), m(r))
@@ -241,7 +245,9 @@ class Solver(timeLimit: Option[Int] = None)(using CFG) {
     exprsOf(f).exists(check)
 
   private def exprsOf(f: Formula): List[SymExpr] = f match
-    case FNot(inner) => exprsOf(inner)
+    case FNot(inner)       => exprsOf(inner)
+    case FAnd(left, right) => ???
+    case FOr(left, right)  => ???
     case FImply(premise, conclusion) =>
       (premise ++ conclusion).flatMap(exprsOf)
     case FEq(l, r)        => List(l, r)
@@ -634,7 +640,9 @@ object Solver {
       case SETypeOf(t) => fromExpr(t)
       case _           => Set()
     def fromFormula(f: Formula): Set[String] = f match
-      case FNot(inner) => fromFormula(inner)
+      case FNot(inner)       => fromFormula(inner)
+      case FAnd(left, right) => ???
+      case FOr(left, right)  => ???
       case FImply(premise, conclusion) =>
         (premise ++ conclusion).flatMap(fromFormula).toSet
       case FEq(l, r)        => fromExpr(l) ++ fromExpr(r)
@@ -657,7 +665,9 @@ object Solver {
       case SETypeOf(t) => fromExpr(t)
       case _           => Set()
     f match
-      case FNot(inner) => outerAppNames(inner)
+      case FNot(inner)       => outerAppNames(inner)
+      case FAnd(left, right) => ???
+      case FOr(left, right)  => ???
       case FImply(premise, conclusion) =>
         (premise ++ conclusion).flatMap(outerAppNames).toSet
       case FEq(l, r)        => fromExpr(l) ++ fromExpr(r)

@@ -133,6 +133,22 @@ object RewriteRules {
     case _                                           => false
 
   private def toBooleanModel(x: SymExpr, ret: SymExpr): List[Formula] =
+    // ((x is BoolT) --> (ret === x)) /\
+    // ((
+    //   (x is UndefT) \/
+    //   (x is NullT) \/
+    //   (x === 0.n) \/
+    //   (x === 0.0.d) \/
+    //   (x === -0.0.d) \/
+    //   (x === "".s)
+    // ) --> (ret === F)) /\
+    // ((
+    //   ((x is BigIntT) /\ (x !== 0.n)) \/
+    //   ((x is NumberT) /\ (x !== 0.0.d) /\ (x !== -0.0.d)) \/
+    //   ((x is StrT) /\ (x !== "".s)) \/
+    //   (x is SymbolT) \/
+    //   (x is ObjectT)
+    // ) --> (ret === T)),
     val t = SELit(EBool(true))
     val f = SELit(EBool(false))
     // return values cannot be inferred from detailed-types, so checked CFG
@@ -1456,6 +1472,8 @@ object RewriteRules {
   // wrappers whose value semantics need explicit rewrite rules.
 
   private def stripCompletion(f: Formula): Formula = f match
+    case FAnd(left, right) => ???
+    case FOr(left, right)  => ???
     case FImply(premise, conclusion) =>
       FImply(premise.map(stripCompletion), conclusion.map(stripCompletion))
     case FEq(TypeField(base), SELit(EEnum(e))) =>
@@ -1484,6 +1502,8 @@ object RewriteRules {
   // Normalizes value-level AO projections after rewrite.
 
   private def normalizeExpr(f: Formula): Formula = f match
+    case FAnd(left, right) => ???
+    case FOr(left, right)  => ???
     case FImply(premise, conclusion) =>
       FImply(premise.map(normalizeExpr), conclusion.map(normalizeExpr))
     case FEq(TypeField(base), SELit(EEnum(e))) =>
@@ -1514,6 +1534,8 @@ object RewriteRules {
   private def rewriteCompletionValues(
     f: Formula,
   )(using CFG): Option[Formula] = f match
+    case FAnd(left, right) => ???
+    case FOr(left, right)  => ???
     case FImply(premise, conclusion) =>
       val nextPremise =
         premise.map(f => rewriteCompletionValues(f).getOrElse(f))

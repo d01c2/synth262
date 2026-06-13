@@ -1,6 +1,7 @@
 package esmeta.solver
 
 import esmeta.ir.{Op as CoreOp, *}
+import esmeta.solver.Formula.*
 import esmeta.ty.ValueTy
 
 enum Sym:
@@ -88,6 +89,12 @@ enum SymExpr:
         case SETypeOf(t) => SETypeOf(t.rewrite(from, to))
         case SEType(_)   => this
 
+  inline def is(ty: ValueTy): Formula = FTypeCheck(this, ty)
+
+  inline def ===(that: SymExpr): Formula = FEq(this, that)
+
+  inline def !==(that: SymExpr): Formula = !(this === that)
+
 object SymExpr:
   def SEField(base: SymExpr, field: String): SymExpr =
     SEField(base, SELit(EStr(field)))
@@ -130,3 +137,26 @@ object SymExpr:
     def unapply(expr: SymExpr): Option[SymExpr] = expr match
       case StaticField(base, "Type") => Some(base)
       case _                         => None
+
+  inline def SEMath(n: BigDecimal): SymExpr = SELit(EMath(n))
+  inline def SEInfinity(pos: Boolean): SymExpr = SELit(EInfinity(pos))
+  val SEPosInf: SymExpr = SEInfinity(true)
+  val SENegInf: SymExpr = SEInfinity(false)
+  inline def SENumber(d: Double): SymExpr = SELit(ENumber(d))
+  inline def SEBigInt(s: String): SymExpr = SELit(EBigInt(BigInt(s)))
+  inline def SEBigInt(n: Int): SymExpr = SELit(EBigInt(BigInt(n)))
+  inline def SEStr(str: String): SymExpr = SELit(EStr(str))
+  inline def SEBool(b: Boolean): SymExpr = SELit(EBool(b))
+  val T: SymExpr = SEBool(true)
+  val F: SymExpr = SEBool(false)
+  val SEUndef: SymExpr = SELit(EUndef())
+  val SENull: SymExpr = SELit(ENull())
+  inline def SEEnum(name: String): SymExpr = SELit(EEnum(name))
+  inline def SECodeUnit(c: Char): SymExpr = SELit(ECodeUnit(c))
+
+import SymExpr.*
+extension (k: Int) def n: SymExpr = SEBigInt(k)
+extension (d: Double) def d: SymExpr = SENumber(d)
+extension (str: String)
+  def n: SymExpr = SEBigInt(str)
+  def s: SymExpr = SEStr(str)
