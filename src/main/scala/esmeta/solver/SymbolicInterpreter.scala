@@ -1,737 +1,240 @@
 package esmeta.solver
 
 import esmeta.cfg.*
-import esmeta.es.util.Coverage.*
+import esmeta.es.util.Coverage.Cond
 import esmeta.ir.{Func => _, *}
 import esmeta.spec.{BuiltinHead, ParamKind}
-import esmeta.state.*
-import esmeta.ty.ValueTy
-import scala.collection.mutable.{Set => MSet, Queue}
+import esmeta.util.*
 
 class SymbolicInterpreter(
+  cfg: CFG,
   entryFunc: Func,
   target: Cond,
-  solvePC: List[Formula] => LazyList[List[Formula]],
-  hasContradiction: List[Formula] => Boolean,
-)(using cfg: CFG) {
-  import SymbolicInterpreter.*, Formula.*, SymExpr.*
-  private val Cond(branch, side) = target
-  private val targetFunc = cfg.funcOf(branch)
-  var pathContradiction: Boolean = false
-  var targetContradiction: Boolean = false
-  var stepInBlocked: Boolean = false
-  var cycleBlocked: Boolean = false
-  var notImplBlocked: Option[String] = None
-  var whitelistEmpty: Boolean = false
-  var loopBlocked: Boolean = false
-  var internalMethodDispatch: Boolean = false
-  // sample goals rejected as contradictions at the target branch
-  var targetContradictionSamples: List[List[Formula]] = Nil
-  val hasVariadic: Boolean = entryFunc.head match
-    case Some(h: BuiltinHead) => h.params.exists(_.kind == ParamKind.Variadic)
-    case _                    => false
+) {
+  import SymbolicInterpreter.*, Result.*
 
-  private var env = Map[Local, SymExpr]()
-  // TODO: symbolic heap
-  private var callCtxt: Option[CallContext] = None
+  lazy val result: Option[(Path, Formula)] = execute
 
-  private lazy val stepInFuncs: Set[Func] =
-    if (targetFunc == entryFunc) Set()
-    else {
-      val reached = MSet(targetFunc)
-      val queue = Queue(targetFunc)
-      while (queue.nonEmpty)
-        for {
-          caller <- cfg.callerOf.getOrElse(queue.dequeue(), Set())
-          if caller != entryFunc && reached.add(caller)
-        } queue.enqueue(caller)
-      reached.toSet
-    }
+  // node for symbolic execution
+  var node: Node = entryFunc.entry
+  // current path constraint for symbolic execution
+  var constraint: List[SymExpr] = Nil
+  // environment for symbolic execution
+  var env: Map[Local, SymExpr] = Map.empty
+  // previous states for backtracking
+  var prev: Option[(Cond, State)] = None
+  // functions encountered during symbolic execution
+  var funcs: Set[Func] = Set.empty
+  // loops encountered during symbolic execution
+  var loops: Set[Branch] = Set.empty
 
-  // backward reachable nodes for path pruning
-  private lazy val whitelist: Map[Func, Set[Node]] = (for {
-    func <- stepInFuncs + entryFunc
-  } yield func -> (
-    if (func == targetFunc) func.reachingTo(branch) // direct reachables
-    else {
-      // reachables to call sites that can reach the target
-      val callTargets = for {
-        callTarget <- func.nodes.collect { case c: Call => c }
-        calleeName <- callTarget.callInst match
-          case ICall(_, EClo(fn, _), _) => Some(fn)
-          case _                        => None
-        callee <- cfg.fnameMap.get(calleeName)
-        if stepInFuncs.contains(callee)
-      } yield callTarget
-      callTargets.flatMap(func.reachingTo)
-    }
-  ) ).toMap.withDefaultValue(Set())
+  // target
+  val targetFunc: Func = cfg.funcOf(target.branch)
 
-  lazy val result: LazyList[List[Formula]] =
-    if (whitelist(entryFunc).isEmpty) { whitelistEmpty = true; LazyList() }
-    else {
-      var stack = List[(Cond, List[List[Formula]], State)]()
-
-      // env, call context initialization
-      env = entryFunc.head match
-        case Some(h: BuiltinHead) =>
-          val args = h.params.zipWithIndex.collect {
-            case (p, i) if (p.kind != ParamKind.Variadic) => SESym(Sym.Arg(i))
-          }
-          Map(
-            NAME_THIS -> SESym(Sym.This),
-            NAME_NEW_TARGET -> SESym(Sym.NewTarget),
-            NAME_ARGS_LIST -> SEList(args),
-          )
-        case _ =>
-          entryFunc.irFunc.params.zipWithIndex.map { (p, i) =>
-            p.lhs -> SESym(Sym.Arg(i))
-          }.toMap
-      callCtxt = None
-
-      // path constraint
-      def convertDNF(
-        lhs: List[List[Formula]],
-        rhs: List[List[Formula]],
-      ): List[List[Formula]] =
-        for {
-          l <- lhs
-          r <- rhs
-          goal = l ++ r
-          if !hasContradiction(goal)
-        } yield goal
-
-      def pc: List[List[Formula]] =
-        stack.reverseIterator.foldLeft(List(List()): List[List[Formula]]) {
-          (goals, frame) => convertDNF(goals, frame._2)
-        }
-
-      // try certain branch side and push constraints onto the stack
-      def tryBranch(br: Branch, side: Boolean): Option[Node] =
-        val nextNode = if (side) br.thenNode else br.elseNode
-        val constraints =
-          if (br.isFiltered) List(List()) // skip extraction for filtered
-          else getConstraints(br.cond, side)
-        nextNode.filter(feasible).flatMap { node =>
-          val goals = convertDNF(pc, constraints)
-          if (goals.nonEmpty) {
-            stack ::= (Cond(br, side), constraints, State(env, callCtxt))
-            propagateEnv(br.cond, side)
-            Some(node)
-          } else {
-            if (constraints.nonEmpty) pathContradiction = true
-            None
-          }
-        }
-
-      def feasible(n: Node): Boolean =
-        whitelist(cfg.funcOf(n)).contains(n) && // prune unreachable nodes
-        !stack.exists { s =>
-          val hit = s._1.branch.id == n.id
-          if (hit && s._1.branch.isLoop) loopBlocked = true
-          hit
-        }
-
-      def canStepIn(callee: Func, cur: Func): Boolean =
-        stepInFuncs.contains(callee) &&
-        !(stack.map {
-          case (Cond(branch, _), _, _) => cfg.funcOf(branch)
-        }.toSet + cur).contains(callee) // prune cycles in call graph
-
-      // cfg step with path pruning
-      def step(node: Node): Option[Node] =
-        val func = cfg.funcOf(node)
-        node match
-          case block: Block =>
-            eval(block) match
-              case Some(retVal) =>
-                callCtxt match
-                  case Some(CallContext(callSite, callerEnv, caller)) =>
-                    env = callerEnv + (callSite.lhs -> retVal)
-                    callCtxt = caller
-                    callSite.next.filter(feasible)
-                  case None => None
-              case None => block.next.filter(feasible)
-          case b: Branch =>
-            eval(b.cond) match
-              case SELit(EBool(v)) =>
-                val nextNode = if (v) b.thenNode else b.elseNode
-                nextNode.filter(feasible)
-              case _ => tryBranch(b, true).orElse(tryBranch(b, false))
-          case call: Call =>
-            val ret = call.lhs
-            call.callInst match
-              case ICall(_, ERef(Field(base, EStr(method))), args) =>
-                internalMethodDispatch = true
-                env += (ret -> SECall(method, eval(base) :: args.map(eval)))
-                call.next.filter(feasible)
-              case ICall(_, callExpr, args) =>
-                cloOf(callExpr) match
-                  case Some((fname, captured)) =>
-                    val capEnv: Map[Local, SymExpr] =
-                      captured.map((k, v) => (k: Local) -> v)
-                    cfg.fnameMap.get(fname) match
-                      case Some(callee) if canStepIn(callee, func) =>
-                        val argVals = args.map(eval)
-                        callCtxt = Some(CallContext(call, env, callCtxt))
-                        env = capEnv ++ callee.irFunc.params
-                          .zip(argVals)
-                          .map((p, a) => p.lhs -> a)
-                          .toMap
-                        Some(callee.entry).filter(feasible)
-                      case Some(callee) if stepInFuncs.contains(callee) =>
-                        cycleBlocked = true
-                        env += (ret -> SECall(fname, args.map(eval)))
-                        call.next.filter(feasible)
-                      case _ =>
-                        if (
-                          cfg.fnameMap.get(fname).exists(stepInFuncs.contains)
-                        )
-                          stepInBlocked = true
-                        env += (ret -> SECall(fname, args.map(eval)))
-                        call.next.filter(feasible)
-                  case None => env -= ret; call.next.filter(feasible)
-              case ISdoCall(_, base, op, args) =>
-                internalMethodDispatch = true
-                env += (ret -> SECall(op, eval(base) :: args.map(eval)))
-                call.next.filter(feasible)
-
-      // collect path constraints
-      def collectGoal(node: Node): Option[List[List[Formula]]] =
-        try {
-          node match
-            case b: Branch if b.id == branch.id =>
-              val constraints = getConstraints(b.cond, side)
-              val goals = convertDNF(pc, constraints)
-              if (constraints.nonEmpty && goals.isEmpty) {
-                targetContradiction = true
-                if (targetContradictionSamples.sizeIs < 3) {
-                  val combos = for { l <- pc; r <- constraints } yield l ++ r
-                  targetContradictionSamples =
-                    (targetContradictionSamples ++ combos).take(3)
-                }
-              }
-              Some(goals)
-            case _ => step(node).flatMap(collectGoal)
-        } catch {
-          case e: NotImplementedError =>
-            if (notImplBlocked.isEmpty)
-              val msg = Option(e.getMessage).getOrElse("")
-              val site = e.getStackTrace
-                .find(_.getClassName.contains("SymbolicInterpreter"))
-                .map(f => s"${f.getMethodName}:${f.getLineNumber}")
-                .getOrElse("?")
-              notImplBlocked = Some(if (msg.nonEmpty) msg else site)
-            None
-        }
-
-      // pop the stack and try the else-side of the most recent then-branch
-      def backtrack(): Option[Node] =
-        if (stack.isEmpty) None
-        else {
-          val (Cond(br, tried), _, savedSt) = stack.head
-          stack = stack.tail
-          if (!tried) backtrack()
-          else {
-            env = savedSt.env
-            callCtxt = savedSt.callCtxt
-            tryBranch(br, false).orElse(backtrack())
-          }
-        }
-
-      var cur: Option[Node] = Some(entryFunc.entry)
-      def solveGoals(goals: List[List[Formula]]): LazyList[List[Formula]] =
-        goals match
-          case Nil =>
-            cur = backtrack()
-            nextGoals
-          case goal :: rest =>
-            val solved = solvePC(goal)
-            if (solved.isEmpty) {
-              targetContradiction = true
-              solveGoals(rest)
-            } else solved #::: solveGoals(rest)
-
-      def nextGoals: LazyList[List[Formula]] = cur match
-        case None => LazyList()
-        case Some(node) =>
-          collectGoal(node) match
-            case Some(goals) => solveGoals(goals)
-            case None =>
-              cur = backtrack()
-              nextGoals
-      nextGoals
-    }
-
-  private def propagateEnv(cond: Expr, side: Boolean): Unit =
-    cond match
-      case EBinary(BOp.Eq | BOp.Equal, ERef(x: Local), lit: LiteralExpr) =>
-        if (side) env += (x -> SELit(lit))
-      case EBinary(BOp.Eq | BOp.Equal, lit: LiteralExpr, ERef(x: Local)) =>
-        if (side) env += (x -> SELit(lit))
-      case EBinary(BOp.And, lhs, rhs) if side =>
-        propagateEnv(lhs, true); propagateEnv(rhs, true)
-      case EBinary(BOp.Or, lhs, rhs) if !side =>
-        propagateEnv(lhs, false); propagateEnv(rhs, false)
-      case _ => ()
-
-  private def eval(block: Block): Option[SymExpr] =
-    var retVal: Option[SymExpr] = None
-    for (inst <- block.insts if retVal.isEmpty)
-      inst match
-        case IReturn(expr) => retVal = Some(eval(expr))
-        case other         => eval(other)
-    retVal
-
-  private def eval(inst: NormalInst): Unit = inst match
-    case ILet(lhs, expr)         => env += (lhs -> eval(expr))
-    case IAssign(x: Local, expr) => env += (x -> eval(expr))
-    case IAssign(Field(x: Local, EStr(key)), expr) =>
-      val t = eval(expr)
-      env.get(x) match
-        case Some(SERecord(tn, fs)) =>
-          env += (x -> SERecord(tn, fs + (key -> t)))
-        case _ => ()
-    case _: IAssign => () // global or dynamic-key assign
-    case IExpand(base: Local, expr) =>
-      eval(expr) match
-        case SELit(EStr(field)) =>
-          env.get(base) match
-            case Some(SERecord(tn, fs)) if !fs.contains(field) =>
-              env += (base -> SERecord(tn, fs + (field -> SELit(EUndef()))))
-            case _ => ()
-        case _ => ()
-    case _: IExpand => () // non-local or dynamic-key expand
-    case IDelete(base: Local, expr) =>
-      val t = eval(expr)
-      env.get(base) match
-        case Some(SEMap(es)) => env += (base -> SEMap(es.filterNot(_._1 == t)))
-        case _               => ()
-    case _: IDelete => () // non-local or dynamic-key delete
-    case IPush(elem, ERef(x: Local), front) =>
-      val t = eval(elem)
-      env.get(x) match
-        case Some(SEList(es)) =>
-          env += (x -> (if (front) SEList(t :: es) else SEList(es :+ t)))
-        case _ => ()
-    case _: IPush => () // non-local list
-    case IPop(lhs, ERef(x: Local), front) =>
-      env.get(x) match
-        case Some(SEList(es)) if es.nonEmpty =>
-          val popped = if (front) es.head else es.last
-          val rest = if (front) es.drop(1) else es.dropRight(1)
-          env += (lhs -> popped)
-          env += (x -> SEList(rest))
-        case _ => env -= lhs
-    case IPop(lhs, _, _) => env -= lhs
-    case IExpr(EYet(_))  => throw NotImplementedError("EYet")
-    case _               => ()
-
-  // resolve a call target to a closure
-  private def cloOf(e: Expr): Option[(String, Map[Name, SymExpr])] =
+  // ---------------------------------------------------------------------------
+  // Helper functions for symbolic execution
+  // ---------------------------------------------------------------------------
+  // main symbolic execution loop
+  private def execute: Option[(Path, Formula)] = {
+    if (!isCandidate(entryFunc)) return None
+    enterFunc(entryFunc)
     try {
-      eval(e) match
-        case SEClo(fname, captured) => Some(fname -> captured)
-        case _                      => None
-    } catch case _: NotImplementedError => None
+      while (true) step
+      None
+    } catch {
+      case Found(path, formula) => Some((path, formula))
+      case NotFound             => None
+      case e: Throwable         => throw e
+    }
+  }
 
+  // symbolic execution of a node
+  private def step: Unit = {
+    // -------------------------------------------------------------------------
+    // XXX: remove
+    // -------------------------------------------------------------------------
+    println("-" * 80)
+    println(s"Executing node ${node.name}:")
+    showState
+    // -------------------------------------------------------------------------
+    node match
+      case block: Block =>
+        for (inst <- block.insts) eval(inst)
+        block.next match
+          case Some(next) => node = next
+          case None       => throw NotFound
+      case call: Call                                => ???
+      case branch: Branch if target.branch == branch =>
+        // reached the target branch, check the constraint
+        val sexpr = if (target.cond) eval(branch.cond) else !eval(branch.cond)
+        val formula = constraint.foldLeft(sexpr)(SAnd(_, _))
+        ???
+      case branch: Branch =>
+        // already visited this loop, skip it
+        if (loops.contains(branch)) pop
+        else {
+          // first time visiting this loop, explore it
+          if (branch.isLoop) loops += branch
+          val sexpr = eval(branch.cond)
+          (branch.thenNode, branch.elseNode) match
+            // TODO: pick a branch more smartly
+            case (Some(tnode), _) => push(branch, sexpr, true); node = tnode
+            case (_, Some(enode)) => push(branch, sexpr, false); node = enode
+            case _                => pop
+        }
+  }
+
+  // symbolic execution of a normal instruction
+  private def eval(inst: NormalInst): Unit = inst match
+    case ILet(lhs, expr) => env += lhs -> eval(expr)
+    case INop(_)         =>
+    case _               => ???
+
+  // symbolic execution of an expression
   private def eval(expr: Expr): SymExpr = expr match
-    case _: EParse | _: EGrammarSymbol | _: ESourceText =>
-      throw NotImplementedError("syntactic")
-    case _: EYet => throw NotImplementedError("EYet")
-    case EContains(list, elem) =>
-      fold(SEResidual("contains", List(eval(list), eval(elem))))
-    case ESubstring(base, from, to) =>
-      val args = List(eval(base), eval(from)) ++ to.map(eval)
-      fold(SEResidual("substring", args))
-    case ETrim(base, isStarting) =>
-      val op = if (isStarting) "trim-start" else "trim-end"
-      fold(SEResidual(op, List(eval(base))))
-    case ERef(ref)             => eval(ref)
-    case EUnary(op, e)         => fold(SEOp(op, List(eval(e))))
-    case EBinary(op, lhs, rhs) => fold(SEOp(op, List(eval(lhs), eval(rhs))))
-    case EVariadic(op, exprs)  => fold(SEOp(op, exprs.map(eval)))
-    case EMathOp(mop, args)    => fold(SEOp(mop, args.map(eval)))
-    case EConvert(cop, e)      => fold(SEOp(cop, List(eval(e))))
-    case EExists(ref) =>
-      ref match
-        case x: Local => SELit(EBool(env.contains(x)))
-        case Field(base, key) =>
-          (eval(base), eval(key)) match
-            case (SERecord(_, fs), SELit(EStr(f))) =>
-              SELit(EBool(fs.contains(f)))
-            case (SEMap(es), k) =>
-              SELit(EBool(es.exists(_._1 == k)))
-            case (t, k) => SEResidual("exists", List(t, k))
-        case _ => SELit(EBool(true))
-    case ETypeOf(e)     => SETypeOf(eval(e))
-    case _: EInstanceOf => throw NotImplementedError("EInstanceOf")
-    case ETypeCheck(e, ty) =>
-      fold(SEOp(BOp.Eq, List(SETypeOf(eval(e)), SEType(ty.toValue))))
-    case ESizeOf(e) =>
-      eval(e) match
-        case SEList(elems) => SELit(EMath(BigDecimal(elems.size)))
-        case t             => SEResidual("sizeof", List(t))
-    case EClo(fname, captured) =>
-      SEClo(fname, captured.flatMap(n => env.get(n).map(v => n -> v)).toMap)
-    case _: ECont   => ??? // opaque-continuation
-    case EDebug(_)  => ??? // debug
-    case _: ERandom => ??? // non-deterministic
-    case _: ESyntactic | _: ELexical =>
-      throw NotImplementedError("syntactic")
-    case ERecord(tname, pairs) =>
-      SERecord(tname, pairs.map((k, e) => k -> eval(e)).toMap)
-    case EMap(_, pairs) => SEMap(pairs.map((k, v) => (eval(k), eval(v))))
-    case EList(exprs)   => SEList(exprs.map(eval))
-    case ECopy(obj)     => eval(obj)
-    case EKeys(map, _) =>
-      eval(map) match
-        case SERecord(_, fs) => SEList(fs.keys.map(k => SELit(EStr(k))).toList)
-        case SEMap(es)       => SEList(es.map(_._1))
-        case t               => SEResidual("keys", List(t))
-    case literal: LiteralExpr => SELit(literal)
+    case EParse(code, rule)                       => ???
+    case EGrammarSymbol(name, params)             => ???
+    case ESourceText(expr)                        => ???
+    case EYet(msg)                                => ???
+    case EContains(list, elem)                    => ???
+    case ESubstring(expr, from, to)               => ???
+    case ETrim(expr, isStarting)                  => ???
+    case ERef(ref)                                => eval(ref)
+    case EUnary(uop, expr)                        => eval(uop, expr)
+    case EBinary(bop, left, right)                => eval(bop, left, right)
+    case EVariadic(vop, exprs)                    => eval(vop, exprs)
+    case EMathOp(mop, exprs)                      => ???
+    case EConvert(cop, expr)                      => ???
+    case EExists(ref)                             => ???
+    case ETypeOf(base)                            => ???
+    case EInstanceOf(expr, target)                => ???
+    case ETypeCheck(expr, ty)                     => ???
+    case ESizeOf(expr)                            => ???
+    case EClo(fname, captured)                    => ???
+    case ECont(fname)                             => ???
+    case EDebug(expr)                             => ???
+    case ERandom()                                => ???
+    case ESyntactic(name, args, rhsIdx, children) => ???
+    case ELexical(name, expr)                     => ???
+    case ERecord(tname, pairs)                    => ???
+    case EMap(ty, pairs)                          => ???
+    case EList(exprs)                             => ???
+    case ECopy(obj)                               => ???
+    case EKeys(map, intSorted)                    => ???
+    case EMath(n)                                 => SMath(n)
+    case EInfinity(pos)                           => SInfinity(pos)
+    case ENumber(double)                          => SNumber(double)
+    case EBigInt(bigInt)                          => SBigInt(bigInt)
+    case EStr(str)                                => SStr(str)
+    case EBool(b)                                 => SBool(b)
+    case EUndef()                                 => SUndef
+    case ENull()                                  => SNull
+    case EEnum(name)                              => SEnum(name)
+    case ECodeUnit(c)                             => SCodeUnit(c)
 
+  // symbolic execution of a binary operator
+  private def eval(bop: BOp, left: Expr, right: Expr): SymExpr =
+    import BOp.*
+    bop match
+      case Eq    => SEq(eval(left), eval(right))
+      case Equal => SEqual(eval(left), eval(right))
+      case Lt    => SLt(eval(left), eval(right))
+      case And   => SAnd(eval(left), eval(right))
+      case Or    => SOr(eval(left), eval(right))
+      case _     => SOp(bop, List(eval(left), eval(right)))
+
+  private def eval(uop: UOp, expr: Expr): SymExpr =
+    import UOp.*
+    uop match
+      case Not => SNot(eval(expr))
+      case _   => SOp(uop, List(eval(expr)))
+
+  private def eval(vop: VOp, exprs: List[Expr]): SymExpr =
+    SOp(vop, exprs.map(eval))
+
+  // symbolic execution of a reference
   private def eval(ref: Ref): SymExpr = ref match
-    case x: Local => env.getOrElse(x, SELit(EUndef()))
-    case Global(name) =>
-      val ty = ValueTy.fromTypeOf(name)
-      if (!ty.isBottom) SEType(ty) else SEGlobal(name)
-    case Field(base, EStr(name)) =>
-      eval(base) match
-        case SERecord(_, fs) if fs.contains(name) => fs(name)
-        case SEMap(es) =>
-          es.collectFirst {
-            case (SELit(EStr(`name`)), v) => v
-          }.getOrElse(SEField(SEMap(es), SELit(EStr(name))))
-        case t => SEField(t, name)
-    case Field(base, idx) =>
-      (eval(base), eval(idx)) match
-        case (SEList(es), SELit(EMath(n)))
-            if n.isValidInt && es.indices.contains(n.toInt) =>
-          es(n.toInt)
-        case (SEMap(es), k) =>
-          es.collectFirst { case (`k`, v) => v }
-            .getOrElse(SEField(SEMap(es), k))
-        case (b, k) => SEField(b, k)
+    case x: Local                => env.getOrElse(x, SUndef)
+    case Global(name)            => ???
+    case Field(base, EStr(name)) => ???
+    case Field(base, idx)        => ???
 
-  private def getConstraints(expr: Expr, pos: Boolean): List[List[Formula]] =
-    expr match
-      case EUnary(UOp.Not, inner) => getConstraints(inner, !pos)
-      case ETypeCheck(base, ty) =>
-        val f = FTypeCheck(eval(base), ty.toValue)
-        List(List(if (pos) f else FNot(f)))
-      // [Z3] FIXME: abs comparisons split into sign cases so the formulas
-      // stay plain (in)equalities the current solver can propagate onto the
-      // operand; Z3 handles abs and the disjunction natively (DPLL), so drop
-      // these four cases (and absEqConstraints/absOperands) after migration.
-      case EBinary(BOp.Eq | BOp.Equal, EUnary(UOp.Abs, inner), rhs) =>
-        absEqConstraints(inner, rhs, pos)
-      case EBinary(BOp.Eq | BOp.Equal, lhs, EUnary(UOp.Abs, inner)) =>
-        absEqConstraints(inner, lhs, pos)
-      case EBinary(BOp.Eq | BOp.Equal, lhs, rhs) =>
-        (lhs, rhs) match
-          case (_, EBool(b)) => getConstraints(lhs, if (pos) b else !b)
-          case (EBool(b), _) => getConstraints(rhs, if (pos) b else !b)
-          case _ =>
-            val f = FEq(eval(lhs), eval(rhs))
-            List(List(if (pos) f else FNot(f)))
-      case EBinary(BOp.Lt, lhs, EUnary(UOp.Abs, inner)) =>
-        // c < |x| <=> (c < x) or (x < -c)
-        val (x, c) = absOperands(inner, lhs)
-        val negC = fold(SEOp(UOp.Neg, List(c)))
-        if (pos) List(List(FLt(c, x)), List(FLt(x, negC)))
-        else List(List(FNot(FLt(c, x)), FNot(FLt(x, negC))))
-      case EBinary(BOp.Lt, EUnary(UOp.Abs, inner), rhs) =>
-        // |x| < c <=> (x < c) and (-c < x)
-        val (x, c) = absOperands(inner, rhs)
-        val negC = fold(SEOp(UOp.Neg, List(c)))
-        if (pos) List(List(FLt(x, c), FLt(negC, x)))
-        else List(List(FNot(FLt(x, c))), List(FNot(FLt(negC, x))))
-      case EBinary(BOp.Lt, lhs, rhs) =>
-        val f = FLt(eval(lhs), eval(rhs))
-        List(List(if (pos) f else FNot(f)))
-      case EBinary(BOp.And, lhs, rhs) if pos =>
-        for {
-          l <- getConstraints(lhs, true)
-          r <- getConstraints(rhs, true)
-        } yield l ++ r
-      case EBinary(BOp.Or, lhs, rhs) if !pos =>
-        for {
-          l <- getConstraints(lhs, false)
-          r <- getConstraints(rhs, false)
-        } yield l ++ r
-      case EBinary(BOp.And, lhs, rhs) =>
-        getConstraints(lhs, false) ++ getConstraints(rhs, false)
-      case EBinary(BOp.Or, lhs, rhs) =>
-        getConstraints(lhs, true) ++ getConstraints(rhs, true)
-      case EExists(x: Local) =>
-        if (env.contains(x) == pos) List(List()) else Nil
-      case EExists(Field(base, key)) =>
-        val k = eval(key)
-        (eval(base), k) match
-          case (SERecord(_, fs), SELit(EStr(field))) if fs.contains(field) =>
-            if (pos) List(List()) else Nil
-          case (t, _) =>
-            val f = FExists(t, k)
-            List(List(if (pos) f else FNot(f)))
-      case EContains(list, elem) =>
-        (eval(list), eval(elem)) match
-          case (SEList(elems), t) =>
-            if (pos) elems.map(e => List(FEq(t, e)))
-            else List(elems.map(e => FNot(FEq(t, e))))
-          case (SELit(EStr(s)), SELit(EStr(sub))) =>
-            if (s.contains(sub) == pos) List(List()) else Nil
-          case (l, r) =>
-            val f = FEq(SEResidual("contains", List(l, r)), SELit(EBool(true)))
-            List(List(if (pos) f else FNot(f)))
-      case ERef(ref) =>
-        eval(ref) match
-          case SELit(EBool(b)) if b != pos => Nil
-          case v => List(List(FEq(v, SELit(EBool(pos)))))
-      case _: EYet => Nil
-      case e =>
-        throw NotImplementedError(
-          s"getConstraints: ${e.getClass.getSimpleName}",
-        )
+  // candidates nodes for symbolic execution
+  private def isCandidate(n: Node): Boolean = ???
 
-  // [Z3] FIXME: delete with the abs cases in getConstraints after migration.
-  // |x| = c <=> (x = c) or (x = -c); the negation is the conjunction of both
-  private def absEqConstraints(
-    inner: Expr,
-    other: Expr,
-    pos: Boolean,
-  ): List[List[Formula]] =
-    val (x, c) = absOperands(inner, other)
-    val negC = fold(SEOp(UOp.Neg, List(c)))
-    if (pos) List(List(FEq(x, c)), List(FEq(x, negC)))
-    else List(List(FNot(FEq(x, c)), FNot(FEq(x, negC))))
+  // candidates functions for symbolic execution
+  private def isCandidate(f: Func): Boolean =
+    f == targetFunc ||
+    cfg.callerOfTrans(targetFunc).contains(f)
 
-  // operands of an abs comparison; `eval` strips a `[math] x` conversion off
-  // the operand, so align the literal side to the operand's Number sort
-  // (a Math literal against a Number term is a false sort contradiction)
-  private def absOperands(inner: Expr, other: Expr): (SymExpr, SymExpr) =
-    val x = eval(inner)
-    val c = eval(other)
-    inner match
-      case EConvert(COp.ToMath, _) => (x, fold(SEOp(COp.ToNumber, List(c))))
-      case _                       => (x, c)
+  // ---------------------------------------------------------------------------
+  // Helper functions for state management
+  // ---------------------------------------------------------------------------
+  // initialize
+  private def enterFunc(func: Func): Unit = {
+    node = func.builtinEntry.getOrElse(func.entry)
+    env = func.params.zipWithIndex.map { (p, i) => p.lhs -> SArg(i) }.toMap
+    for {
+      case h: BuiltinHead <- func.head.toList
+      _ = env ++= List(
+        NAME_THIS -> SThis,
+        NAME_ARGS_LIST -> SArgsList,
+        NAME_NEW_TARGET -> SNewTarget,
+      )
+      (p, i) <- h.params.zipWithIndex
+      sexpr = if (p.kind == ParamKind.Variadic) SArgsList else SArg(i)
+    } env += Name(p.name) -> sexpr
+    funcs += func
+    loops = Set.empty
+  }
 
-  // local constant folding for symbolic expressions
-  private def fold(t: SymExpr): SymExpr = t match
-    case SEOp(op: UOp, List(SELit(lit))) =>
-      SymbolicInterpreter.fold(op, lit).getOrElse(t)
-    case SEOp(op: BOp, List(SELit(l), SELit(r))) =>
-      SymbolicInterpreter.fold(op, l, r).getOrElse(t)
-    case SEOp(op: VOp, args) =>
-      SymbolicInterpreter.fold(op, args).getOrElse(t)
-    case SEOp(op: MOp, args) =>
-      SymbolicInterpreter.fold(op, args).getOrElse(t)
-    case SEOp(op: COp, List(SELit(lit))) =>
-      SymbolicInterpreter.fold(op, lit).getOrElse(t)
-    case SEOp(_: COp, List(arg)) => arg
-    case SEResidual("contains", List(SEList(es), t)) =>
-      SELit(EBool(es.contains(t)))
-    case SEResidual("contains", List(SELit(EStr(s)), SELit(EStr(sub)))) =>
-      SELit(EBool(s.contains(sub)))
-    case SEResidual(
-          "substring",
-          List(SELit(EStr(s)), SELit(EMath(from)), SELit(EMath(to))),
-        ) =>
-      val end = if (s.length < to.toInt) s.length else to.toInt
-      SELit(EStr(s.substring(from.toInt, end)))
-    case SEResidual("substring", List(SELit(EStr(s)), SELit(EMath(from)))) =>
-      SELit(EStr(s.substring(from.toInt)))
-    case SEResidual("trim-start", List(SELit(EStr(s)))) =>
-      SELit(EStr(trimString(s, true, cfg.esParser)))
-    case SEResidual("trim-end", List(SELit(EStr(s)))) =>
-      SELit(EStr(trimString(s, false, cfg.esParser)))
-    case _ => t
+  // pop the previous state and backtrack
+  def pop: Unit = ???
+
+  // push the current state and explore the next branch
+  def push(branch: Branch, sexpr: SymExpr, taken: Boolean): Unit =
+    val state = State(node, constraint, env, prev, funcs, loops)
+    constraint ::= (if (taken) sexpr else !sexpr)
+    prev = Some(Cond(branch, taken), state)
+
+  private def showState: Unit = {
+    println(s"- Node: ${node.id}")
+    println(s"- Constraint: ${constraint.mkString(" /\\ ")}")
+    println(s"- Env: {")
+    for ((k, v) <- env.toList.sortBy(_._1.toString))
+      println(s"    ${k} -> ${v}")
+    println("  }")
+    println(
+      s"- Prev: ${prev.map { (c, s) => s"<$c, ...>" }.getOrElse("")}",
+    )
+    println(s"- Funcs: ${funcs.map(_.id).mkString(", ")}")
+    println(s"- Loops: ${loops.map(_.id).mkString(", ")}")
+  }
 }
 
 object SymbolicInterpreter {
-  import SymExpr.*
+  // factory method
+  def apply(
+    entryFunc: Func,
+    target: Cond,
+  )(using cfg: CFG): SymbolicInterpreter =
+    new SymbolicInterpreter(cfg, entryFunc, target)
 
-  case class CallContext(
-    callSite: Call,
-    callerEnv: Map[Local, SymExpr],
-    caller: Option[CallContext],
+  // path of symbolic execution
+  case class Path(entryFunc: Func, conds: List[Cond])
+
+  // state of symbolic execution
+  case class State(
+    node: Node,
+    constraint: List[SymExpr],
+    env: Map[Local, SymExpr],
+    prev: Option[(Cond, State)],
+    funcs: Set[Func],
+    loops: Set[Branch],
   )
 
-  case class State(env: Map[Local, SymExpr], callCtxt: Option[CallContext])
-
-  def apply(
-    entryFunc: Func,
-    target: Cond,
-    solvePC: List[Formula] => LazyList[List[Formula]],
-  )(using CFG): SymbolicInterpreter =
-    val solver = Solver()
-    new SymbolicInterpreter(entryFunc, target, solvePC, solver.hasContradiction)
-
-  def apply(
-    entryFunc: Func,
-    target: Cond,
-    solvePC: List[Formula] => LazyList[List[Formula]],
-    hasContradiction: List[Formula] => Boolean,
-  )(using CFG): SymbolicInterpreter =
-    new SymbolicInterpreter(entryFunc, target, solvePC, hasContradiction)
-
-  private def fold(op: UOp, lit: LiteralExpr): Option[SymExpr] =
-    import UOp.*
-    (op, lit) match
-      case (Abs, EMath(n)) => Some(SELit(EMath(n.abs)))
-      case (Floor, EMath(n)) =>
-        val f = if (n.isWhole) n else n - (n % 1) - (if (n < 0) 1 else 0)
-        Some(SELit(EMath(f)))
-      case (Neg, ENumber(n))     => Some(SELit(ENumber(-n)))
-      case (Neg, EMath(n))       => Some(SELit(EMath(-n)))
-      case (Neg, EInfinity(pos)) => Some(SELit(EInfinity(!pos)))
-      case (Neg, EBigInt(n))     => Some(SELit(EBigInt(-n)))
-      case (Not, EBool(b))       => Some(SELit(EBool(!b)))
-      case (BNot, EMath(n))      => Some(SELit(EMath(~n.toInt)))
-      case (BNot, ENumber(n))    => Some(SELit(ENumber(~n.toInt)))
-      case (BNot, EBigInt(n))    => Some(SELit(EBigInt(~n)))
-      case _                     => None
-
-  private def fold(op: BOp, l: LiteralExpr, r: LiteralExpr): Option[SymExpr] =
-    import BOp.*
-    (op, l, r) match
-      case (Add, ENumber(a), ENumber(b)) => Some(SELit(ENumber(a + b)))
-      case (Sub, ENumber(a), ENumber(b)) => Some(SELit(ENumber(a - b)))
-      case (Mul, ENumber(a), ENumber(b)) => Some(SELit(ENumber(a * b)))
-      case (Pow, ENumber(a), ENumber(b)) => Some(SELit(ENumber(math.pow(a, b))))
-      case (Div, ENumber(a), ENumber(b)) => Some(SELit(ENumber(a / b)))
-      case (Mod, ENumber(a), ENumber(b)) => Some(SELit(ENumber(a % b)))
-      case (Lt, ENumber(a), ENumber(b))  => Some(SELit(EBool(a < b)))
-      case (Add, EMath(a), EMath(b))     => Some(SELit(EMath(a + b)))
-      case (Sub, EMath(a), EMath(b))     => Some(SELit(EMath(a - b)))
-      case (Mul, EMath(a), EMath(b))     => Some(SELit(EMath(a * b)))
-      case (Mod, EMath(a), EMath(b)) if b != BigDecimal(0) =>
-        Some(SELit(EMath(a % b)))
-      case (Pow, EMath(a), EMath(b)) if b.isValidInt && b >= 0 =>
-        Some(SELit(EMath(a.pow(b.toInt))))
-      case (BAnd, EMath(a), EMath(b)) =>
-        Some(SELit(EMath(BigDecimal(a.toBigInt & b.toBigInt))))
-      case (BOr, EMath(a), EMath(b)) =>
-        Some(SELit(EMath(BigDecimal(a.toBigInt | b.toBigInt))))
-      case (BXOr, EMath(a), EMath(b)) =>
-        Some(SELit(EMath(BigDecimal(a.toBigInt ^ b.toBigInt))))
-      case (LShift, EMath(a), EMath(b)) =>
-        Some(SELit(EMath(BigDecimal(a.toBigInt << b.toInt))))
-      case (RShift, EMath(a), EMath(b)) =>
-        Some(SELit(EMath(BigDecimal(a.toBigInt >> b.toInt))))
-      case (Lt, EMath(a), EMath(b))         => Some(SELit(EBool(a < b)))
-      case (Add, EInfinity(true), EMath(_)) => Some(SELit(EInfinity(true)))
-      case (Add, EMath(_), EInfinity(true)) => Some(SELit(EInfinity(true)))
-      case (Add, EInfinity(true), EInfinity(true)) =>
-        Some(SELit(EInfinity(true)))
-      case (Add, EInfinity(false), EMath(_)) => Some(SELit(EInfinity(false)))
-      case (Add, EMath(_), EInfinity(false)) => Some(SELit(EInfinity(false)))
-      case (Add, EInfinity(false), EInfinity(false)) =>
-        Some(SELit(EInfinity(false)))
-      case (Sub, EInfinity(true), EMath(_)) => Some(SELit(EInfinity(true)))
-      case (Sub, EInfinity(true), EInfinity(false)) =>
-        Some(SELit(EInfinity(true)))
-      case (Sub, EMath(_), EInfinity(true))  => Some(SELit(EInfinity(false)))
-      case (Sub, EInfinity(false), EMath(_)) => Some(SELit(EInfinity(false)))
-      case (Sub, EInfinity(false), EInfinity(true)) =>
-        Some(SELit(EInfinity(false)))
-      case (Sub, EMath(_), EInfinity(false)) => Some(SELit(EInfinity(true)))
-      case (Eq, a, b)                        => Some(SELit(EBool(a == b)))
-      case (Equal, a, b)                     => Some(SELit(EBool(a == b)))
-      case _                                 => None
-
-  private def fold(op: VOp, terms: List[SymExpr]): Option[SymExpr] =
-    import VOp.*
-    op match
-      case Min =>
-        if (terms.contains(SELit(EInfinity(false))))
-          Some(SELit(EInfinity(false)))
-        else {
-          val filtered = terms.filter(_ != SELit(EInfinity(true)))
-          if (filtered.isEmpty) Some(SELit(EInfinity(true)))
-          else {
-            val nums = filtered.collect { case SELit(EMath(n)) => n }
-            if (nums.size == filtered.size) Some(SELit(EMath(nums.min)))
-            else None
-          }
-        }
-      case Max =>
-        if (terms.contains(SELit(EInfinity(true)))) Some(SELit(EInfinity(true)))
-        else {
-          val filtered = terms.filter(_ != SELit(EInfinity(false)))
-          if (filtered.isEmpty) Some(SELit(EInfinity(false)))
-          else {
-            val nums = filtered.collect { case SELit(EMath(n)) => n }
-            if (nums.size == filtered.size) Some(SELit(EMath(nums.max)))
-            else None
-          }
-        }
-      case Concat =>
-        val strs = terms.collect {
-          case SELit(EStr(s))      => s
-          case SELit(ECodeUnit(c)) => c.toString
-        }
-        if (strs.size == terms.size) Some(SELit(EStr(strs.mkString)))
-        else {
-          val lists = terms.collect { case SEList(es) => es }
-          if (lists.size == terms.size) Some(SEList(lists.flatten))
-          else None
-        }
-
-  private def fold(mop: MOp, terms: List[SymExpr]): Option[SymExpr] =
-    import MOp.*
-    val nums = terms.collect { case SELit(EMath(n)) => n.toDouble }
-    if (nums.size != terms.size) None
-    else
-      val r: Option[Double] = (mop, nums) match
-        case (Expm1, List(a))    => Some(math.expm1(a))
-        case (Log10, List(a))    => Some(math.log10(a))
-        case (Log2, List(a))     => Some(math.log(a) / math.log(2))
-        case (Cos, List(a))      => Some(math.cos(a))
-        case (Cbrt, List(a))     => Some(math.cbrt(a))
-        case (Exp, List(a))      => Some(math.exp(a))
-        case (Cosh, List(a))     => Some(math.cosh(a))
-        case (Sinh, List(a))     => Some(math.sinh(a))
-        case (Tanh, List(a))     => Some(math.tanh(a))
-        case (Acos, List(a))     => Some(math.acos(a))
-        case (Asin, List(a))     => Some(math.asin(a))
-        case (Atan2, List(a, b)) => Some(math.atan2(a, b))
-        case (Atan, List(a))     => Some(math.atan(a))
-        case (Log1p, List(a))    => Some(math.log1p(a))
-        case (Log, List(a))      => Some(math.log(a))
-        case (Sin, List(a))      => Some(math.sin(a))
-        case (Sqrt, List(a))     => Some(math.sqrt(a))
-        case (Tan, List(a))      => Some(math.tan(a))
-        case _                   => None // Acosh, Asinh, Atanh not supported
-      r.map(v => SELit(EMath(v)))
-
-  private def fold(cop: COp, lit: LiteralExpr): Option[SymExpr] =
-    import COp.*
-    (cop, lit) match
-      case (ToMath, EMath(n))     => Some(SELit(EMath(n)))
-      case (ToMath, ENumber(d))   => Some(SELit(EMath(BigDecimal(d))))
-      case (ToMath, EBigInt(n))   => Some(SELit(EMath(BigDecimal(n))))
-      case (ToMath, ECodeUnit(c)) => Some(SELit(EMath(BigDecimal(c.toInt))))
-      case (ToNumber, EMath(n))   => Some(SELit(ENumber(n.toDouble)))
-      case (ToNumber, ENumber(d)) => Some(SELit(ENumber(d)))
-      case (ToNumber, EInfinity(pos)) =>
-        val v = if (pos) Double.PositiveInfinity else Double.NegativeInfinity
-        Some(SELit(ENumber(v)))
-      case (ToApproxNumber, EMath(n)) => Some(SELit(ENumber(n.toDouble)))
-      case (ToBigInt, EMath(n))       => Some(SELit(EBigInt(n.toBigInt)))
-      case (ToBigInt, EBigInt(n))     => Some(SELit(EBigInt(n)))
-      case (ToCodeUnit, EMath(n))     => Some(SELit(ECodeUnit(n.toChar)))
-      case (ToStr(_), EStr(s))        => Some(SELit(EStr(s)))
-      case (ToStr(None), EMath(n)) =>
-        Some(SELit(EStr(if (n.isWhole) n.toBigInt.toString else n.toString)))
-      case (ToStr(None), EBigInt(n)) => Some(SELit(EStr(n.toString)))
-      case (ToStr(None), ENumber(d)) =>
-        if (d.isNaN) Some(SELit(EStr("NaN")))
-        else if (d.isPosInfinity) Some(SELit(EStr("Infinity")))
-        else if (d.isNegInfinity) Some(SELit(EStr("-Infinity")))
-        else Some(SELit(EStr(d.toString)))
-      case (ToStr(None), EInfinity(pos)) =>
-        Some(SELit(EStr(if (pos) "Infinity" else "-Infinity")))
-      case (ToStr(None), EBool(b)) => Some(SELit(EStr(b.toString)))
-      case _                       => None
+  // found valid path and formula
+  enum Result extends Exception:
+    case Found(path: Path, formula: Formula)
+    case NotFound
 }

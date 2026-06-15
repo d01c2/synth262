@@ -1,162 +1,123 @@
 package esmeta.solver
 
-import esmeta.ir.{Op as CoreOp, *}
-import esmeta.solver.Formula.*
-import esmeta.ty.ValueTy
+import esmeta.ir.{Op, Name}
 
-enum Sym:
-  case This
-  case NewTarget
-  case ArgsList
-  case Arg(index: Int)
+// symbolic expression
+sealed trait SymExpr {
 
-  override def toString: String = this match
-    case This      => "#this"
-    case NewTarget => "#NewTarget"
-    case ArgsList  => "#ArgumentsList"
-    case Arg(k)    => s"#ArgumentsList[$k]"
-
-enum AppKind:
-  case Op(op: CoreOp)
-  case Residual(name: String)
-  case Call(name: String)
+  inline def /\(that: SymExpr): SymExpr = SAnd(this, that)
+  inline def \/(that: SymExpr): SymExpr = SOr(this, that)
+  inline def -->(that: SymExpr): SymExpr = SImply(this, that)
+  inline def unary_! : SymExpr = SNot(this)
 
   override def toString: String = this match
-    case Op(op)         => op.toString
-    case Residual(name) => s"residual:$name"
-    case Call(name)     => name
+    case SArg(i)                          => s"#$i"
+    case SThis                            => "#THIS"
+    case SArgsList                        => "#ARGS_LIST"
+    case SNewTarget                       => "#NEW_TARGET"
+    case SGlobal(name)                    => s"@$name"
+    case SMath(n)                         => n.toString
+    case SInfinity(pos)                   => if (pos) "+INF" else "-INF"
+    case SNumber(Double.PositiveInfinity) => "+NUM_INF"
+    case SNumber(Double.NegativeInfinity) => "-NUM_INF"
+    case SNumber(d) if d.isNaN            => "NaN"
+    case SNumber(d)                       => s"${d}f"
+    case SBigInt(bigInt)                  => s"${bigInt}n"
+    case SStr(str)                        => s""""$str""""
+    case SBool(b)                         => b.toString
+    case SUndef                           => "undefined"
+    case SNull                            => "null"
+    case SEnum(name)                      => s"~$name~"
+    case SCodeUnit(c)                     => s"'$c'"
+    case SField(base, SStr(key))          => s"$base.$key"
+    case SField(base, key)                => s"$base[$key]"
+    case SNot(base)                       => s"!($base)"
+    case SAnd(left, right)                => s"($left /\\ $right)"
+    case SOr(left, right)                 => s"($left \\/ $right)"
+    case SImply(premise, conclusion)      => s"(($premise) => ($conclusion))"
+    case SEq(left, right)                 => s"($left = $right)"
+    case SEqual(left, right)              => s"($left = $right)"
+    case SLt(left, right)                 => s"($left < $right)"
+    case SHas(base, key)                  => s"($base has $key)"
+    case STypeCheck(base, ty)             => s"(? $base: $ty)"
+    case SOp(op, args)                    => s"([$op] ${args.mkString(", ")})"
+    case SCall(name, args)                => s"$name(${args.mkString(", ")})"
+}
+object SymExpr {
+  val T: SymExpr = SBool(true)
+  val F: SymExpr = SBool(false)
+  val PosInf: SymExpr = SInfinity(true)
+  val NegInf: SymExpr = SInfinity(false)
+}
 
-enum SymExpr:
-  case SESym(id: Sym)
-  case SEGlobal(name: String)
-  case SELit(value: LiteralExpr)
-  case SEField(base: SymExpr, key: SymExpr)
-  case SEApp(kind: AppKind, args: List[SymExpr])
-  case SEClo(fname: String, captured: Map[Name, SymExpr])
-  case SEList(elems: List[SymExpr])
-  case SERecord(tname: String, fields: Map[String, SymExpr])
-  case SEMap(entries: List[(SymExpr, SymExpr)])
-  case SETypeOf(t: SymExpr)
-  case SEType(ty: ValueTy)
+// base cases
+sealed trait SymBase extends SymExpr
+case class SArg(i: Int) extends SymBase
+case object SThis extends SymBase
+case object SArgsList extends SymBase
+case object SNewTarget extends SymBase
+case class SGlobal(name: String) extends SymBase
 
-  def freeVars: Set[Sym] = this match
-    case SESym(id)          => Set(id)
-    case SEGlobal(_)        => Set.empty
-    case SELit(_)           => Set.empty
-    case SEField(base, key) => base.freeVars ++ key.freeVars
-    case SEApp(_, args)     => args.flatMap(_.freeVars).toSet
-    case SEClo(_, captured) => captured.values.flatMap(_.freeVars).toSet
-    case SEList(elems)      => elems.flatMap(_.freeVars).toSet
-    case SERecord(_, fs)    => fs.values.flatMap(_.freeVars).toSet
-    case SEMap(es)   => es.flatMap((k, v) => k.freeVars ++ v.freeVars).toSet
-    case SETypeOf(t) => t.freeVars
-    case SEType(_)   => Set.empty
+// literal cases
+sealed trait SymLit extends SymExpr
+case class SMath(n: BigDecimal) extends SymLit
+case class SInfinity(pos: Boolean) extends SymLit
+case class SNumber(double: Double) extends SymLit
+case class SBigInt(bigInt: BigInt) extends SymLit
+case class SStr(str: String) extends SymLit
+case class SBool(b: Boolean) extends SymLit
+case object SUndef extends SymLit
+case object SNull extends SymLit
+case class SEnum(name: String) extends SymLit
+case class SCodeUnit(c: Char) extends SymLit
 
-  def occurs(id: Sym): Boolean = freeVars.contains(id)
+// field access
+case class SField(base: SymExpr, key: SymExpr) extends SymExpr
+
+// function application
+case class SCall(name: String, args: List[SymExpr]) extends SymExpr
+
+// operation application
+case class SOp(op: Op, args: List[SymExpr]) extends SymExpr
+
+// logical operations
+sealed trait SymLogic extends SymExpr
+case class SNot(base: SymExpr) extends SymLogic
+case class SAnd(left: SymExpr, right: SymExpr) extends SymLogic
+case class SOr(left: SymExpr, right: SymExpr) extends SymLogic
+case class SImply(premise: SymExpr, conclusion: SymExpr) extends SymLogic
+case class SEq(left: SymExpr, right: SymExpr) extends SymLogic
+case class SEqual(left: SymExpr, right: SymExpr) extends SymLogic
+case class SLt(left: SymExpr, right: SymExpr) extends SymLogic
+case class SHas(base: SymExpr, key: SymExpr) extends SymLogic
+case class STypeCheck(base: SymExpr, ty: TypeCase) extends SymLogic
+
+enum TypeCase:
+  case Undefined
+  case Null
+  case Boolean
+  case Number
+  case String
+  case BigInt
+  case Symbol
+  case Object
 
   override def toString: String = this match
-    case SESym(id)          => id.toString
-    case SEGlobal(name)     => s"@$name"
-    case SELit(v)           => v.toString
-    case SEField(base, key) => s"$base[$key]"
-    case SEApp(n, args)     => s"$n(${args.mkString(", ")})"
-    case SEClo(fname, captured) =>
-      s"clo<$fname>{${captured.map((k, v) => s"$k=$v").mkString(", ")}}"
-    case SEList(elems) => s"[${elems.mkString(", ")}]"
-    case SERecord(tn, fs) =>
-      s"$tn{${fs.map((k, v) => s"$k: $v").mkString(", ")}}"
-    case SEMap(es)   => s"Map(${es.map((k, v) => s"$k -> $v").mkString(", ")})"
-    case SETypeOf(t) => s"typeof($t)"
-    case SEType(ty)  => ty.toString
+    case Undefined => "Undefined"
+    case Null      => "Null"
+    case Boolean   => "Boolean"
+    case Number    => "Number"
+    case String    => "String"
+    case BigInt    => "Bigint"
+    case Symbol    => "Symbol"
+    case Object    => "Object"
 
-  def rewrite(from: SymExpr, to: SymExpr): SymExpr =
-    if (this == from) to
-    else
-      this match
-        case SESym(_)    => this
-        case SEGlobal(_) => this
-        case SELit(_)    => this
-        case SEField(base, key) =>
-          SEField(base.rewrite(from, to), key.rewrite(from, to))
-        case SEApp(op, args) => SEApp(op, args.map(_.rewrite(from, to)))
-        case SEClo(fname, captured) =>
-          SEClo(fname, captured.map((k, v) => k -> v.rewrite(from, to)))
-        case SEList(elems) => SEList(elems.map(_.rewrite(from, to)))
-        case SERecord(tn, fs) =>
-          SERecord(tn, fs.map((k, v) => k -> v.rewrite(from, to)))
-        case SEMap(es) =>
-          SEMap(es.map((k, v) => (k.rewrite(from, to), v.rewrite(from, to))))
-        case SETypeOf(t) => SETypeOf(t.rewrite(from, to))
-        case SEType(_)   => this
-
-  inline def is(ty: ValueTy): Formula = FTypeCheck(this, ty)
-
-  inline def ===(that: SymExpr): Formula = FEq(this, that)
-
-  inline def !==(that: SymExpr): Formula = !(this === that)
-
-object SymExpr:
-  def SEField(base: SymExpr, field: String): SymExpr =
-    SEField(base, SELit(EStr(field)))
-
-  object SEOp:
-    def apply(op: CoreOp, args: List[SymExpr]): SymExpr =
-      SEApp(AppKind.Op(op), args)
-
-    def unapply(expr: SymExpr): Option[(CoreOp, List[SymExpr])] = expr match
-      case SEApp(AppKind.Op(op), args) => Some(op -> args)
-      case _                           => None
-
-  object SEResidual:
-    def apply(name: String, args: List[SymExpr]): SymExpr =
-      SEApp(AppKind.Residual(name), args)
-
-    def unapply(expr: SymExpr): Option[(String, List[SymExpr])] = expr match
-      case SEApp(AppKind.Residual(name), args) => Some(name -> args)
-      case _                                   => None
-
-  object SECall:
-    def apply(name: String, args: List[SymExpr]): SymExpr =
-      SEApp(AppKind.Call(name), args)
-
-    def unapply(expr: SymExpr): Option[(String, List[SymExpr])] = expr match
-      case SEApp(AppKind.Call(name), args) => Some(name -> args)
-      case _                               => None
-
-  object StaticField:
-    def unapply(expr: SymExpr): Option[(SymExpr, String)] = expr match
-      case SEField(base, SELit(EStr(field))) => Some(base -> field)
-      case _                                 => None
-
-  object ValueField:
-    def unapply(expr: SymExpr): Option[SymExpr] = expr match
-      case StaticField(base, "Value") => Some(base)
-      case _                          => None
-
-  object TypeField:
-    def unapply(expr: SymExpr): Option[SymExpr] = expr match
-      case StaticField(base, "Type") => Some(base)
-      case _                         => None
-
-  inline def SEMath(n: BigDecimal): SymExpr = SELit(EMath(n))
-  inline def SEInfinity(pos: Boolean): SymExpr = SELit(EInfinity(pos))
-  val SEPosInf: SymExpr = SEInfinity(true)
-  val SENegInf: SymExpr = SEInfinity(false)
-  inline def SENumber(d: Double): SymExpr = SELit(ENumber(d))
-  inline def SEBigInt(s: String): SymExpr = SELit(EBigInt(BigInt(s)))
-  inline def SEBigInt(n: Int): SymExpr = SELit(EBigInt(BigInt(n)))
-  inline def SEStr(str: String): SymExpr = SELit(EStr(str))
-  inline def SEBool(b: Boolean): SymExpr = SELit(EBool(b))
-  val T: SymExpr = SEBool(true)
-  val F: SymExpr = SEBool(false)
-  val SEUndef: SymExpr = SELit(EUndef())
-  val SENull: SymExpr = SELit(ENull())
-  inline def SEEnum(name: String): SymExpr = SELit(EEnum(name))
-  inline def SECodeUnit(c: Char): SymExpr = SELit(ECodeUnit(c))
-
+// helper methods
 import SymExpr.*
-extension (k: Int) def n: SymExpr = SEBigInt(k)
-extension (d: Double) def d: SymExpr = SENumber(d)
+given Conversion[BigDecimal, SMath] with
+  def apply(n: BigDecimal): SMath = SMath(n)
+extension (k: Int) def n: SBigInt = SBigInt(k)
+extension (d: Double) def f: SNumber = SNumber(d)
 extension (str: String)
-  def n: SymExpr = SEBigInt(str)
-  def s: SymExpr = SEStr(str)
+  def n: SBigInt = SBigInt(BigInt(str))
+  def s: SStr = SStr(str)

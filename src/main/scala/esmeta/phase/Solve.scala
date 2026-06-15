@@ -55,50 +55,13 @@ case object Solve extends Phase[CFG, String] {
     entry: Func,
     branch: Branch,
     cond: Cond,
-  )(using CFG): LazyList[String] =
-    val params = paramIds(entry)
-    val solver = Solver()
+  )(using CFG): Option[String] =
     var goalIdx = 0
     println(s"\n=== Entry: ${entry.name} ===")
-    val goals = SymbolicInterpreter(
-      entry,
-      cond,
-      goal => {
-        goalIdx += 1
-        println(s"\n--- Goal $goalIdx [raw] ---")
-        goal.foreach(f => println(s"  $f"))
-        val expanded = solver.expand(goal)
-        println(s"--- Goal $goalIdx [expanded] ---")
-        expanded.foreach(f => println(s"  $f"))
-        val solved = solver.solveAll(goal)
-        if (solved.isEmpty) {
-          println(s"--- Goal $goalIdx => CONTRADICTION ---")
-          LazyList.empty
-        } else {
-          val first = solved.head
-          println(s"--- Goal $goalIdx [saturated] ---")
-          first.foreach(f => println(s"  $f"))
-          solved
-        }
-      },
-    ).result
-    goals.flatMap(solved => Reifier(entry, solved, params))
-
-  def paramIds(func: Func): List[Sym] =
-    val irIds = func.irFunc.params.flatMap { p =>
-      p.lhs.name match
-        case "this"      => Some(Sym.This)
-        case "NewTarget" => Some(Sym.NewTarget)
-        case _           => None
-    }
-    val headIds = func.head match
-      case Some(h: BuiltinHead) =>
-        h.params
-          .collect { case p if p.kind != ParamKind.Variadic => p }
-          .zipWithIndex
-          .map((_, k) => Sym.Arg(k))
-      case _ => Nil
-    (irIds ++ headIds).distinct
+    val interp = SymbolicInterpreter(entry, cond)
+    // TODO: logging for interp
+    val goals = interp.result
+    goals.flatMap { case (path, formula) => Reifier(entry, formula) }
 
   def defaultConfig: Config = Config()
   val options: List[PhaseOption[Config]] = List(

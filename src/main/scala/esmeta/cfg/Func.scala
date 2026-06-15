@@ -1,7 +1,7 @@
 package esmeta.cfg
 
 import esmeta.cfg.util.{DotPrinter => CFGDotPrinter, *}
-import esmeta.ir.{Param, Type, Name, Func => IRFunc, FuncKind, EYet}
+import esmeta.ir.{Param, Type, Name, Func => IRFunc, FuncKind, EYet, INop}
 import esmeta.spec.Head
 import esmeta.ty.*
 import esmeta.util.SystemUtils.*
@@ -20,6 +20,14 @@ case class Func(
 
   /** parameters */
   lazy val params: List[Param] = irFunc.params
+
+  /** entry for built-in functions */
+  lazy val builtinEntry: Option[Node] =
+    if (isBuiltin) nodes.find {
+      case Block(_, is, _) => is.headOption == Some(INop("BUILTIN_PREFIX_END"))
+      case _               => false
+    }
+    else None
 
   /** arity */
   lazy val arity: (Int, Int) = irFunc.arity
