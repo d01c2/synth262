@@ -38,7 +38,7 @@ class ContainsTinyTest extends TyTest {
     // pre-defined CFG function
     lazy val func = Func(
       0,
-      IRFunc(true, IRFuncKind.AbsOp, "f", Nil, UnknownType, INop()),
+      IRFunc(true, IRFuncKind.AbsOp, "f", Nil, UnknownType, INop("")),
       Block(0),
     )
 

@@ -50,7 +50,7 @@ trait UnitWalker extends BasicUnitWalker {
     case IReturn(expr)          => walk(expr)
     case IAssert(expr)          => walk(expr)
     case IPrint(expr)           => walk(expr)
-    case INop()                 =>
+    case INop(note)             =>
     case ISeq(insts)            => walkList(insts, walk)
     case IIf(c, t, e, _, _)     => walk(c); walk(t); walk(e)
     case IWhile(c, b, _)        => walk(c); walk(b)

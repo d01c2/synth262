@@ -102,8 +102,8 @@ trait Parsers extends TyParsers {
       case e => IAssert(e)
     } | "print" ~> expr ^^ {
       case e => IPrint(e)
-    } | "nop" ^^ {
-      case _ => INop()
+    } | "nop" ~> opt("[" ~> "[^\\]]+".r <~ "]") ^^ {
+      case n => INop(n.getOrElse(""))
     } | ref ~ ("=" ~> expr) ^^ {
       case r ~ e => IAssign(r, e)
     } | expr ^^ {

@@ -23,7 +23,7 @@ case class IPop(lhs: Local, list: Expr, front: Boolean) extends NormalInst
 case class IReturn(expr: Expr) extends NormalInst with Return
 case class IAssert(expr: Expr) extends NormalInst
 case class IPrint(expr: Expr) extends NormalInst
-case class INop() extends NormalInst
+case class INop(note: String) extends NormalInst
 object NormalInsts extends Parser.From(Parser.normalInsts)
 
 // branch instructions

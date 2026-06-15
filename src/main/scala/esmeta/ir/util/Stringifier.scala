@@ -99,8 +99,10 @@ class Stringifier(detail: Boolean, location: Boolean) {
         app >> "assert " >> expr
       case IPrint(expr) =>
         app >> "print " >> expr
-      case INop() =>
+      case INop(note) =>
         app >> "nop"
+        if (note.isEmpty) app
+        else app >> " [" >> note >> "]"
       case ISeq(insts) =>
         if (insts.isEmpty) app >> "{}"
         else app.wrap(for { i <- insts } app :> i)

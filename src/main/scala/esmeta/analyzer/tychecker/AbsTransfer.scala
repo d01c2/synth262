@@ -514,7 +514,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
           _ <- if (v ⊑ False) put(AbsState.Bot) else pure(())
         } yield ()
       case IPrint(expr) => st => st /* skip */
-      case INop()       => st => st /* skip */
+      case INop(_)      => st => st /* skip */
     }
 
     /** update return points */

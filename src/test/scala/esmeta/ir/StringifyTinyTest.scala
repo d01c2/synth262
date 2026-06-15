@@ -87,6 +87,7 @@ class StringifyTinyTest extends IRTest {
       print -> "print x",
       assign -> "x.p = x",
       nop -> "nop",
+      nopNote -> "nop [NOTE]",
       seq -> """{
       |  let x = ~empty~
       |  delete x.p

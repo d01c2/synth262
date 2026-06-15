@@ -135,7 +135,7 @@ class Compiler(
     val argsLen = ESizeOf(toERef(NAME_ARGS_LIST))
     var remaining = ps.count(_.kind == Normal)
     fb.builtinBindings = ps.map(_.name).toSet
-    ILet(NAME_ARGS, ERecord("", Nil)) :: ps.flatMap {
+    (ILet(NAME_ARGS, ERecord("", Nil)) :: ps.flatMap {
       case Param(name, _, Variadic) if remaining == 0 =>
         List(ILet(Name(name), ENAME_ARGS_LIST))
       case Param(name, _, Variadic) =>
@@ -168,7 +168,7 @@ class Compiler(
             isFiltered = true, // builtin prefix
           ),
         )
-    }
+    }) :+ INop("BUILTIN_PREFIX_END")
 
   /** compile with a new scope and convert it into an instruction */
   def compileWithScope(fb: FuncBuilder, step: Step): Inst =
@@ -292,7 +292,7 @@ class Compiler(
     case PushContextStep(ref) =>
       fb.addInst(IPush(ERef(compile(fb, ref)), EGLOBAL_EXECUTION_STACK, true))
     case SuspendStep(context, false) =>
-      fb.addInst(INop())
+      fb.addInst(INop(""))
     case SuspendStep(context, true) =>
       val x = fb.newTId
       fb.addInst(IPop(x, EGLOBAL_EXECUTION_STACK, true))
@@ -507,9 +507,9 @@ class Compiler(
         ICall(fb.newTId, eResumeCont, argOpt.map(compile(fb, _)).toList),
       )
     case ResumeTopContextStep() =>
-      fb.addInst(INop())
+      fb.addInst(INop(""))
     case NoteStep(note) =>
-      fb.addInst(INop())
+      fb.addInst(INop(""))
     case BlockStep(StepBlock(steps)) =>
       for (substep <- steps) compile(fb, substep.step)
     case YetStep(yet) =>

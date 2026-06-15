@@ -85,6 +85,11 @@ class CFGBuilder(
 
     // aux
     def aux(inst: Inst): Unit = inst match {
+      case inop @ INop(note) if note.nonEmpty =>
+        val block = Block(nextNId)
+        block.insts += INop(note)
+        connect(block)
+        prev = List((block, true))
       case normal: NormalInst =>
         val block = prev match
           case List((b: Block, _)) => b

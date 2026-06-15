@@ -151,7 +151,7 @@ class Interpreter(
     case IPrint(expr) =>
       val v = eval(expr)
       if (!TEST_MODE) println(st.getString(v))
-    case INop() => /* do nothing */
+    case INop(_) => /* do nothing */
   }
 
   /** transition for calls */

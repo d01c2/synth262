@@ -39,7 +39,8 @@ object IRTest {
   lazy val assertInst = IAssert(xExpr)
   lazy val print = IPrint(xExpr)
   lazy val assign = IAssign(field, xExpr)
-  lazy val nop = INop()
+  lazy val nop = INop("")
+  lazy val nopNote = INop("NOTE")
   lazy val seq = ISeq(List(let, del, ret))
   lazy val emptySeq = ISeq(List())
   lazy val ifInst = IIf(
