@@ -12,21 +12,37 @@ case class SymEnv(map: Map[Symbol, Shape]) {
   // precise satisfiability checker
   def check: Boolean = Solver.check(this)
 
+  // get the shape of a symbol in the symbolic environment
+  inline def apply(symbol: Symbol): Shape = map.getOrElse(symbol, Shape.Top)
+
   // get the shape of a symbolic expression under the symbolic environment
   def apply(sexpr: SymExpr): Shape = sexpr match
-    case s: Symbol                   => map.getOrElse(s, Shape.Top)
-    case SValue(ty)                  => Shape(ty)
-    case SField(base, key)           => ???
-    case SNot(base)                  => ???
-    case SAnd(left, right)           => ???
-    case SOr(left, right)            => ???
-    case SImply(premise, conclusion) => ???
-    case SEq(left, right)            => ???
-    case SEqual(left, right)         => ???
-    case SLt(left, right)            => ???
-    case SExists(base, key)          => ???
-    case STypeCheck(base, ty)        => ???
-    case SOp(op, args)               => ???
+    case s: Symbol            => this(s)
+    case SValue(ty)           => Shape(ty)
+    case SField(base, key)    => ???
+    case SNot(base)           => ???
+    case SAnd(left, right)    => ???
+    case SOr(left, right)     => ???
+    case SEq(left, right)     => ???
+    case SEqual(left, right)  => ???
+    case SLt(left, right)     => ???
+    case SExists(base, key)   => ???
+    case STypeCheck(base, ty) => ???
+    case SOp(op, args)        => ???
+
+  // intersection
+  def &&(that: SymEnv): SymEnv = SymEnv(
+    (map.keySet ++ that.map.keySet).map { sym =>
+      sym -> (map(sym) && that(sym))
+    }.toMap,
+  )
+
+  // union
+  def ||(that: SymEnv): SymEnv = SymEnv(
+    (map.keySet ++ that.map.keySet).map { sym =>
+      sym -> (map(sym) || that(sym))
+    }.toMap,
+  )
 
   // refine the symbolic environment by adding a new shape for a symbol
   def refine(sym: Symbol, shape: Shape, pos: Boolean = true): SymEnv = SymEnv(

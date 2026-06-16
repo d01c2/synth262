@@ -191,6 +191,12 @@ sealed trait BSet[+A] extends ConcreteLattice[A, BSet] { self =>
       case Inf =>
         if (stop) raise(s"impossible to iterate infinite values")
         else Nil.iterator
+
+  /** conversion to flat */
+  def toFlat: Flat[A] = this match
+    case Fin(set) if set.isEmpty   => Zero
+    case Fin(set) if set.size == 1 => One(set.head)
+    case _                         => Many
 }
 case object Inf extends BSet[Nothing]
 case class Fin[A](set: Set[A]) extends BSet[A]

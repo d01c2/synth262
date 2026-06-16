@@ -291,6 +291,12 @@ object NumberTy extends Parser.From(Parser.numberTy) {
   lazy val One: NumberTy = NumberIntTy(IntTy.One, false)
   lazy val NaN: NumberTy = NumberSetTy(Set(Number(Double.NaN)))
 
+  // abstraction of a concrete number value
+  def apply(d: Double): NumberTy =
+    if d.isNaN then NaN
+    else if d.isWhole then NumberIntTy(IntTy(d.toInt), false)
+    else NumberSetTy(Set(Number(d)))
+
   /** This helper is for applying f between the given set and the given integer
     * domain. If the integer domain is not finite, this returns Top.
     *

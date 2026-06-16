@@ -119,7 +119,7 @@ class Stringifier(
     else if (ty.isBottom) app >> "Bot"
     else
       predTys
-        .foldLeft(FilterApp(app)) {
+        .foldLeft(FilterApp(app, sep = OR)) {
           case (app, (pred, name)) =>
             app.add({ ty --= pred; name }, pred <= ty)
         }
@@ -424,22 +424,6 @@ class Stringifier(
     given Rule[T] = tRule
     if (!t.isTop) app >> pre >> t >> post
     else app
-
-  // appender with filtering
-  private class FilterApp(val app: Appender) {
-    private var first = true
-    def add[T](
-      t: => T,
-      valid: Boolean,
-      pre: String = "",
-      post: String = "",
-    )(using tRule: Rule[T]): this.type =
-      if (valid)
-        if (!first) app >> OR
-        else first = false
-        app >> pre >> t >> post
-      this
-  }
 
   // rule for math
   private given mathRule: Rule[Math] = (app, math) => app >> math.toString

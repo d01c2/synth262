@@ -144,6 +144,22 @@ object Appender {
     if (map.size == 0) app >> left >> right
     else app.wrap(for (pair <- map.toList.sortBy(_._1)) app :> pair)
 
+  // appender with filtering
+  class FilterApp(val app: Appender, sep: String) {
+    private var first = true
+    def add[T](
+      t: => T,
+      valid: Boolean,
+      pre: String = "",
+      post: String = "",
+    )(using tRule: Rule[T]): this.type =
+      if (valid)
+        if (!first) app >> sep
+        else first = false
+        app >> pre >> t >> post
+      this
+  }
+
   // basic values
   given stringRule: Rule[String] = (app, str) => { app.sb ++= str; app }
   given charRule: Rule[Char] = (app, ch) => { app.sb += ch; app }

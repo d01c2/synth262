@@ -13,7 +13,6 @@ sealed trait SymExpr {
 
   inline def /\(that: SymExpr): SymExpr = SAnd(this, that)
   inline def \/(that: SymExpr): SymExpr = SOr(this, that)
-  inline def -->(that: SymExpr): SymExpr = SImply(this, that)
   inline def unary_! : SymExpr = SNot(this)
 
   override def toString: String = this match
@@ -27,17 +26,16 @@ sealed trait SymExpr {
       ty.getSingle match
         case One(Str(key)) => s"$base.$key"
         case _             => s"$base[$ty]"
-    case SField(base, key)           => s"$base[$key]"
-    case SNot(base)                  => s"(! $base)"
-    case SAnd(left, right)           => s"(&& $left $right)"
-    case SOr(left, right)            => s"(|| $left $right)"
-    case SImply(premise, conclusion) => s"(=> $premise $conclusion)"
-    case SEq(left, right)            => s"(= $left $right)"
-    case SEqual(left, right)         => s"(== $left $right)"
-    case SLt(left, right)            => s"(< $left $right)"
-    case SExists(base, key)          => s"(exists $base $key)"
-    case STypeCheck(base, ty)        => s"(? $base: $ty)"
-    case SOp(op, args)               => s"([$op] ${args.mkString(", ")})"
+    case SField(base, key)    => s"$base[$key]"
+    case SNot(base)           => s"(! $base)"
+    case SAnd(left, right)    => s"(&& $left $right)"
+    case SOr(left, right)     => s"(|| $left $right)"
+    case SEq(left, right)     => s"(= $left $right)"
+    case SEqual(left, right)  => s"(== $left $right)"
+    case SLt(left, right)     => s"(< $left $right)"
+    case SExists(base, key)   => s"(exists $base $key)"
+    case STypeCheck(base, ty) => s"(? $base: $ty)"
+    case SOp(op, args)        => s"([$op] ${args.mkString(", ")})"
 }
 object SymExpr {
   val T: SymExpr = SValue(TrueT)
@@ -68,7 +66,6 @@ sealed trait SymLogic extends SymExpr
 case class SNot(base: SymExpr) extends SymLogic
 case class SAnd(left: SymExpr, right: SymExpr) extends SymLogic
 case class SOr(left: SymExpr, right: SymExpr) extends SymLogic
-case class SImply(premise: SymExpr, conclusion: SymExpr) extends SymLogic
 case class SEq(left: SymExpr, right: SymExpr) extends SymLogic
 case class SEqual(left: SymExpr, right: SymExpr) extends SymLogic
 case class SLt(left: SymExpr, right: SymExpr) extends SymLogic

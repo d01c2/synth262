@@ -209,6 +209,9 @@ object IntTy {
   lazy val NonNeg: IntTy = IntSignTy(Sign.NonNeg)
   lazy val NonPos: IntTy = IntSignTy(Sign.NonPos)
 
+  // abstraction of a concrete value
+  def apply(value: BigInt): IntTy = IntSetTy(Set(value))
+
   /** This calculates concrete values for the given singletons.
     *
     * @param l
