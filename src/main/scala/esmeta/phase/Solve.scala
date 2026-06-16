@@ -50,18 +50,20 @@ case object Solve extends Phase[CFG, String] {
       reached.filter(_.isBuiltin).toList
     }
 
-  /** symbolic walk -> constraint solving -> JS reification */
+  /** symbolic walk -> JS reification */
   def solve(
     entry: Func,
     branch: Branch,
     cond: Cond,
   )(using CFG): Option[String] =
-    var goalIdx = 0
     println(s"\n=== Entry: ${entry.name} ===")
-    val interp = SymbolicInterpreter(entry, cond)
+    val interp = SymInterp(entry, cond)
     // TODO: logging for interp
-    val goals = interp.result
-    goals.flatMap { case (path, formula) => Reifier(entry, formula) }
+    val result = interp.result.flatMap { state => Reifier(entry, state) }
+    result match
+      case Some(js) => println(s"[Solution] $js")
+      case None     => println(s"[No solution]")
+    result
 
   def defaultConfig: Config = Config()
   val options: List[PhaseOption[Config]] = List(

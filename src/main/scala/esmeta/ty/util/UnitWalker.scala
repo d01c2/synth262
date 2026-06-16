@@ -137,7 +137,7 @@ trait UnitWalker extends BasicUnitWalker {
   def walk(number: Number): Unit = {}
 
   /** big integer types */
-  def walkBigInt(bigInt: Boolean): Unit = walk(bigInt)
+  def walkBigInt(bigInt: Flat[BigInt]): Unit = walkFlat(bigInt, walk)
 
   /** string types */
   def walkStr(str: BSet[String]): Unit = walkBSet(str, walk)

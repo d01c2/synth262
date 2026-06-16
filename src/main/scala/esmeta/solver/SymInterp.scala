@@ -4,47 +4,53 @@ import esmeta.cfg.*
 import esmeta.es.util.Coverage.Cond
 import esmeta.ir.{Func => _, *}
 import esmeta.spec.{BuiltinHead, ParamKind}
+import esmeta.ty.*
 import esmeta.util.*
+import esmeta.util.Appender.*
+import esmeta.util.Appender.{*, given}
+import esmeta.util.BaseUtils.*
 
-class SymbolicInterpreter(
+class SymInterp(
   cfg: CFG,
   entryFunc: Func,
   target: Cond,
 ) {
-  import SymbolicInterpreter.*, Result.*
+  import SymInterp.*, Result.*
 
-  lazy val result: Option[(Path, Formula)] = execute
+  lazy val result: Option[State] = execute
 
-  // node for symbolic execution
+  // ---------------------------------------------------------------------------
+  // symbolic execution state
+  // ---------------------------------------------------------------------------
+  // current node being executed
   var node: Node = entryFunc.entry
-  // current path constraint for symbolic execution
-  var constraint: List[SymExpr] = Nil
-  // environment for symbolic execution
+  // environment mapping local variables to symbolic expressions
   var env: Map[Local, SymExpr] = Map.empty
+  // symbolic environment mapping symbols to their shapes
+  var symEnv: SymEnv = SymEnv.empty
   // previous states for backtracking
   var prev: Option[(Cond, State)] = None
-  // functions encountered during symbolic execution
+  // visited functions to avoid infinite exploration
   var funcs: Set[Func] = Set.empty
-  // loops encountered during symbolic execution
+  // visited loops to avoid infinite exploration
   var loops: Set[Branch] = Set.empty
 
   // target
   val targetFunc: Func = cfg.funcOf(target.branch)
 
   // ---------------------------------------------------------------------------
-  // Helper functions for symbolic execution
+  // helper functions for symbolic execution
   // ---------------------------------------------------------------------------
   // main symbolic execution loop
-  private def execute: Option[(Path, Formula)] = {
+  private def execute: Option[State] = {
     if (!isCandidate(entryFunc)) return None
     enterFunc(entryFunc)
     try {
       while (true) step
       None
     } catch {
-      case Found(path, formula) => Some((path, formula))
-      case NotFound             => None
-      case e: Throwable         => throw e
+      case Found(state) => Some(state)
+      case NotFound     => None
     }
   }
 
@@ -53,9 +59,10 @@ class SymbolicInterpreter(
     // -------------------------------------------------------------------------
     // XXX: remove
     // -------------------------------------------------------------------------
+    println("=" * 80)
+    println(s"Executing node ${node.name}: $getState")
     println("-" * 80)
-    println(s"Executing node ${node.name}:")
-    showState
+    println(node)
     // -------------------------------------------------------------------------
     node match
       case block: Block =>
@@ -66,9 +73,9 @@ class SymbolicInterpreter(
       case call: Call                                => ???
       case branch: Branch if target.branch == branch =>
         // reached the target branch, check the constraint
-        val sexpr = if (target.cond) eval(branch.cond) else !eval(branch.cond)
-        val formula = constraint.foldLeft(sexpr)(SAnd(_, _))
-        ???
+        symEnv = Solver.add(symEnv, eval(branch.cond), target.cond)
+        if (Solver.check(symEnv)) throw Found(getState)
+        else pop
       case branch: Branch =>
         // already visited this loop, skip it
         if (loops.contains(branch)) pop
@@ -168,73 +175,98 @@ class SymbolicInterpreter(
     cfg.callerOfTrans(targetFunc).contains(f)
 
   // ---------------------------------------------------------------------------
-  // Helper functions for state management
+  // helper functions for state management
   // ---------------------------------------------------------------------------
   // initialize
   private def enterFunc(func: Func): Unit = {
     node = func.builtinEntry.getOrElse(func.entry)
-    env = func.params.zipWithIndex.map { (p, i) => p.lhs -> SArg(i) }.toMap
-    for {
-      case h: BuiltinHead <- func.head.toList
-      _ = env ++= List(
-        NAME_THIS -> SThis,
-        NAME_ARGS_LIST -> SArgsList,
-        NAME_NEW_TARGET -> SNewTarget,
-      )
-      (p, i) <- h.params.zipWithIndex
-      sexpr = if (p.kind == ParamKind.Variadic) SArgsList else SArg(i)
-    } env += Name(p.name) -> sexpr
+    func.head match {
+      // built-in functions
+      case Some(h: BuiltinHead) =>
+        import ParamKind.*
+        // environment for built-in functions
+        env = Map(
+          NAME_THIS -> SThis,
+          NAME_ARGS_LIST -> SArgsList,
+          NAME_NEW_TARGET -> SNewTarget,
+        )
+        val ps = h.params.zipWithIndex
+        for {
+          (p, i) <- ps
+          sexpr = if (p.kind == Variadic) SArgsList else SArg(i)
+        } env += Name(p.name) -> sexpr
+        // symbolic environment for built-in functions
+        symEnv = SymEnv(
+          SThis -> Shape(ESValueT),
+          SArgsList -> Shape(ListT(ESValueT)),
+          SNewTarget -> Shape(ESValueT),
+        ) ++ (for ((p, i) <- ps if p.kind != Variadic) yield {
+          SArg(i) -> Shape(ESValueT)
+        })
+      case _ =>
+        val ps = func.params.zipWithIndex
+        env = ps.map { (p, i) => p.lhs -> SArg(i) }.toMap
+        symEnv = SymEnv(for ((p, i) <- ps) yield SArg(i) -> Shape(p.ty.ty))
+    }
     funcs += func
     loops = Set.empty
   }
+
+  def getState: State = State(node, env, prev, funcs, loops, symEnv)
 
   // pop the previous state and backtrack
   def pop: Unit = ???
 
   // push the current state and explore the next branch
-  def push(branch: Branch, sexpr: SymExpr, taken: Boolean): Unit =
-    val state = State(node, constraint, env, prev, funcs, loops)
-    constraint ::= (if (taken) sexpr else !sexpr)
-    prev = Some(Cond(branch, taken), state)
-
-  private def showState: Unit = {
-    println(s"- Node: ${node.id}")
-    println(s"- Constraint: ${constraint.mkString(" /\\ ")}")
-    println(s"- Env: {")
-    for ((k, v) <- env.toList.sortBy(_._1.toString))
-      println(s"    ${k} -> ${v}")
-    println("  }")
-    println(
-      s"- Prev: ${prev.map { (c, s) => s"<$c, ...>" }.getOrElse("")}",
-    )
-    println(s"- Funcs: ${funcs.map(_.id).mkString(", ")}")
-    println(s"- Loops: ${loops.map(_.id).mkString(", ")}")
-  }
+  def push(branch: Branch, sexpr: SymExpr, side: Boolean): Unit =
+    prev = Some(Cond(branch, side), getState)
+    symEnv = Solver.add(symEnv, sexpr, side)
 }
 
-object SymbolicInterpreter {
+object SymInterp {
   // factory method
   def apply(
     entryFunc: Func,
     target: Cond,
-  )(using cfg: CFG): SymbolicInterpreter =
-    new SymbolicInterpreter(cfg, entryFunc, target)
-
-  // path of symbolic execution
-  case class Path(entryFunc: Func, conds: List[Cond])
+  )(using cfg: CFG): SymInterp =
+    new SymInterp(cfg, entryFunc, target)
 
   // state of symbolic execution
   case class State(
     node: Node,
-    constraint: List[SymExpr],
     env: Map[Local, SymExpr],
     prev: Option[(Cond, State)],
     funcs: Set[Func],
     loops: Set[Branch],
-  )
+    symEnv: SymEnv,
+  ) {
+    def path: List[Cond] = prev.map { (c, s) => c :: s.path }.getOrElse(Nil)
+    override def toString: String = stringify(this)
+  }
+
+  given stateRule: Rule[State] = (app, st) => {
+    app.wrap {
+      app :> s"Node: ${st.node.id}"
+      app :> s"Env: "
+      if (st.env.nonEmpty) app.wrap {
+        for ((k, v) <- st.env.toList.sortBy(_._1.toString))
+          app :> s"${k} -> ${v}"
+      }
+      app :> s"SymEnv: " >> st.symEnv
+      app :> s"Path: "
+      val path = st.path
+      if (path.nonEmpty) app.wrap {
+        for (cond <- st.path.reverse)
+          app :> s"${cond.branch.id}(${cond.cond})"
+      }
+      app :> s"Funcs: ${st.funcs.map(_.id).mkString(", ")}"
+      app :> s"Loops: ${st.loops.map(_.id).mkString(", ")}"
+    }
+  }
 
   // found valid path and formula
   enum Result extends Exception:
-    case Found(path: Path, formula: Formula)
+    case Found(state: State)
     case NotFound
+
 }

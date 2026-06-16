@@ -301,4 +301,20 @@ object BaseUtils {
     val digest = MessageDigest.getInstance(method).digest(bytes)
     // convert to hex string
     digest.map("%02x".format(_)).mkString
+
+  extension [A](xs: List[Option[A]])
+    def sequence: Option[List[A]] =
+      val buffer = mutable.ListBuffer.empty[A]
+      var current = xs
+      var hasNone = false
+
+      while current.nonEmpty && !hasNone do
+        current.head match
+          case Some(value) =>
+            buffer += value
+            current = current.tail
+          case None =>
+            hasNone = true
+
+      if hasNone then None else Some(buffer.toList)
 }

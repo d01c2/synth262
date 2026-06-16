@@ -179,7 +179,7 @@ trait AbsValueDecl { self: TyChecker =>
               !ty.math.isBottom ||
               !ty.str.isBottom ||
               !ty.number.isBottom ||
-              ty.bigInt
+              !ty.bigInt.isBottom
             ) =>
           if (!ty.str.isBottom) BigIntT || UndefT
           else BigIntT
@@ -188,10 +188,10 @@ trait AbsValueDecl { self: TyChecker =>
             case NumberSignTy(sign, _) => MathSignTy(sign)
             case NumberIntTy(int, _)   => MathIntTy(int)
             case NumberSetTy(set) => MathSetTy(set.map(n => Math(n.double)))
-          val fromBigInt = if (ty.bigInt) MathTy.Int else MathTy.Bot
+          val fromBigInt = if (!ty.bigInt.isBottom) MathTy.Int else MathTy.Bot
           ValueTy(math = ty.math || fromNumber || fromBigInt)
         case COp.ToStr(_)
-            if (!ty.str.isBottom || !ty.number.isBottom || ty.bigInt) =>
+            if (!ty.str.isBottom || !ty.number.isBottom || !ty.bigInt.isBottom) =>
           StrT
         case _ => ValueTy(),
       )
@@ -348,7 +348,7 @@ trait AbsValueDecl { self: TyChecker =>
     )(using AbsState) =
       val lty = l.ty.bigInt
       val rty = r.ty.bigInt
-      if (!lty || !rty) Bot
+      if (lty.isBottom || rty.isBottom) Bot
       else BigIntTop
 
     // logical unary operator helper
@@ -387,7 +387,9 @@ trait AbsValueDecl { self: TyChecker =>
             (
               (!l.ty.math.isBottom || !l.ty.number.isBottom) &&
               (!r.ty.math.isBottom || !r.ty.number.isBottom)
-            ) || (l.ty.bigInt && r.ty.bigInt)
+            ) || (
+              !l.ty.bigInt.isBottom && !r.ty.bigInt.isBottom
+            )
           ) Set(true, false)
           else Set(),
         ),

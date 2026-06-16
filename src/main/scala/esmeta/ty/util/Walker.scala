@@ -147,7 +147,7 @@ trait Walker extends BasicWalker {
   def walk(number: Number): Number = number
 
   /** big integer types */
-  def walkBigInt(bigInt: Boolean): Boolean = walk(bigInt)
+  def walkBigInt(bigInt: Flat[BigInt]): Flat[BigInt] = walkFlat(bigInt, walk)
 
   /** string types */
   def walkStr(str: BSet[String]): BSet[String] = walkBSet(str, walk)

@@ -131,7 +131,9 @@ trait Parsers extends BasicParsers {
     // number
     singleNumberTy ^^ { case n => ValueTy(number = n) } |
     // big integer
-    "BigInt" ^^^ ValueTy(bigInt = true) |
+    "BigInt[" ~> bigInt <~ "]" ^^ {
+      case b => ValueTy(bigInt = One(b))
+    } | "BigInt" ^^^ ValueTy(bigInt = Many) |
     // string
     "String[" ~> rep1sep(string, ",") <~ "]" ^^ {
       case s => ValueTy(str = Fin(s.toSet))

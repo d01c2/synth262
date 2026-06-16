@@ -65,4 +65,5 @@ trait BasicWalker {
   def walk(str: String): String = str
   def walk(bool: Boolean): Boolean = bool
   def walk(int: Int): Int = int
+  def walk(bigInt: BigInt): BigInt = bigInt
 }

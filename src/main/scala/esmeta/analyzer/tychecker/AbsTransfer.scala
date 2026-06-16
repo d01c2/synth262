@@ -748,8 +748,8 @@ trait AbsTransferDecl { analyzer: TyChecker =>
         } yield lv
       case EMath(n)              => AbsValue(MathT(n))
       case EInfinity(pos)        => AbsValue(InfinityT(pos))
-      case ENumber(n) if n.isNaN => AbsValue(NumberT(Number(Double.NaN)))
-      case ENumber(n)            => AbsValue(NumberT(Number(n)))
+      case ENumber(n) if n.isNaN => AbsValue(NumberT(Double.NaN))
+      case ENumber(n)            => AbsValue(NumberT(n))
       case EBigInt(n)            => AbsValue(BigIntT)
       case EStr(str)             => AbsValue(StrT(str))
       case EBool(b)              => AbsValue(BoolT(b))

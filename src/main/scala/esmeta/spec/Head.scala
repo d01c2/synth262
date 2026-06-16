@@ -110,7 +110,16 @@ case class BuiltinHead(
   path: BuiltinPath,
   params: List[Param],
   retTy: Type,
-) extends Head
+) extends Head {
+  import ParamKind.*
+  lazy val arity: (Int, Int) = {
+    val o = params.indexWhere(_.kind == Optional)
+    val v = params.indexWhere(_.kind == Variadic)
+    val lower = if (o != -1) o else if (v != -1) v else params.length
+    val upper = if (v != -1) v else params.length
+    (lower, upper)
+  }
+}
 enum BuiltinPath extends SpecElem:
   case Base(name: String)
   case NormalAccess(base: BuiltinPath, name: String)

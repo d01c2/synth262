@@ -65,4 +65,5 @@ trait BasicUnitWalker {
   def walk(str: String): Unit = {}
   def walk(bool: Boolean): Unit = {}
   def walk(int: Int): Unit = {}
+  def walk(bigInt: BigInt): Unit = {}
 }
