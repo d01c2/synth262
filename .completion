@@ -28,7 +28,7 @@ _esmeta_completions() {
   mutateOpt="-mutate:out -mutate:branch -mutate:kfs -mutate:ablation -mutate:duration -mutate:trial -mutate:debug"
   dumpdebuggerOpt=""
   dumpvisualizerOpt=""
-  solveOpt="-solve:branch -solve:side"
+  solveOpt="-solve:branch -solve:side -solve:detail"
   # completion for commands
   case "${COMP_CWORD}" in
     1)

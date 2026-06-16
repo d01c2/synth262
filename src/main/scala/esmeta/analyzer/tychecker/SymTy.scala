@@ -19,6 +19,10 @@ trait SymTyDecl { self: TyChecker =>
   type SymBase = SSym | SVar
   type SymRef = SSym | SVar | SField
 
+  lazy val SThis: SSym = SSym(-1)
+  lazy val SArgs: SSym = SSym(-2)
+  lazy val SNewTarget: SSym = SSym(-3)
+
   enum SymTy {
     case STy(ty: ValueTy)
     case SVar(x: Local)
@@ -136,7 +140,7 @@ trait SymTyDecl { self: TyChecker =>
       elem match {
         case STy(ty)   => app >> ty
         case SVar(x)   => app >> x.toString
-        case SSym(sym) => app >> "#" >> sym.toString
+        case SSym(sym) => app >> sym
         case SField(base, STy(x)) if x.isBottom =>
           x.getSingle match
             case One(f: String) => app >> base >> "." >> f
@@ -149,6 +153,9 @@ trait SymTyDecl { self: TyChecker =>
     given Rule[Base] = (app, elem) =>
       elem match
         case x: Local => app >> x.toString
+        case -1       => app >> "#THIS"
+        case -2       => app >> "#ARGS"
+        case -3       => app >> "#NEW_TARGET"
         case x: Sym   => app >> "#" >> x.toString
     given Ordering[Base] = Ordering.by(_.toString)
   }

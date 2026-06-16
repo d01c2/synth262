@@ -17,7 +17,6 @@ class TyChecker(
   val targetPattern: Option[String] = None,
   val inferTypeGuard: Boolean = true,
   val useBooleanGuard: Boolean = false,
-  val useProvenance: Boolean = false,
   val useSyntacticKill: Boolean = false,
   val noRefine: Boolean = false,
   val typeSens: Boolean = false,
@@ -106,7 +105,6 @@ class TyChecker(
           "options" -> Map(
             "typeSens" -> typeSens,
             "inferTypeGuard" -> inferTypeGuard,
-            "useProvenance" -> useProvenance,
             "useSyntacticKill" -> useSyntacticKill,
           ),
           "duration" -> f"${time}%,d ms",
@@ -122,14 +120,6 @@ class TyChecker(
           info :+= "refined" -> Map(
             "targets" -> refinedTargets,
             "locals" -> refinedLocals,
-            "avg. depth" -> refinedAvgDepth,
-          )
-        if (detail && useProvenance)
-          info :+= "provenance" -> Map(
-            "size" -> provCnt,
-            "avg. size" -> provAvgSize,
-            "avg. depth" -> provAvgDepth,
-            "avg. leaf" -> provAvgLeaf,
           )
         if (inferTypeGuard) info :+= "guards" -> typeGuards.size
         Yaml(info*)
@@ -172,13 +162,7 @@ class TyChecker(
         cfg.nodes.size, // total nodes
         if (detail) refinedTargets else 0, // refined targets
         if (detail) refinedLocals else 0, // refined locals
-        if (detail) refinedAvgDepth else 0, // refined avg. depth
         if (inferTypeGuard) typeGuards.size else 0, // guards
-        if (detail && useProvenance) provCnt else 0, // provenance
-        if (detail && useProvenance) provAvgSize else 0, // provenance avg. size
-        if (detail && useProvenance) provAvgDepth
-        else 0, // provenance avg. depth
-        if (detail && useProvenance) provAvgLeaf else 0, // provenance avg. leaf
       ).mkString("\t"),
       filename = s"$ANALYZE_LOG_DIR/summary",
       silent = silent,
@@ -249,64 +233,6 @@ class TyChecker(
           filename = s"$ANALYZE_LOG_DIR/guards",
           silent = silent,
         )
-        if (useProvenance) {
-          dumpFile(
-            name = "provenance information",
-            data = provString,
-            filename = s"$ANALYZE_LOG_DIR/provenance-logs",
-            silent = silent,
-          )
-          // additionally, dump provenance logs split by function
-          val provDir = s"$ANALYZE_LOG_DIR/provenances"
-          mkdir(provDir)
-          // group provenances by function name (without ID)
-          val grouped = provenances.toList.groupBy {
-            case ((target, _, _), _) => target.func.name
-          }
-          // stringify helper matching provString format
-          def stringify(
-            m: Map[(RefinementTarget, Base, ValueTy), Provenance],
-          ): String =
-            given Rule[Map[(RefinementTarget, Base, ValueTy), Provenance]] =
-              (app, refined) =>
-                val sorted = refined.toList.sortBy { (t, _) =>
-                  (t._1.node.id, t._3.toString())
-                }
-                // Print only the provenance blocks, omitting the header line
-                for (((_, _, _), prov) <- sorted)
-                  app >> prov
-                  app >> LINE_SEP
-                app
-            (new Appender >> m).toString
-          for ((fname, entries) <- grouped) {
-            val data = stringify(entries.toMap)
-            dumpFile(
-              name = s"provenance information for $fname",
-              data = data,
-              filename = s"$provDir/$fname",
-              silent = true,
-            )
-          }
-
-          dumpFile(
-            name = "provenance graph",
-            data = sizeAndDepth,
-            filename = s"$ANALYZE_LOG_DIR/provenance-size-depth",
-            silent = silent,
-          )
-          dumpFile(
-            name = "provenance graph",
-            data = depthAndLeaf,
-            filename = s"$ANALYZE_LOG_DIR/provenance-depth-leaf",
-            silent = silent,
-          )
-          dumpFile(
-            name = "provenance graph",
-            data = sizeAndLeaf,
-            filename = s"$ANALYZE_LOG_DIR/provenance-size-leaf",
-            silent = silent,
-          )
-        }
         if (useSyntacticKill) {
           dumpFile(
             name = "mutated locals",
@@ -321,57 +247,19 @@ class TyChecker(
   }
 
   /** refined targets */
-  var refined: Map[RefinementTarget, (Set[Local], Int)] = Map()
+  var refined: Map[RefinementTarget, Set[Local]] = Map()
   def refinedTargets: Int = refined.size
-  def refinedLocals: Int = refined.values.map(_._1.size).sum
-  def refinedAvgDepth: Double =
-    refined.values.map(_._2).sum.toDouble / refined.size
+  def refinedLocals: Int = refined.values.map(_.size).sum
   def refinedString: String =
-    given Rule[Map[RefinementTarget, (Set[Local], Int)]] =
+    given Rule[Map[RefinementTarget, Set[Local]]] =
       (app, refined) =>
         val sorted = refined.toList.sortBy { (t, _) => t }
-        for ((target, (xs, depth)) <- sorted)
+        for ((target, xs) <- sorted)
           app >> target >> " -> "
           app >> xs.toList.sorted.mkString("[locals: ", ", ", "]")
-          app >> " [depth: " >> depth >> "]"
           app >> LINE_SEP
         app
     (new Appender >> refined).toString
-
-  /** provenance information */
-  var provenances: Map[(RefinementTarget, Base, ValueTy), Provenance] = Map()
-  def provCnt = provenances.size
-  def provAvgSize = provenances.values.map(_.size).sum.toDouble / provCnt
-  def provAvgDepth = provenances.values.map(_.depth).sum.toDouble / provCnt
-  def provAvgLeaf = provenances.values.map(_.leafCnt).sum.toDouble / provCnt
-  def provString: String =
-    // Pretty print each provenance entry as a self-contained block
-    val app = new Appender
-    val entries = provenances.toList.sortBy {
-      case ((t, _, ty), _) =>
-        (t.func, t.node.id, ty.toString())
-    }
-    for (((_, _, _), prov) <- entries) {
-      app >> prov
-      app >> LINE_SEP
-    }
-    app.toString
-  def provList = provenances.values.toList
-  def sizeAndDepth = provList
-    .map(p => (p.size, p.depth))
-    .groupMapReduce(identity)(_ => 1)(_ + _)
-    .map { case ((size, depth), cnt) => s"$size,$depth,$cnt" }
-    .mkString(LINE_SEP)
-  def depthAndLeaf = provList
-    .map(p => (p.depth, p.leafCnt))
-    .groupMapReduce(identity)(_ => 1)(_ + _)
-    .map { case ((depth, leaf), cnt) => s"$depth,$leaf,$cnt" }
-    .mkString(LINE_SEP)
-  def sizeAndLeaf = provList
-    .map(p => (p.size, p.leafCnt))
-    .groupMapReduce(identity)(_ => 1)(_ + _)
-    .map { case ((size, leaf), cnt) => s"$size,$leaf,$cnt" }
-    .mkString(LINE_SEP)
 
   /** inferred type guards */
   def getTypeGuards: List[(Func, AbsValue)] =
@@ -385,7 +273,7 @@ class TyChecker(
         (dty, pred) <- value.guard.map
         newPred = TypeConstr(for {
           pair <- pred.map
-          (x, (ty, prov)) = pair
+          (x, ty) = pair
           if !(entrySt.getTy(x) <= ty)
         } yield pair)
         if newPred.nonTop

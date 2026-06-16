@@ -77,31 +77,6 @@ case class CFG(
     .mapValues(_.toSet)
     .toMap
 
-  lazy val callerOfTrans: Map[Func, Set[Func]] = {
-    val worklist = QueueWorklist(funcs)
-    var map = callerOf
-    var next = worklist.next
-    while (next.nonEmpty) {
-      val func = next.get
-      var callers = map.getOrElse(func, Set.empty)
-      var updated = false
-      for {
-        caller <- callers
-        f <- callerOf.getOrElse(caller, Set.empty)
-        if !callers.contains(f)
-      } {
-        callers += f
-        updated = true
-      }
-      if (updated) {
-        map += func -> callers
-        worklist += func
-      }
-      next = worklist.next
-    }
-    map.withDefaultValue(Set.empty)
-  }
-
   lazy val depGraph = new DepGraph(this)
 
   /** get a type model */

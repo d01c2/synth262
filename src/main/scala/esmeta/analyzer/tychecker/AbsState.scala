@@ -45,8 +45,7 @@ trait AbsStateDecl { self: TyChecker =>
         } &&
         lsymEnv.forall { (sym, ty) => rsymEnv.get(sym).fold(false)(ty <= _) } &&
         rmap.forall {
-          case (r, (rty, rprov)) =>
-            lmap.get(r).fold(false) { (lty, _) => lty <= rty }
+          case (r, rty) => lmap.get(r).fold(false) { _ <= rty }
         } &&
         rexpr.forall { r => lexpr.fold(false)(_ == r) }
 

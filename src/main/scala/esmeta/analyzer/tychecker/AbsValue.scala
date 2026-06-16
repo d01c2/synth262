@@ -90,8 +90,8 @@ trait AbsValueDecl { self: TyChecker =>
       import SymTy.*, SymExpr.*
       guard.map.exists { (kind, constr) =>
         constr.map.exists {
-          case (x: Sym, (ty, _)) => !(entrySt.getTy(SERef(SSym(x))) <= ty)
-          case _                 => false
+          case (x: Sym, ty) => !(entrySt.getTy(SERef(SSym(x))) <= ty)
+          case _            => false
         }
       }
 
@@ -187,7 +187,14 @@ trait AbsValueDecl { self: TyChecker =>
           val fromNumber = ty.number match
             case NumberSignTy(sign, _) => MathSignTy(sign)
             case NumberIntTy(int, _)   => MathIntTy(int)
-            case NumberSetTy(set) => MathSetTy(set.map(n => Math(n.double)))
+            // ToMath (ℝ) is defined only on finite numbers; ±∞ and NaN have
+            // no mathematical value (and cannot be held by BigDecimal-backed
+            // Math), so drop them from the resulting set.
+            case NumberSetTy(set) =>
+              MathSetTy(set.collect {
+                case n if !n.double.isNaN && !n.double.isInfinity =>
+                  Math(n.double)
+              })
           val fromBigInt = if (!ty.bigInt.isBottom) MathTy.Int else MathTy.Bot
           ValueTy(math = ty.math || fromNumber || fromBigInt)
         case COp.ToStr(_)

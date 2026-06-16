@@ -1,6 +1,7 @@
 package esmeta.phase
 
 import esmeta.*
+import esmeta.analyzer.tychecker.TyChecker
 import esmeta.cfg.*
 import esmeta.es.util.Coverage.Cond
 import esmeta.ir.{Func => _, *}
@@ -16,7 +17,6 @@ case object Solve extends Phase[CFG, String] {
   val help = "generates an ECMAScript program that covers a target branch"
 
   def apply(cfg: CFG, cmdConfig: CommandConfig, config: Config): String =
-    given CFG = cfg
     val id = config.branch.getOrElse(raise("solve: branch id is required"))
     val branch = cfg.nodeMap.get(id) match
       case Some(b: Branch) => b
@@ -25,11 +25,18 @@ case object Solve extends Phase[CFG, String] {
       case Some(side) => List(Cond(branch, side))
       case None       => List(Cond(branch, true), Cond(branch, false))
 
+    given CFG = cfg
+
     val entries = findEntries(branch)
+
+    given SymInterpRunner = SymInterp(cfg, detail = config.detail)
 
     conds
       .map { cond =>
-        LazyList.from(entries).flatMap(solve(_, branch, cond)).headOption match
+        LazyList
+          .from(entries)
+          .flatMap(solve(_, branch, cond))
+          .headOption match
           case Some(js) => s"[solve] $cond: $js"
           case None     => s"[solve] $cond: no solution"
       }
@@ -52,14 +59,13 @@ case object Solve extends Phase[CFG, String] {
 
   /** symbolic walk -> JS reification */
   def solve(
-    entry: Func,
+    func: Func,
     branch: Branch,
     cond: Cond,
-  )(using CFG): Option[String] =
-    println(s"\n=== Entry: ${entry.name} ===")
-    val interp = SymInterp(entry, cond)
-    // TODO: logging for interp
-    val result = interp.result.flatMap { state => Reifier(entry, state) }
+  )(using runner: SymInterpRunner): Option[String] =
+    println(s"=== Entry: ${func.name} ===")
+    val interp = runner(func, cond)
+    val result = interp.result.flatMap { _ => interp.reify }
     result match
       case Some(js) => println(s"[Solution] $js")
       case None     => println(s"[No solution]")
@@ -77,9 +83,15 @@ case object Solve extends Phase[CFG, String] {
       BoolOption((c, b) => c.side = Some(b)),
       "solve only the given side (default: both).",
     ),
+    (
+      "detail",
+      BoolOption((c, b) => c.detail = b),
+      "print detailed symbolic execution steps (default: false).",
+    ),
   )
   case class Config(
     var branch: Option[Int] = None,
     var side: Option[Boolean] = None,
+    var detail: Boolean = false,
   )
 }

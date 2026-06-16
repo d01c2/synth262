@@ -60,8 +60,11 @@ def ContT(nids: Int*): ValueTy =
   if (nids.isEmpty) BotT
   else ValueTy(cont = Fin(nids.toSet))
 lazy val ObjectT: ValueTy = RecordT("Object")
-lazy val FunctionT: ValueTy = RecordT("Object", List("Call"))
-lazy val ConstructorT: ValueTy = RecordT("Object", List("Call", "Construct"))
+def ObjectT(fields: String*): ValueTy = RecordT("Object", fields.toList)
+def ObjectNoFieldsT(fields: String*): ValueTy =
+  RecordT("Object", FieldMap(fields.map(_ -> Binding.Absent).toMap))
+lazy val FunctionT: ValueTy = ObjectT("Call")
+lazy val ConstructorT: ValueTy = ObjectT("Call", "Construct")
 lazy val DataBlockT: ValueTy = ListT(NonNegIntT)
 lazy val ArrayT: ValueTy = RecordT("Array")
 lazy val TypedArrayT: ValueTy = RecordT("TypedArray")

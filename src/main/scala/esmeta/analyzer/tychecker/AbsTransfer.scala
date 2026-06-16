@@ -82,73 +82,16 @@ trait AbsTransferDecl { analyzer: TyChecker =>
         if refinedTy != ty
       } yield x
       if (xs.isEmpty) refined -= target
-      else refined += target -> (xs.toSet, constr.fold(0)(_.depth))
-
-    def logProvenance(
-      target: RefinementTarget,
-      constr: TypeConstr,
-      st: AbsState,
-      refinedSt: AbsState,
-      refinedTo: ValueTy,
-    ): Unit = {
-      // Skip recording provenance when the refinement target function itself
-      // is an exception (e.g., GetFunctionRealm). This prevents creating a
-      // per-function provenance log file for those functions.
-      val tname = target.func.name
-      val irname = target.func.irFunc.name
-      if (
-        Provenance.isExceptionName(tname) || Provenance.isExceptionName(irname)
-      ) return
-      for {
-        (x, v) <- st.locals
-        ty = v.ty(using st)
-        refinedTy = refinedSt.get(x).ty(using refinedSt)
-        if refinedTy != ty
-      } do {
-        constr.map.get(x) match
-          // local variable is directly refined
-          case Some((bty, prov)) if ty != bty =>
-            // Attach refined variable type for header display.
-            val masked = Provenance.maskExceptions(prov)
-            masked match
-              case Placeholder(_) => () // skip counting/showing
-              case _ =>
-                provenances += (target, x, refinedTo) -> masked
-                  .usedForRefine(target, x, refinedTo, refinedTy)
-          case _ => ()
-      }
-
-      for {
-        (x, v) <- st.symEnv
-        ty = v
-        refinedTy = refinedSt.get(x)
-        if refinedTy != ty
-      } do {
-        constr.map.get(x) match
-          // symbol is directly refined
-          case Some((bty, prov)) if ty != bty =>
-            refinedSt.locals.foreach { (local, v) =>
-              // local variable is indirectly refined
-              if st.get(local).symty.bases.contains(x) then
-                val localRefinedTy = refinedSt.get(local).ty(using refinedSt)
-                val masked = Provenance.maskExceptions(prov)
-                masked match
-                  case Placeholder(_) => () // skip counting/showing
-                  case _ =>
-                    provenances += (target, local, refinedTo) -> masked
-                      .usedForRefine(target, local, refinedTo, localRefinedTy)
-            }
-          case _ => ()
-      }
-    }
+      else refined += target -> xs.toSet
 
     def refine(
       expr: Expr,
       v: AbsValue,
       ty: ValueTy,
       target: Option[RefinementTarget] = None,
-    )(using st: AbsState, np: NodePoint[?]): Updater = st =>
+    )(using np: NodePoint[?]): Updater = st =>
       import DemandType.*
+      given AbsState = st
       val kind = DemandType(ty)
       if (inferTypeGuard) {
         val const = v.guard.evaluate(v.ty, kind.ty)
@@ -498,7 +441,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
               v,
               TrueT,
               block.map(b => RefinementTarget.AssertTarget(b, idx)),
-            )(using st),
+            ),
           )
           refinedSt <- get
           given AbsState = refinedSt
@@ -892,13 +835,13 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             toSymRef(l, lv).map { ref =>
               aux(lty, rty, true, true).map { thenTy =>
                 if (lty != thenTy && !thenTy.isBottom)
-                  toBase(ref -> thenTy, np, Some(true)).map { pair =>
+                  toBase(ref -> thenTy).map { pair =>
                     lmap += DemandType(TrueT) -> TypeConstr(pair).lift
                   }
               }
               aux(lty, rty, false, true).map { elseTy =>
                 if (lty != elseTy && !elseTy.isBottom)
-                  toBase(ref -> elseTy, np, Some(false)).map { pair =>
+                  toBase(ref -> elseTy).map { pair =>
                     lmap += DemandType(FalseT) -> TypeConstr(pair).lift
                   }
               }
@@ -907,13 +850,13 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             toSymRef(r, rv).map { ref =>
               aux(rty, lty, true, false).map { thenTy =>
                 if (rty != thenTy && !thenTy.isBottom)
-                  toBase(ref -> thenTy, np, Some(true)).map { pair =>
+                  toBase(ref -> thenTy).map { pair =>
                     rmap += DemandType(TrueT) -> TypeConstr(pair).lift
                   }
               }
               aux(rty, lty, false, false).map { elseTy =>
                 if (rty != elseTy && !elseTy.isBottom)
-                  toBase(ref -> elseTy, np, Some(false)).map { pair =>
+                  toBase(ref -> elseTy).map { pair =>
                     rmap += DemandType(FalseT) -> TypeConstr(pair).lift
                   }
               }
@@ -931,6 +874,9 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             } yield dty -> newConstr).toMap
             TypeGuard(guard)
           }
+        case EBinary(BOp.Eq, e, EBool(true)) => getTypeGuard(e)
+        case EBinary(BOp.Eq, e, EBool(false)) =>
+          getTypeGuard(EUnary(UOp.Not, e))
         case EBinary(BOp.Eq, ERef(ref), r) =>
           for {
             lv <- transfer(ref)
@@ -946,12 +892,12 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             toSymRef(ref, lv).map { ref =>
               if (thenTy.isBottom) bools -= true
               else
-                toBase(ref -> thenTy, np, Some(true)).map { pair =>
+                toBase(ref -> thenTy).map { pair =>
                   guard += DemandType(TrueT) -> TypeConstr(pair).lift
                 }
               if (elseTy.isBottom) bools -= false
               else
-                toBase(ref -> elseTy, np, Some(false)).map { pair =>
+                toBase(ref -> elseTy).map { pair =>
                   guard += DemandType(FalseT) -> TypeConstr(pair).lift
                 }
             }
@@ -972,13 +918,13 @@ trait AbsTransferDecl { analyzer: TyChecker =>
               if (lty != thenTy)
                 if (thenTy.isBottom) bools -= true
                 else
-                  toBase(ref -> thenTy, np, Some(true)).map { pair =>
+                  toBase(ref -> thenTy).map { pair =>
                     guard += DemandType(TrueT) -> TypeConstr(pair).lift
                   }
               if (lty != elseTy)
                 if (elseTy.isBottom) bools -= false
                 else
-                  toBase(ref -> elseTy, np, Some(false)).map { pair =>
+                  toBase(ref -> elseTy).map { pair =>
                     guard += DemandType(FalseT) -> TypeConstr(pair).lift
                   }
             }
@@ -1003,13 +949,13 @@ trait AbsTransferDecl { analyzer: TyChecker =>
               if (lty != thenTy)
                 if (thenTy.isBottom) bools -= true
                 else
-                  toBase(ref -> thenTy, np, Some(true)).map { pair =>
+                  toBase(ref -> thenTy).map { pair =>
                     guard += DemandType(TrueT) -> TypeConstr(pair).lift
                   }
               if (lty != elseTy)
                 if (elseTy.isBottom) bools -= false
                 else
-                  toBase(ref -> elseTy, np, Some(false)).map { pair =>
+                  toBase(ref -> elseTy).map { pair =>
                     guard += DemandType(FalseT) -> TypeConstr(pair).lift
                   }
             }
@@ -1071,13 +1017,13 @@ trait AbsTransferDecl { analyzer: TyChecker =>
               if (lty != thenTy)
                 if (thenTy.isBottom) bools -= true
                 else
-                  toBase(ref -> thenTy, np, Some(true)).map { pair =>
+                  toBase(ref -> thenTy).map { pair =>
                     guard += DemandType(TrueT) -> TypeConstr(pair).lift
                   }
               if (lty != elseTy)
                 if (elseTy.isBottom) bools -= false
                 else
-                  toBase(ref -> elseTy, np, Some(false)).map { pair =>
+                  toBase(ref -> elseTy).map { pair =>
                     guard += DemandType(FalseT) -> TypeConstr(pair).lift
                   }
             }
@@ -1385,14 +1331,14 @@ trait AbsTransferDecl { analyzer: TyChecker =>
       map: Map[Sym, AbsValue],
     )(using st: AbsState): TypeConstr = TypeConstr(
       map = for {
-        case (x: Sym, (ty, prov)) <- constr.map
+        case (x: Sym, ty) <- constr.map
         v <- map.get(x)
         y <- v.symty match
           case x: SymRef => Some(x)
           case _         => None
         (z, zty) <- toBase(y -> ty)
         if !(st.getTy(z) <= zty)
-      } yield z -> (zty, prov.forReturn(call, zty)),
+      } yield z -> zty,
       sexpr = for {
         e <- constr.sexpr
         newExpr <- instantiate(e, map)
@@ -1553,7 +1499,6 @@ trait AbsTransferDecl { analyzer: TyChecker =>
           if refined <= dty.ty
         } yield
           if (detail)
-            // Prefer branch/assert target when available for clearer provenance.
             refineWithLog(
               currentTarget.getOrElse(RefinementTarget.NodeTarget(np.node)),
               constr,
@@ -1575,7 +1520,6 @@ trait AbsTransferDecl { analyzer: TyChecker =>
         _ <- refine(constr)
         refinedSt <- get
       } yield {
-        logProvenance(target, constr, st, refinedSt, refinedTo)
         currentTarget = saved
       }
 
@@ -1609,7 +1553,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
 
       for {
         _ <- join(map.map {
-          case (x, (ty, prov)) =>
+          case (x, ty) =>
             for {
               _ <- modify(refine(x, ty))
               _ <- alias.get(x) match
@@ -1637,17 +1581,6 @@ trait AbsTransferDecl { analyzer: TyChecker =>
           _ <- modify(_.update(x, refinedV, refine = true))
           _ <- notice(v, refinedV) // propagate type guard
         } yield ()
-
-    def toBase(
-      pair: (SymRef, ValueTy),
-      np: NodePoint[?],
-      truth: Option[Boolean] = None,
-    )(using
-      st: AbsState,
-    ): Option[(Base, (ValueTy, Provenance))] =
-      toBase(pair).map { (base, ty) =>
-        base -> (ty, Provenance(base, ty, truth)(using np.node))
-      }
 
     def toBase(
       pair: (SymRef, ValueTy),
@@ -1771,7 +1704,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
     } yield ()
 
     /** check if the return type can be used */
-    private lazy val canUseReturnTy: Func => Boolean = cached { func =>
+    lazy val canUseReturnTy: Func => Boolean = cached { func =>
       manualRefiners.contains(func.name) || (
         !func.retTy.isImprec &&
         DemandType.from(func.retTy.ty.toValue).isEmpty
@@ -1849,23 +1782,21 @@ trait AbsTransferDecl { analyzer: TyChecker =>
                 record = ObjectT.record.update(f, Binding.Exist, refine = true),
               )
             case _ => ObjectT
-          val prov = Provenance(0, refined)(using func.entry)
           val guard =
             if (useBooleanGuard) TypeGuard()
             else
               TypeGuard(
-                DemandType(NormalT) -> TypeConstr(0 -> (refined, prov)),
+                DemandType(NormalT) -> TypeConstr(0 -> refined),
               )
           AbsValue(STy(retTy), guard)
         },
         "NewPromiseCapability" -> { (func, vs, retTy, st) =>
           given AbsState = st
-          val prov = Provenance(0, ConstructorT)(using func.entry)
           val guard =
             if (useBooleanGuard) TypeGuard()
             else
               TypeGuard(
-                DemandType(NormalT) -> TypeConstr(0 -> (ConstructorT, prov)),
+                DemandType(NormalT) -> TypeConstr(0 -> ConstructorT),
               )
           AbsValue(STy(retTy), guard)
         },
