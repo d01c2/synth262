@@ -407,7 +407,9 @@ class CoverageMiddleTest extends SolverTest {
       mkdir(SOLVER_LOG_DIR, remove = true)
       for (r <- results) {
         val pw =
-          getPrintWriter(s"$SOLVER_LOG_DIR/branch-${r.bid}-${sideString(r.side)}")
+          getPrintWriter(
+            s"$SOLVER_LOG_DIR/branch-${r.bid}-${sideString(r.side)}",
+          )
         try dumpCase(s => pw.println(s), r)
         finally pw.close()
       }
