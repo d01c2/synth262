@@ -31,19 +31,20 @@ trait Solver { self: SymInterp =>
       path <- getPath(entryFunc)
       thisV <- getJSExpr(thisValue)
       vs <- args.map(getJSExpr).sequence
-    } yield reify(
-      path,
-      thisV,
-      vs,
-      if (UndefT ⊑ newTarget) None else getJSExpr(newTarget),
-    )
+      code <- reify(
+        path,
+        thisV,
+        vs,
+        if (UndefT ⊑ newTarget) None else getJSExpr(newTarget),
+      )
+    } yield code
 
   // get a JavaScript expression representing the value type
   def getJSExpr(ty: ValueTy): Option[String] =
     if (ty.number.contains(Number(0))) Some("0")
     else if (ty.number.contains(Number(-1))) Some("-1")
     else if (ty.number.contains(Number(1))) Some("1")
-    else if (ty.number.contains(Number(Double.NaN))) Some("1")
+    else if (ty.number.contains(Number(Double.NaN))) Some("NaN")
     else if (!ty.undef.isBottom) Some("undefined")
     else if (!ty.nullv.isBottom) Some("null")
     else if (ty.str.contains("")) Some("\"\"")
@@ -57,19 +58,33 @@ trait Solver { self: SymInterp =>
     else if (!(ty && ObjectT).isBottom) Some("{}")
     else None
 
-  def getPath(func: Func): Option[String] = func.head match {
-    case Some(h: BuiltinHead) => Some(h.path.toString)
+  def getPath(func: Func): Option[BuiltinPath] = func.head match {
+    case Some(h: BuiltinHead) => Some(h.path)
     case _                    => None
   }
 
   def reify(
-    path: String,
+    path: BuiltinPath,
     thisValue: String,
     args: List[String],
     newTarget: Option[String],
-  ): String = newTarget match
-    case Some(nt) => s"Reflect.construct($path, [${args.mkString(", ")}], $nt);"
-    case None     => s"$path.call(${(thisValue :: args).mkString(", ")});"
+  ): Option[String] = newTarget match
+    case Some(nt) =>
+      Solver.access(path).map { target =>
+        s"Reflect.construct($target, [${args.mkString(", ")}], $nt);"
+      }
+    case None =>
+      path match
+        case BuiltinPath.YetPath(_) => None
+        case BuiltinPath.Getter(base) =>
+          Solver.descriptor(base).map(d => s"$d.get.call($thisValue);")
+        case BuiltinPath.Setter(base) =>
+          val value = args.headOption.getOrElse("undefined")
+          Solver.descriptor(base).map(d => s"$d.set.call($thisValue, $value);")
+        case _ =>
+          Solver.access(path).map { fn =>
+            s"$fn.call(${(thisValue :: args).mkString(", ")});"
+          }
 }
 object Solver {
   // JS expression to access a builtin function (None if unreachable)
@@ -84,12 +99,24 @@ object Solver {
         case Some(expr) => Some(expr)
         case None       => Some(name) // directly nameable global
     case BuiltinPath.NormalAccess(base, name) =>
-      Some(s"${access(base).getOrElse("")}.$name")
+      access(base).map(b => s"$b.$name")
     case BuiltinPath.SymbolAccess(base, sym) =>
-      Some(s"${access(base).getOrElse("")}[Symbol.$sym]")
+      access(base).map(b => s"$b[Symbol.$sym]")
     case BuiltinPath.Getter(base) => access(base)
     case BuiltinPath.Setter(base) => access(base)
     case BuiltinPath.YetPath(_)   => None
+
+  // Object.getOwnPropertyDescriptor(target, key) for a getter/setter base
+  private def descriptor(base: BuiltinPath): Option[String] = base match
+    case BuiltinPath.NormalAccess(b, n) =>
+      val target = access(b)
+      val key = s"\"${normStr(n)}\""
+      target.map(t => s"Object.getOwnPropertyDescriptor($t, $key)")
+    case BuiltinPath.SymbolAccess(b, s) =>
+      val target = access(b)
+      val key = s"Symbol.$s"
+      target.map(t => s"Object.getOwnPropertyDescriptor($t, $key)")
+    case _ => None
 
   // global alias for builtins that are not directly nameable but have a known JS expression to access them
   // https://github.com/tc39/test262/blob/main/harness/wellKnownIntrinsicObjects.js
