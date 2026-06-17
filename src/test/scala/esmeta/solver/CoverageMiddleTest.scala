@@ -150,6 +150,57 @@ class CoverageMiddleTest extends SolverTest {
         s"(timeout: $solveTimeout per side)...",
       )
 
+      // per-case detail, written into one file per (branch, taken side)
+      def dumpCase(out: String => Unit, r: BranchResult): Unit = {
+        val path =
+          if (r.fname == r.targetName) r.fname
+          else s"${r.fname} -> ${r.targetName}"
+        out(
+          f"[${r.status.toUpperCase}] $path  " +
+          f"Branch[${r.bid}]:${sideString(r.side)}" +
+          f"  (${r.elapsed / 1e9}%.3fs)",
+        )
+        out(s"    cfg: ${r.targetCfg}")
+        r.js.foreach(js => out(s"    js:  $js"))
+        r.path.foreach(ps =>
+          val ss = ps.map(c => s"${c.branch.id}:${sideString(c.cond)}")
+          out(s"    path: [${ss.size}] ${ss.mkString(" <- ")}"),
+        )
+        r.calls.foreach(cs =>
+          val ss = cs.map(c =>
+            c.callInst match
+              case ICall(_, EClo(name, _), _) => s"${c.id}:$name"
+              case _                          => s"${c.id}",
+          )
+          out(s"    calls: [${ss.size}] ${ss.mkString(" <- ")}"),
+        )
+        r.saturated.filter(_.nonEmpty).foreach { fs =>
+          out("    saturated:")
+          fs.toList
+            .sortBy(_._1)
+            .foreach { (k, v) =>
+              val x = k match
+                case -1 => "#THIS"
+                case -2 => "#ARGS"
+                case -3 => "#NEW_TARGET"
+                case i  => s"#$i"
+              out(s"      $x -> $v")
+            }
+        }
+      }
+
+      // write the detail log for a single result as soon as it is solved
+      def writeCaseLog(r: BranchResult): Unit = {
+        val pw = getPrintWriter(
+          s"$SOLVER_LOG_DIR/branch-${r.bid}-${sideString(r.side)}",
+        )
+        try dumpCase(s => pw.println(s), r)
+        finally pw.close()
+      }
+
+      // clear previous run before streaming per-case logs into it
+      mkdir(SOLVER_LOG_DIR, remove = true)
+
       val results = {
         def timeoutResult(f: Func, cond: Cond): BranchResult = {
           val b = cond.branch
@@ -301,7 +352,9 @@ class CoverageMiddleTest extends SolverTest {
                 println(s"      at $frame")
             }
           } else {
-            resultBuilder += done.get()
+            val r = done.get()
+            resultBuilder += r
+            writeCaseLog(r)
             completed += 1
             submitNext()
           }
@@ -363,56 +416,6 @@ class CoverageMiddleTest extends SolverTest {
       }
 
       writeReport(s => println(s))
-
-      // per-case detail, written into one file per (branch, taken side)
-      def dumpCase(out: String => Unit, r: BranchResult): Unit = {
-        val path =
-          if (r.fname == r.targetName) r.fname
-          else s"${r.fname} -> ${r.targetName}"
-        out(
-          f"[${r.status.toUpperCase}] $path  " +
-          f"Branch[${r.bid}]:${sideString(r.side)}" +
-          f"  (${r.elapsed / 1e9}%.3fs)",
-        )
-        out(s"    cfg: ${r.targetCfg}")
-        r.js.foreach(js => out(s"    js:  $js"))
-        r.path.foreach(ps =>
-          val ss = ps.map(c => s"${c.branch.id}:${sideString(c.cond)}")
-          out(s"    path: [${ss.size}] ${ss.mkString(" <- ")}"),
-        )
-        r.calls.foreach(cs =>
-          val ss = cs.map(c =>
-            c.callInst match
-              case ICall(_, EClo(name, _), _) => s"${c.id}:$name"
-              case _                          => s"${c.id}",
-          )
-          out(s"    calls: [${ss.size}] ${ss.mkString(" <- ")}"),
-        )
-        r.saturated.filter(_.nonEmpty).foreach { fs =>
-          out("    saturated:")
-          fs.toList
-            .sortBy(_._1)
-            .foreach { (k, v) =>
-              val x = k match
-                case -1 => "#THIS"
-                case -2 => "#ARGS"
-                case -3 => "#NEW_TARGET"
-                case i  => s"#$i"
-              out(s"      $x -> $v")
-            }
-        }
-      }
-
-      // clear previous run, then write one detail log per (branch, side)
-      mkdir(SOLVER_LOG_DIR, remove = true)
-      for (r <- results) {
-        val pw =
-          getPrintWriter(
-            s"$SOLVER_LOG_DIR/branch-${r.bid}-${sideString(r.side)}",
-          )
-        try dumpCase(s => pw.println(s), r)
-        finally pw.close()
-      }
 
       // overall run summary and modeling AO names in a single summary file
       val summaryFile = getPrintWriter(s"$SOLVER_LOG_DIR/_summary")
