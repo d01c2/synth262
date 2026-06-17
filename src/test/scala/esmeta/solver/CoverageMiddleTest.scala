@@ -144,6 +144,11 @@ class CoverageMiddleTest extends SolverTest {
 
       def sideString(side: Boolean): String = if (side) "T" else "F"
 
+      // human-readable label for a case: entry func, or "entry -> target"
+      def caseLabel(r: BranchResult): String =
+        if (r.fname == r.targetName) r.fname
+        else s"${r.fname} -> ${r.targetName}"
+
       println(
         s"  Solving ${targets.size} branch sides from " +
         s"${targetBranchEntries.size} branches with $nThreads threads " +
@@ -152,11 +157,8 @@ class CoverageMiddleTest extends SolverTest {
 
       // per-case detail, written into one file per (branch, taken side)
       def dumpCase(out: String => Unit, r: BranchResult): Unit = {
-        val label =
-          if (r.fname == r.targetName) r.fname
-          else s"${r.fname} -> ${r.targetName}"
         out(
-          f"[${r.status.toUpperCase}] $label  " +
+          f"[${r.status.toUpperCase}] ${caseLabel(r)}  " +
           f"Branch[${r.bid}]:${sideString(r.side)}" +
           f"  (${r.elapsed / 1e9}%.3fs)",
         )
@@ -188,10 +190,11 @@ class CoverageMiddleTest extends SolverTest {
         }
       }
 
-      // write the detail log for a single result as soon as it is solved
+      // write the detail log for a single result as soon as it is solved,
+      // grouped by status so log/solver/<status>/ stays browsable
       def writeCaseLog(r: BranchResult): Unit = {
         val pw = getPrintWriter(
-          s"$SOLVER_LOG_DIR/branch-${r.bid}-${sideString(r.side)}",
+          s"$SOLVER_LOG_DIR/${r.status}/branch-${r.bid}-${sideString(r.side)}",
         )
         try dumpCase(s => pw.println(s), r)
         finally pw.close()
@@ -416,8 +419,8 @@ class CoverageMiddleTest extends SolverTest {
 
       writeReport(s => println(s))
 
-      // overall run summary and modeling AO names in a single summary file
-      val summaryFile = getPrintWriter(s"$SOLVER_LOG_DIR/_summary")
+      // dump summary
+      val summaryFile = getPrintWriter(s"$SOLVER_LOG_DIR/summary")
       def section(title: String): Unit = {
         summaryFile.println()
         summaryFile.println("=" * 72)
@@ -425,21 +428,36 @@ class CoverageMiddleTest extends SolverTest {
         summaryFile.println("=" * 72)
       }
       try {
-        // (1) run summary, identical to the console output
-        section("RUN SUMMARY")
+        section("SUMMARY")
         writeReport(s => summaryFile.println(s))
 
-        // (2) modeling AO names (counts already shown in the summary above)
+        section("BRANCH LIST BY STATUS")
+        for (status <- orderedStatuses) {
+          val rs = byStatus(status).sortBy(r => (r.bid, if (r.side) 0 else 1))
+          summaryFile.println(s"\n  [$status] ${rs.size}")
+          rs.foreach { r =>
+            summaryFile.println(
+              f"    Branch[${r.bid}]:${sideString(r.side)}  ${caseLabel(r)}",
+            )
+          }
+        }
+
+        section("SOLVE TIME (slowest first)")
+        summaryFile.println(s"\n  [all] ${results.size}")
+        results.sortBy(-_.elapsed).foreach { r =>
+          summaryFile.println(
+            f"    ${r.elapsed / 1e9}%8.3fs  ${r.status}%-12s " +
+            f"Branch[${r.bid}]:${sideString(r.side)}  ${caseLabel(r)}",
+          )
+        }
+
         section("MODELING AO NAMES")
         summaryFile.println(s"\n  [entry] ${builtinEntryAONames.size}")
         builtinEntryAONames.foreach(name => summaryFile.println(s"    $name"))
         summaryFile.println(s"\n  [non-entry] ${nonEntryAONames.size}")
         nonEntryAONames.foreach(name => summaryFile.println(s"    $name"))
       } finally summaryFile.close()
-      println(
-        s"\n  Per-branch detail logs (${results.size}) and summary " +
-        s"written to $SOLVER_LOG_DIR/",
-      )
+      println(s"dumped to $SOLVER_LOG_DIR/")
 
       assert(solved > 0)
       assert(verified > 0)
