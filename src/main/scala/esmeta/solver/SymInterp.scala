@@ -384,7 +384,7 @@ object SymInterp {
     * the farthest
     */
   def sortedEntries(branch: Branch)(using cfg: CFG): List[Func] =
-    findEntries(branch).toList.sortBy(_._2).map(_._1)
+    findEntries(branch).toList.sortBy((f, d) => (d, f.id)).map(_._1)
 
   /** functions that may lie on a call path from `entry` to `target` (always
     * including `entry` itself)
