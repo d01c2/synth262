@@ -64,18 +64,19 @@ class SymInterp(
   // ---------------------------------------------------------------------------
   // current node being executed
   var node: Node = entryFunc.builtinEntry.getOrElse(entryFunc.entry)
-  // branch side will be taken
-  var side: Boolean = true
   // current abstract state
   var st: AbsState = AbsState.Bot
-  // previous states for backtracking
-  var prev: Option[(Cond, Config)] = None
+  // side of the branch condition (true for then, false for else)
+  var conds: List[Cond] = Nil
   // call stack
   var calls: List[Call] = Nil
   // visited functions to avoid infinite exploration
   var funcs: Set[Func] = Set(entryFunc)
   // visited loops to avoid infinite exploration
   var loops: Set[Branch] = Set.empty
+
+  // stack of configurations for backtracking
+  var configs: List[Config] = Nil
 
   // symbolic execution of a node
   private def step: Unit = {
@@ -85,12 +86,13 @@ class SymInterp(
     // XXX: remove
     // -------------------------------------------------------------------------
     log("=" * 80)
-    log(s"Executing node ${node.name}:${if (side) "T" else "F"} $getConfig")
+    log(s"Executing node ${node.name}: $wrap")
+    log(s"Backtrack stack: ${configs.map(_.node.name).mkString(", ")}")
     log("-" * 80)
     log(node)
     // -------------------------------------------------------------------------
     given np: NodePoint[?] = NodePoint(cfg.funcOf(node), node, emptyView)
-    if (!isCandidate(node) || st.isBottom) return pop
+    if (!isCandidate(node) || st.isBottom) return unwrap(pop)
     node match
       case Block(_, insts, next) =>
         st = insts.zipWithIndex.foldLeft(st) {
@@ -99,7 +101,7 @@ class SymInterp(
         }
         next match
           case Some(next) => node = next
-          case None       => pop
+          case None       => unwrap(pop)
       case call: Call =>
         call.callInst match
           case ICall(_, fexpr @ EClo(f, Nil), args) =>
@@ -121,10 +123,10 @@ class SymInterp(
               calls ::= call
             } else doCall(call, EClo(f, Nil), args)
           case ICall(_, fexpr, args) => doCall(call, fexpr, args)
-          case _                     => pop // TODO: handle other calls
+          case _                     => unwrap(pop) // TODO: handle other calls
       case branch: Branch if target.branch == branch =>
         // reached the target branch, check the constraint
-        refine(branch, target.cond)
+        st = refine(branch, target.cond)(st)
         if (check)
           // -------------------------------------------------------------------
           // XXX: remove
@@ -134,19 +136,22 @@ class SymInterp(
           log("-" * 80)
           log(node)
           // -------------------------------------------------------------------
-          throw Found(getConfig)
-        else pop
+          throw Found(wrap)
+        else unwrap(pop)
       case branch @ Branch(_, kind, cond, _, thenNode, elseNode, _) =>
         // already visited this loop, skip it
-        if (loops.contains(branch)) pop
+        if (loops.contains(branch)) unwrap(pop)
         else {
           // first time visiting this loop, explore it
           if (branch.isLoop) loops += branch
+          def aux(to: Node, taken: Boolean): Config = wrap
+            .copy(node = to, state = refine(branch, taken)(st))
+            .push(Cond(branch, taken))
           (thenNode, elseNode) match
-            // TODO: pick a branch more smartly
-            case (Some(tnode), _) if side  => push(branch, true); node = tnode
-            case (_, Some(enode)) if !side => push(branch, false); node = enode
-            case _                         => pop
+            case (Some(t), Some(e)) => push(aux(e, false)); unwrap(aux(t, true))
+            case (Some(t), None)    => unwrap(aux(t, true))
+            case (None, Some(e))    => unwrap(aux(e, false))
+            case (None, None)       => unwrap(pop)
         }
   }
 
@@ -205,7 +210,7 @@ class SymInterp(
       newV = instantiate(v, vs, callerNp, callerSt)
     } yield newV).getOrElse {
       val rp = ReturnPoint(callee, emptyView)
-      val AbsRet(v) = getResult(rp)
+      val v = getResult(rp).value // TODO: split
       instantiate(v, vs, callerNp, callerSt) ⊓ AbsValue(retTy).lift
     }
   }
@@ -266,60 +271,54 @@ class SymInterp(
   }
 
   // get the current configuration
-  def getConfig: Config = Config(st, prev, funcs, calls, loops)
+  def wrap: Config = Config(node, st, conds, funcs, calls, loops)
+  def unwrap(config: Config): Unit = {
+    node = config.node
+    st = config.state
+    conds = config.conds
+    funcs = config.funcs
+    calls = config.calls
+    loops = config.loops
+  }
 
   // push the current config and refine it using the branch condition and side
-  def push(branch: Branch, taken: Boolean)(using NodePoint[?]): Unit =
-    prev = Some(Cond(branch, taken), getConfig)
-    side = true
-    refine(branch, taken)
+  def push(config: Config): Unit = configs ::= config
 
   // pop the previous config and backtrack
-  def pop: Unit = prev match
-    case Some(Cond(branch, true), config) =>
-      node = branch
-      side = false
-      st = config.state
-      prev = config.prev
-      funcs = config.funcs
-      calls = config.calls
-      loops = config.loops
-    case Some(_, config) =>
-      prev = config.prev
-      pop
-    case None => throw NotFound
+  def pop: Config = configs match
+    case Nil            => throw NotFound
+    case config :: rest => configs = rest; config
 
   // refine the current abstract state based on the branch condition and side
-  def refine(branch: Branch, taken: Boolean)(using NodePoint[?]): Unit = {
+  def refine(branch: Branch, taken: Boolean)(using NodePoint[?]): Updater = {
     import tychecker.RefinementTarget.*
     val expr = branch.cond
-    (for { v <- transfer.transfer(expr); newSt <- get } yield {
-      val target = Some(BranchTarget(branch, taken))
-      st = transfer.refine(expr, v, BoolT(taken), target)(newSt)
-    })(st)
+    for {
+      v <- transfer.transfer(expr)
+      newSt <- get
+      target = Some(BranchTarget(branch, taken))
+      _ <- transfer.refine(expr, v, BoolT(taken), target)
+    } yield ()
   }
 
   // configuration of symbolic execution
   case class Config(
+    node: Node,
     state: AbsState,
-    prev: Option[(Cond, Config)],
+    conds: List[Cond],
     funcs: Set[Func],
     calls: List[Call],
     loops: Set[Branch],
   ) {
-    def path: List[Cond] = prev.map { (c, s) => c :: s.path }.getOrElse(Nil)
+    def push(cond: Cond): Config = copy(conds = cond :: conds)
     override def toString: String = stringify(this)
   }
 
   given stateRule: Rule[Config] = (app, config) => {
     app.wrap {
+      app :> s"Node: ${config.node.id}"
       app :> s"AbsState: " >> config.state
-      app :> s"Path: "
-      val path = config.path
-      if (path.nonEmpty) app.wrap {
-        for (cond <- config.path.reverse)
-          app :> s"${cond.branch.id}:${if (cond.cond) "T" else "F"}"
-      }
+      app :> s"Conds: ${config.conds.map(_.toString).mkString(", ")}"
       app :> s"Funcs: ${config.funcs.toList.map(_.id).sorted.mkString(", ")}"
       app :> s"Calls: ${config.calls.map(_.id).mkString(", ")}"
       app :> s"Loops: ${config.loops.toList.map(_.id).sorted.mkString(", ")}"

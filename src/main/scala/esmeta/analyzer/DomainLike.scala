@@ -54,9 +54,6 @@ trait DomainLikeDecl { self: Analyzer =>
 
     /** abstract domain */
     def domain = AbsRet
-
-    /** return value */
-    def value: AbsValue
   }
   val AbsRet: DomainLike[AbsRet]
 }

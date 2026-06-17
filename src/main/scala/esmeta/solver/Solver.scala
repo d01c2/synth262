@@ -69,7 +69,7 @@ trait Solver { self: SymInterp =>
     newTarget: Option[String],
   ): String = newTarget match
     case Some(nt) => s"Reflect.construct($path, [${args.mkString(", ")}], $nt);"
-    case None     => s"$path.call($thisValue, ${args.mkString(", ")});"
+    case None     => s"$path.call(${(thisValue :: args).mkString(", ")});"
 }
 object Solver {
   // JS expression to access a builtin function (None if unreachable)

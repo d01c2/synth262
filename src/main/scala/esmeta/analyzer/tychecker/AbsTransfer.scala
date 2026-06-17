@@ -114,7 +114,12 @@ trait AbsTransferDecl { analyzer: TyChecker =>
 
     /** transfer function for return points */
     def apply(rp: ReturnPoint): Unit = if (!canUseReturnTy(rp.func)) {
-      var AbsRet(value) = getResult(rp)
+      val ReturnPoint(func, view) = rp
+      val entryView = getEntryView(view)
+      val entryNp = NodePoint(func, func.entry, entryView)
+      val entrySt = getResult(entryNp)
+      given AbsState = entrySt
+      val value = getResult(rp).value
       for {
         callerNps <- retEdges.get(rp)
         callerNp <- callerNps
@@ -343,7 +348,12 @@ trait AbsTransferDecl { analyzer: TyChecker =>
     /** propagate callee analysis result */
     def propagate(rp: ReturnPoint, callerNp: NodePoint[Call]): Unit = {
       if (!canUseReturnTy(rp.func)) {
-        val AbsRet(value) = getResult(rp)
+        val ReturnPoint(func, view) = rp
+        val entryView = getEntryView(view)
+        val entryNp = NodePoint(func, func.entry, entryView)
+        val entrySt = getResult(entryNp)
+        given AbsState = entrySt
+        val value = getResult(rp).value
         (for {
           nextNp <- getAfterCallNp(callerNp)
           callerSt = callInfo(callerNp)
@@ -485,13 +495,12 @@ trait AbsTransferDecl { analyzer: TyChecker =>
               addError(ReturnTypeMismatch(irp, givenTy))
             AbsValue(STy(givenTy && expectedTy), givenV.guard)
 
-      val newRet = AbsRet(newV)
+      val newRet = AbsRet(Map(np -> newV))
       if (!newV.isBottom)
         val oldRet @ AbsRet(oldV) = getResult(rp)
         if (!oldRet.isBottom && useRepl) Repl.merged = true
         if (newRet !⊑ oldRet) {
-          val v = (oldV ⊔ newV)
-          rpMap += rp -> AbsRet(v)
+          rpMap += rp -> (oldRet ⊔ newRet)
           worklist += rp
         }
 

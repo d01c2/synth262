@@ -137,7 +137,7 @@ class CoverageMiddleTest extends SolverTest {
         status: String,
         js: Option[String],
         elapsed: Long,
-        path: Option[List[Cond]],
+        conds: Option[List[Cond]],
         calls: Option[List[Call]],
         saturated: Option[Map[Int, ValueTy]],
       )
@@ -152,25 +152,24 @@ class CoverageMiddleTest extends SolverTest {
 
       // per-case detail, written into one file per (branch, taken side)
       def dumpCase(out: String => Unit, r: BranchResult): Unit = {
-        val path =
+        val label =
           if (r.fname == r.targetName) r.fname
           else s"${r.fname} -> ${r.targetName}"
         out(
-          f"[${r.status.toUpperCase}] $path  " +
+          f"[${r.status.toUpperCase}] $label  " +
           f"Branch[${r.bid}]:${sideString(r.side)}" +
           f"  (${r.elapsed / 1e9}%.3fs)",
         )
         out(s"    cfg: ${r.targetCfg}")
         r.js.foreach(js => out(s"    js:  $js"))
-        r.path.foreach(ps =>
+        r.conds.foreach(ps =>
           val ss = ps.map(c => s"${c.branch.id}:${sideString(c.cond)}")
-          out(s"    path: [${ss.size}] ${ss.mkString(" <- ")}"),
+          out(s"    conds: [${ss.size}] ${ss.mkString(" <- ")}"),
         )
         r.calls.foreach(cs =>
           val ss = cs.map(c =>
-            c.callInst match
-              case ICall(_, EClo(name, _), _) => s"${c.id}:$name"
-              case _                          => s"${c.id}",
+            val func = cfg.funcOf(c)
+            s"${func.name}:${c.id}",
           )
           out(s"    calls: [${ss.size}] ${ss.mkString(" <- ")}"),
         )
@@ -263,7 +262,7 @@ class CoverageMiddleTest extends SolverTest {
                         "pass",
                         Some(js),
                         elapsedNanos,
-                        Some(conf.path),
+                        Some(conf.conds),
                         Some(conf.calls),
                         Some(conf.state.symEnv),
                       )
@@ -277,7 +276,7 @@ class CoverageMiddleTest extends SolverTest {
                         "fail-verify",
                         Some(js),
                         elapsedNanos,
-                        Some(conf.path),
+                        Some(conf.conds),
                         Some(conf.calls),
                         Some(conf.state.symEnv),
                       )
@@ -291,7 +290,7 @@ class CoverageMiddleTest extends SolverTest {
                       "fail-reify",
                       None,
                       elapsedNanos,
-                      Some(conf.path),
+                      Some(conf.conds),
                       Some(conf.calls),
                       Some(conf.state.symEnv),
                     )
