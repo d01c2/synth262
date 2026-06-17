@@ -161,6 +161,8 @@ trait AbsStateDecl { self: TyChecker =>
       (base.symty, field.ty.getSingle) match
         case (ref: SymRef, One(Str(f))) =>
           AbsValue(SField(ref, STy(StrT(f))), guard)
+        case (SNormal(sty), One(Str("Value"))) =>
+          AbsValue(sty, guard)
         case _ =>
           AbsValue(STy(get(base.ty, field.ty)), guard)
     }

@@ -267,7 +267,7 @@ class TyChecker(
     for {
       func <- cfg.funcs
       entrySt = getResult(NodePoint(func, func.entry, emptyView))
-      value = getResult(ReturnPoint(func, emptyView)).value(using entrySt)
+      value = getResult(ReturnPoint(func, emptyView)).value
       if value.hasTypeGuard(entrySt)
       guard = TypeGuard(for {
         (dty, pred) <- value.guard.map

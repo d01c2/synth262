@@ -89,7 +89,7 @@ class SymInterp(
     log(s"Executing node ${node.name}: $wrap")
     log(s"Backtrack stack: ${configs.map(_.node.name).mkString(", ")}")
     log("-" * 80)
-    log(node)
+    log(s"$node @ ${cfg.funcOf(node).name}")
     // -------------------------------------------------------------------------
     given np: NodePoint[?] = NodePoint(cfg.funcOf(node), node, emptyView)
     if (!isCandidate(node) || st.isBottom) return unwrap(pop)
@@ -105,7 +105,9 @@ class SymInterp(
       case call: Call =>
         call.callInst match
           case ICall(_, fexpr @ EClo(f, Nil), args) =>
+            pushCall(call, fexpr, args)
             val callee = cfg.fnameMap(f)
+            // enter a candidate function
             if (isCandidate(callee) && !funcs.contains(callee)) {
               (for {
                 vs <- join(args.map(transfer.transfer))
@@ -121,9 +123,12 @@ class SymInterp(
               node = callee.entry
               funcs += callee
               calls ::= call
-            } else doCall(call, EClo(f, Nil), args)
-          case ICall(_, fexpr, args) => doCall(call, fexpr, args)
-          case _                     => unwrap(pop) // TODO: handle other calls
+            } else unwrap(pop)
+          // use a summary
+          case ICall(_, fexpr, args) =>
+            pushCall(call, fexpr, args)
+            unwrap(pop)
+          case _ => unwrap(pop) // TODO: handle other calls
       case branch: Branch if target.branch == branch =>
         // reached the target branch, check the constraint
         st = refine(branch, target.cond)(st)
@@ -155,19 +160,22 @@ class SymInterp(
         }
   }
 
-  def doCall(
+  private var _configs: List[Config] = Nil
+  def pushCall(
     call: Call,
     fexpr: Expr,
     args: List[Expr],
-  )(using np: NodePoint[?]): Unit = {
+  )(using np: NodePoint[?]): Unit = call.next.map { next =>
     given callerNp: NodePoint[Call] = np.copy(node = call)
-    val (retV, newSt) = (for {
+    (for {
       fv <- transfer.transfer(fexpr)
-      st <- get
-      given AbsState = st
+      given AbsState <- get
       fty = fv.ty
       vs <- join(args.map(transfer.transfer))
+      st <- get
+      x = call.lhs
     } yield {
+      _configs = Nil
       var retV = AbsValue.Bot
       fty.clo match
         case CloTopTy           => retV ⊔= AbsValue(AnyT)
@@ -176,7 +184,7 @@ class SymInterp(
           for {
             fname <- names
             f <- cfg.fnameMap.get(fname)
-            v = doCall(callerNp, f, st, vs)
+            v = pushCall(callerNp, f, st, vs, x, next)
           } retV ⊔= v
       fty.cont match
         case Inf => retV ⊔= AbsValue(AnyT)
@@ -184,23 +192,24 @@ class SymInterp(
           for {
             fid <- fty.cont.toIterable(stop = false)
             f <- cfg.funcMap.get(fid)
-            v = doCall(callerNp, f, st, vs)
+            v = pushCall(callerNp, f, st, vs, x, next)
           } retV ⊔= v
-      retV
+      if (!retV.isBottom)
+        push(wrap.copy(state = st.define(x, retV), node = next))
+      push(_configs)
     })(st)
-    st = newSt.define(call.lhs, retV)
-    call.next match
-      case Some(next) => node = next
-      case None       => pop
   }
 
   /** handle calls */
-  def doCall(
+  def pushCall(
     callerNp: NodePoint[Call],
     callee: Func,
     callerSt: AbsState,
     vs: List[AbsValue],
+    x: Local,
+    next: Node,
   ): AbsValue = {
+    given NodePoint[Call] = callerNp
     given AbsState = callerSt
     val call = callerNp.node
     val retTy = callee.retTy.ty.toValue
@@ -210,8 +219,18 @@ class SymInterp(
       newV = instantiate(v, vs, callerNp, callerSt)
     } yield newV).getOrElse {
       val rp = ReturnPoint(callee, emptyView)
-      val v = getResult(rp).value // TODO: split
-      instantiate(v, vs, callerNp, callerSt) ⊓ AbsValue(retTy).lift
+      val ret = getResult(rp)
+      val AbsRet(_, noSym, syms) = ret
+      for ((_, (v, constr)) <- syms) {
+        val newConstr = instantiate(constr, vs, callerNp, callerSt)
+        val newSt = transfer.refine(newConstr)(callerSt)
+        val newV = instantiate(v, vs, callerNp, callerSt)
+        _configs ::= wrap.copy(
+          state = newSt.define(x, newV).copy(constr = newConstr),
+          node = next,
+        )
+      }
+      instantiate(noSym, vs, callerNp, callerSt)
     }
   }
 
@@ -233,6 +252,19 @@ class SymInterp(
       newV.lift.killMutable(using callerNp)
     else if (inferTypeGuard) newV.lift
     else newV
+
+  /** instantiation of return value */
+  def instantiate(
+    constr: TypeConstr,
+    vs: List[AbsValue],
+    callerNp: NodePoint[Call],
+    callerSt: AbsState,
+  ): TypeConstr =
+    given AbsState = callerSt
+    val map = vs.zipWithIndex.map {
+      case (v, i) => i -> v
+    }.toMap
+    transfer.instantiate(callerNp.node, constr, map)
 
   // ---------------------------------------------------------------------------
   // helper functions for configuration manipulation
@@ -282,7 +314,9 @@ class SymInterp(
   }
 
   // push the current config and refine it using the branch condition and side
-  def push(config: Config): Unit = configs ::= config
+  def push(config: Config): Unit =
+    if (isCandidate(config.node)) configs ::= config
+  def push(configs: List[Config]): Unit = configs.foreach(push)
 
   // pop the previous config and backtrack
   def pop: Config = configs match

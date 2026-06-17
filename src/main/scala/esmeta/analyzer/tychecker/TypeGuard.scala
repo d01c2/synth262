@@ -92,6 +92,13 @@ trait TypeGuardDecl { self: TyChecker =>
         }
       })
 
+    def hasLocal: Boolean = map.values.exists(_.hasLocal)
+
+    def hasSym: Boolean = map.values.exists(_.hasSym)
+
+    def onlySym: TypeGuard =
+      TypeGuard(map.map { (dty, constr) => dty -> constr.onlySym })
+
     override def toString: String = (new Appender >> this).toString
   }
   object TypeGuard {
@@ -213,9 +220,18 @@ trait TypeGuardDecl { self: TyChecker =>
     def lift(using st: AbsState): TypeConstr =
       this && st.constr
 
-    def onlySym: TypeConstr = TypeConstr(
-      map = map.collect { case (x: Sym, ty) => x -> ty },
-    )
+    def hasLocal: Boolean = map.keySet.exists {
+      case s: Sym => true
+      case _      => false
+    }
+
+    def hasSym: Boolean = map.keySet.exists {
+      case s: Sym => true
+      case _      => false
+    }
+
+    def onlySym: TypeConstr =
+      TypeConstr(map = map.collect { case (x: Sym, ty) => x -> ty })
 
     override def toString: String = (new Appender >> this).toString
   }

@@ -5,49 +5,41 @@ import esmeta.util.Appender.*
 /** abstract return values */
 trait AbsRetDecl { self: TyChecker =>
 
-  case class AbsRet(values: Map[NodePoint[?], AbsValue]) extends AbsRetLike {
+  case class AbsRet(
+    value: AbsValue = AbsValue.Bot,
+    noSym: AbsValue = AbsValue.Bot,
+    syms: Map[NodePoint[?], (AbsValue, TypeConstr)] = Map.empty,
+  ) extends AbsRetLike {
     import AbsRet.*
 
     /** bottom check */
-    def isBottom: Boolean = values.forall { case (_, v) => v.isBottom }
-
-    def value(using AbsState): AbsValue =
-      values.values.foldLeft(AbsValue.Bot)(_ ⊔ _)
-
-    def apply(np: NodePoint[?]): AbsValue = values.getOrElse(np, AbsValue.Bot)
+    def isBottom: Boolean = value.isBottom
 
     /** partial order */
-    def ⊑(that: AbsRet)(using AbsState): Boolean =
-      val keys = this.values.keySet ++ that.values.keySet
-      keys.forall(k => this(k) ⊑ that(k))
+    def ⊑(that: AbsRet)(using AbsState): Boolean = ???
 
     /** not partial order */
-    def !⊑(that: AbsRet)(using AbsState): Boolean = !(this ⊑ that)
+    def !⊑(that: AbsRet)(using AbsState): Boolean = ???
 
     /** join operator */
-    def ⊔(that: AbsRet)(using AbsState): AbsRet =
-      val keys = this.values.keySet ++ that.values.keySet
-      AbsRet(keys.map(k => k -> (this(k) ⊔ that(k))).toMap)
+    def ⊔(that: AbsRet)(using AbsState): AbsRet = ???
 
     /** meet operator */
-    def ⊓(that: AbsRet)(using AbsState): AbsRet =
-      val keys = this.values.keySet ++ that.values.keySet
-      AbsRet(keys.map(k => k -> (this(k) ⊓ that(k))).toMap)
+    def ⊓(that: AbsRet)(using AbsState): AbsRet = ???
   }
   object AbsRet extends DomainLike[AbsRet] {
 
     /** top element */
-    lazy val Top: AbsRet = AbsRet(Map.empty.withDefaultValue(AbsValue.Top))
+    lazy val Top: AbsRet = AbsRet(AbsValue.Top)
 
     /** bottom element */
-    lazy val Bot: AbsRet = AbsRet(Map.empty)
+    lazy val Bot: AbsRet = AbsRet(AbsValue.Bot)
 
     /** appender */
     given rule: Rule[AbsRet] = (app, elem) =>
-      given Rule[(NodePoint[?], AbsValue)] = {
-        case (app, (np, value)) => app >> value >> " @ [" >> np.node.id >> "]"
+      (app >> elem.noSym).wrap {
+        for ((np, (v, constr)) <- elem.syms.toList.sortBy(_._1.node.id))
+          app :> np.node.name >> " -> " >> v >> " (" >> constr >> ")"
       }
-      given Rule[Iterable[(NodePoint[?], AbsValue)]] = iterableRule(sep = " | ")
-      app >> elem.values.toList.sortBy(_._1.node.id)
   }
 }

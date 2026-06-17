@@ -54,6 +54,20 @@ trait SymTyDecl { self: TyChecker =>
       case SField(b, f)   => b.has(base) || f.has(base)
       case SNormal(symty) => symty.has(base)
 
+    def hasLocal: Boolean = this match
+      case STy(ty)        => false
+      case SVar(_)        => true
+      case SSym(_)        => false
+      case SField(b, f)   => b.hasLocal || f.hasLocal
+      case SNormal(symty) => symty.hasLocal
+
+    def hasSym: Boolean = this match
+      case STy(ty)        => false
+      case SVar(_)        => false
+      case SSym(_)        => true
+      case SField(b, f)   => b.hasSym || f.hasSym
+      case SNormal(symty) => symty.hasSym
+
     def bases: Set[Base] = this match
       case STy(ty)             => Set()
       case SVar(x)             => Set(x)

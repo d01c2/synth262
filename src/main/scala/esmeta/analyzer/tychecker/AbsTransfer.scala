@@ -96,6 +96,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
       if (inferTypeGuard) {
         val const = v.guard.evaluate(v.ty, kind.ty)
         if (detail && target.isDefined) refineWithLog(target.get, const, ty)(st)
+        else if ((v.ty ⊓ ty).isBottom) AbsState.Bot
         else refine(const)(st)
       } else {
         v.guard.get(kind) match
@@ -476,6 +477,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
       givenSt: AbsState,
       v: AbsValue,
     )(using np: NodePoint[Node]): Unit =
+      given AbsState = givenSt
       val NodePoint(func, node, view) = np
       val irp = InternalReturnPoint(func, node, irReturn)
       val entryView = getEntryView(view)
@@ -483,7 +485,6 @@ trait AbsTransferDecl { analyzer: TyChecker =>
       val entrySt = getResult(entryNp)
       val givenV = v.forReturn(givenSt, func, entrySt)
       val rp = ReturnPoint(func, entryView)
-      given AbsState = entrySt
       val newV = func.retTy.ty match
         case _: UnknownTy        => givenV
         case expectedTy: ValueTy =>
@@ -494,13 +495,21 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             if (config.checkReturnType)
               addError(ReturnTypeMismatch(irp, givenTy))
             AbsValue(STy(givenTy && expectedTy), givenV.guard)
-
-      val newRet = AbsRet(Map(np -> newV))
+      // no propagation if the return value is bottom
       if (!newV.isBottom)
-        val oldRet @ AbsRet(oldV) = getResult(rp)
-        if (!oldRet.isBottom && useRepl) Repl.merged = true
-        if (newRet !⊑ oldRet) {
-          rpMap += rp -> (oldRet ⊔ newRet)
+        val AbsRet(oldV, noSym, syms) = getResult(rp)
+        if (!oldV.isBottom && useRepl) Repl.merged = true
+        if ((newV !⊑ oldV)(using entrySt)) {
+          val constr = givenSt.constr.onlySym
+          val hasSym = v.symty.hasSym
+          val newRet = AbsRet(
+            oldV ⊔ newV,
+            if (hasSym) noSym else noSym ⊔ newV,
+            if (hasSym)
+              syms + (np -> (v.onlySym(using givenSt), constr))
+            else syms - np,
+          )
+          rpMap += rp -> newRet
           worklist += rp
         }
 

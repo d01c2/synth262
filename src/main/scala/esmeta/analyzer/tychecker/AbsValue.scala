@@ -403,6 +403,13 @@ trait AbsValueDecl { self: TyChecker =>
       ),
     )
 
+    def hasLocal: Boolean = symty.hasLocal || guard.hasLocal
+
+    def hasSym: Boolean = symty.hasSym || guard.hasSym
+
+    def onlySym(using AbsState): AbsValue =
+      AbsValue(if (symty.hasLocal) STy(this.ty) else symty, guard.onlySym)
+
     /** get string of abstract value with an abstract state */
     def getString(state: AbsState): String =
       given AbsState = state
