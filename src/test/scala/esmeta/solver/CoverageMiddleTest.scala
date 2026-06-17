@@ -1,6 +1,7 @@
 package esmeta.solver
 
-import esmeta.ESMetaTest
+import esmeta.{ESMetaTest, SOLVER_LOG_DIR}
+import esmeta.util.SystemUtils.{mkdir, getPrintWriter}
 import esmeta.cfg.{Branch, CFG, Call, Func}
 import esmeta.es.util.Coverage
 import esmeta.es.util.Coverage.Cond
@@ -18,7 +19,6 @@ import java.util.concurrent.{
   TimeUnit,
   TimeoutException,
 }
-import java.io.PrintWriter
 
 class CoverageMiddleTest extends SolverTest {
   val name = "solverCovTest"
@@ -364,73 +364,78 @@ class CoverageMiddleTest extends SolverTest {
 
       writeReport(s => println(s))
 
-      // dump full diagnostics to file
-      val dumpFile = new PrintWriter("solve-dump.log")
+      // per-case detail, written into one file per (branch, taken side)
+      def dumpCase(out: String => Unit, r: BranchResult): Unit = {
+        val path =
+          if (r.fname == r.targetName) r.fname
+          else s"${r.fname} -> ${r.targetName}"
+        out(
+          f"[${r.status.toUpperCase}] $path  " +
+          f"Branch[${r.bid}]:${sideString(r.side)}" +
+          f"  (${r.elapsed / 1e9}%.3fs)",
+        )
+        out(s"    cfg: ${r.targetCfg}")
+        r.js.foreach(js => out(s"    js:  $js"))
+        r.path.foreach(ps =>
+          val ss = ps.map(c => s"${c.branch.id}:${sideString(c.cond)}")
+          out(s"    path: [${ss.size}] ${ss.mkString(" <- ")}"),
+        )
+        r.calls.foreach(cs =>
+          val ss = cs.map(c =>
+            c.callInst match
+              case ICall(_, EClo(name, _), _) => s"${c.id}:$name"
+              case _                          => s"${c.id}",
+          )
+          out(s"    calls: [${ss.size}] ${ss.mkString(" <- ")}"),
+        )
+        r.saturated.filter(_.nonEmpty).foreach { fs =>
+          out("    saturated:")
+          fs.toList
+            .sortBy(_._1)
+            .foreach { (k, v) =>
+              val x = k match
+                case -1 => "#THIS"
+                case -2 => "#ARGS"
+                case -3 => "#NEW_TARGET"
+                case i  => s"#$i"
+              out(s"      $x -> $v")
+            }
+        }
+      }
+
+      // clear previous run, then write one detail log per (branch, side)
+      mkdir(SOLVER_LOG_DIR, remove = true)
+      for (r <- results) {
+        val pw =
+          getPrintWriter(s"$SOLVER_LOG_DIR/branch-${r.bid}-${sideString(r.side)}")
+        try dumpCase(s => pw.println(s), r)
+        finally pw.close()
+      }
+
+      // overall run summary and modeling AO names in a single summary file
+      val summaryFile = getPrintWriter(s"$SOLVER_LOG_DIR/_summary")
       def section(title: String): Unit = {
-        dumpFile.println()
-        dumpFile.println("=" * 72)
-        dumpFile.println(s"  $title")
-        dumpFile.println("=" * 72)
+        summaryFile.println()
+        summaryFile.println("=" * 72)
+        summaryFile.println(s"  $title")
+        summaryFile.println("=" * 72)
       }
       try {
         // (1) run summary, identical to the console output
         section("RUN SUMMARY")
-        writeReport(s => dumpFile.println(s))
+        writeReport(s => summaryFile.println(s))
 
         // (2) modeling AO names (counts already shown in the summary above)
         section("MODELING AO NAMES")
-        dumpFile.println(s"\n  [entry] ${builtinEntryAONames.size}")
-        builtinEntryAONames.foreach(name => dumpFile.println(s"    $name"))
-        dumpFile.println(s"\n  [non-entry] ${nonEntryAONames.size}")
-        nonEntryAONames.foreach(name => dumpFile.println(s"    $name"))
-
-        // (3) per-case detail, grouped by status, slowest first within a group
-        def dumpCase(r: BranchResult): Unit = {
-          val path =
-            if (r.fname == r.targetName) r.fname
-            else s"${r.fname} -> ${r.targetName}"
-          dumpFile.println(
-            f"[${r.status.toUpperCase}] $path  " +
-            f"Branch[${r.bid}]:${sideString(r.side)}" +
-            f"  (${r.elapsed / 1e9}%.3fs)",
-          )
-          dumpFile.println(s"    cfg: ${r.targetCfg}")
-          r.js.foreach(js => dumpFile.println(s"    js:  $js"))
-          r.path.foreach(ps =>
-            val ss = ps.map(c => s"${c.branch.id}:${sideString(c.cond)}")
-            dumpFile.println(s"    path: [${ss.size}] ${ss.mkString(" <- ")}"),
-          )
-          r.calls.foreach(cs =>
-            val ss = cs.map(c =>
-              c.callInst match
-                case ICall(_, EClo(name, _), _) => s"${c.id}:$name"
-                case _                          => s"${c.id}",
-            )
-            dumpFile.println(s"    calls: [${ss.size}] ${ss.mkString(" <- ")}"),
-          )
-          r.saturated.filter(_.nonEmpty).foreach { fs =>
-            dumpFile.println("    saturated:")
-            fs.toList
-              .sortBy(_._1)
-              .foreach { (k, v) =>
-                val x = k match
-                  case -1 => "#THIS"
-                  case -2 => "#ARGS"
-                  case -3 => "#NEW_TARGET"
-                  case i  => s"#$i"
-                dumpFile.println(s"      $x -> $v")
-              }
-          }
-          dumpFile.println()
-        }
-        for (status <- orderedStatuses) {
-          val rs = byStatus(status).sortBy(-_.elapsed)
-          section(f"${status.toUpperCase} (${rs.size})")
-          dumpFile.println()
-          rs.foreach(dumpCase)
-        }
-      } finally dumpFile.close()
-      println(s"\n  Full dump written to solve-dump.log")
+        summaryFile.println(s"\n  [entry] ${builtinEntryAONames.size}")
+        builtinEntryAONames.foreach(name => summaryFile.println(s"    $name"))
+        summaryFile.println(s"\n  [non-entry] ${nonEntryAONames.size}")
+        nonEntryAONames.foreach(name => summaryFile.println(s"    $name"))
+      } finally summaryFile.close()
+      println(
+        s"\n  Per-branch detail logs (${results.size}) and summary " +
+        s"written to $SOLVER_LOG_DIR/",
+      )
 
       assert(solved > 0)
       assert(verified > 0)
