@@ -46,7 +46,7 @@ trait Solver { self: SymInterp =>
     else if (ty.number.contains(Number(Double.NaN))) Some("1")
     else if (!ty.undef.isBottom) Some("undefined")
     else if (!ty.nullv.isBottom) Some("null")
-    else if (ty.str.contains(Str(""))) Some("\"\"")
+    else if (ty.str.contains("")) Some("\"\"")
     else if (ty.bool.contains(false)) Some("false")
     else if (ty.bool.contains(true)) Some("true")
     else if (ty.bigInt.contains(BigInt(0))) Some("0n")

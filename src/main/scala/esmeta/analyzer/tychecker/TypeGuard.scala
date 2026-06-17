@@ -213,6 +213,10 @@ trait TypeGuardDecl { self: TyChecker =>
     def lift(using st: AbsState): TypeConstr =
       this && st.constr
 
+    def onlySym: TypeConstr = TypeConstr(
+      map = map.collect { case (x: Sym, ty) => x -> ty },
+    )
+
     override def toString: String = (new Appender >> this).toString
   }
   object TypeConstr {

@@ -144,7 +144,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             st <- get
             given AbsState = st
             fty = fv.ty
-            vs <- join(args.map(transfer(_, forArg = true)))
+            vs <- join(args.map(transfer))
           } yield {
             val cloRes = fty.clo match
               case CloTopTy           => AnyT
@@ -176,7 +176,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
         case ISdoCall(_, base, method, args) =>
           for {
             bv <- transfer(base)
-            vs <- join(args.map(transfer(_, forArg = true)))
+            vs <- join(args.map(transfer))
             st <- get
             given AbsState = st
             bty = bv.ty
@@ -496,16 +496,11 @@ trait AbsTransferDecl { analyzer: TyChecker =>
         }
 
     /** transfer function for expressions */
-    def transfer(expr: Expr)(using np: NodePoint[Node]): Result[AbsValue] =
-      transfer(expr, forArg = false)
-
-    /** transfer function for expressions */
     def transfer(
       expr: Expr,
-      forArg: Boolean,
     )(using np: NodePoint[Node]): Result[AbsValue] = st => {
       val (v, newSt) = (for {
-        v <- basicTransfer(expr, forArg)
+        v <- basicTransfer(expr)
         given AbsState <- get
         guard <- if (inferTypeGuard) getTypeGuard(expr) else pure(TypeGuard())
         newV = if (inferTypeGuard) v.addGuard(guard) else v
@@ -519,7 +514,6 @@ trait AbsTransferDecl { analyzer: TyChecker =>
     /** transfer function for expressions */
     def basicTransfer(
       expr: Expr,
-      forArg: Boolean,
     )(using np: NodePoint[Node]): Result[AbsValue] = expr match {
       case EParse(code, rule) =>
         for {
@@ -562,7 +556,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
         } yield v.trim(isStarting)
       case ERef(ref) =>
         for {
-          v <- transfer(ref, forArg)
+          v <- transfer(ref)
         } yield v
       case unary @ EUnary(_, expr) =>
         for {
@@ -1117,13 +1111,8 @@ trait AbsTransferDecl { analyzer: TyChecker =>
     }
 
     /** transfer function for references */
-    def transfer(ref: Ref)(using np: NodePoint[Node]): Result[AbsValue] =
-      transfer(ref, forArg = false)
-
-    /** transfer function for references */
     def transfer(
       ref: Ref,
-      forArg: Boolean,
     )(using np: NodePoint[Node]): Result[AbsValue] = ref match
       // a precise type of `the active function object` in built-in functions
       case Field(

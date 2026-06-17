@@ -10,7 +10,7 @@ import esmeta.util.*
 import esmeta.util.Appender.*
 import esmeta.util.Appender.{*, given}
 import esmeta.util.BaseUtils.*
-import scala.collection.mutable.{Set => MSet, Queue}
+import scala.collection.mutable.{Map => MMap, Queue}
 
 class SymInterp(
   val tychecker: TyChecker,
@@ -48,38 +48,11 @@ class SymInterp(
   // candidate functions
   inline def isCandidate(f: Func): Boolean = candidateFuncs.contains(f)
   private lazy val candidateFuncs: Set[Func] =
-    if (targetFunc == entryFunc) Set(targetFunc)
-    else {
-      val reached = MSet(targetFunc)
-      val queue = Queue(targetFunc)
-      while (queue.nonEmpty)
-        for {
-          caller <- cfg.callerOf.getOrElse(queue.dequeue(), Set())
-          if caller != entryFunc && reached.add(caller)
-        } queue.enqueue(caller)
-      reached.toSet
-    }
+    SymInterp.candidateFuncs(entryFunc, targetFunc)(using cfg)
   // candidate nodes
   inline def isCandidate(n: Node): Boolean = candidateNodes.contains(n)
-  private lazy val candidateNodes: Set[Node] = for {
-    func <- candidateFuncs + entryFunc
-    node <- computeCandidateNodes(func)
-  } yield node
-  private def computeCandidateNodes(func: Func): Set[Node] = {
-    if (func == targetFunc) func.reachingTo(target.branch) // direct reachables
-    else {
-      // reachables to call sites that can reach the target
-      val callTargets = for {
-        callTarget <- func.nodes.collect { case c: Call => c }
-        calleeName <- callTarget.callInst match
-          case ICall(_, EClo(fn, _), _) => Some(fn)
-          case _                        => None
-        callee <- cfg.fnameMap.get(calleeName)
-        if isCandidate(callee)
-      } yield callTarget
-      callTargets.flatMap(func.reachingTo)
-    }
-  }
+  private lazy val candidateNodes: Set[Node] =
+    SymInterp.candidateNodes(entryFunc, target.branch)(using cfg)
 
   def timeout: Boolean = timeLimit.exists { limit =>
     val duration = System.currentTimeMillis - startTime
@@ -97,8 +70,10 @@ class SymInterp(
   var st: AbsState = AbsState.Bot
   // previous states for backtracking
   var prev: Option[(Cond, Config)] = None
+  // call stack
+  var calls: List[Call] = Nil
   // visited functions to avoid infinite exploration
-  var funcs: Set[Func] = Set.empty
+  var funcs: Set[Func] = Set(entryFunc)
   // visited loops to avoid infinite exploration
   var loops: Set[Branch] = Set.empty
 
@@ -115,7 +90,7 @@ class SymInterp(
     log(node)
     // -------------------------------------------------------------------------
     given np: NodePoint[?] = NodePoint(cfg.funcOf(node), node, emptyView)
-    if (!isCandidate(node)) return pop
+    if (!isCandidate(node) || st.isBottom) return pop
     node match
       case Block(_, insts, next) =>
         st = insts.zipWithIndex.foldLeft(st) {
@@ -127,40 +102,26 @@ class SymInterp(
           case None       => pop
       case call: Call =>
         call.callInst match
-          case ICall(_, fexpr, args) =>
-            given callerNp: NodePoint[Call] = np.copy(node = call)
-            val (retV, newSt) = (for {
-              fv <- transfer.transfer(fexpr)
-              st <- get
-              given AbsState = st
-              fty = fv.ty
-              vs <- join(args.map(transfer.transfer(_, forArg = true)))
-            } yield {
-              var retV = AbsValue.Bot
-              fty.clo match
-                case CloTopTy           => retV ⊔= AbsValue(AnyT)
-                case CloArrowTy(_, ret) => retV ⊔= AbsValue(ret)
-                case CloSetTy(names) =>
-                  for {
-                    fname <- names
-                    f <- cfg.fnameMap.get(fname)
-                    v = doCall(callerNp, f, st, vs)
-                  } retV ⊔= v
-              fty.cont match
-                case Inf => retV ⊔= AbsValue(AnyT)
-                case Fin(fids) =>
-                  for {
-                    fid <- fty.cont.toIterable(stop = false)
-                    f <- cfg.funcMap.get(fid)
-                    v = doCall(callerNp, f, st, vs)
-                  } retV ⊔= v
-              retV
-            })(st)
-            st = newSt.define(call.lhs, retV)
-            call.next match
-              case Some(next) => node = next
-              case None       => pop
-          case _ => ???
+          case ICall(_, fexpr @ EClo(f, Nil), args) =>
+            val callee = cfg.fnameMap(f)
+            if (isCandidate(callee) && !funcs.contains(callee)) {
+              (for {
+                vs <- join(args.map(transfer.transfer))
+              } yield {
+                given AbsState = st
+                val params = callee.irFunc.params
+                val vars: Set[Base] = st.locals.keySet.toSet
+                val newLocals: Map[Local, AbsValue] = (for {
+                  (param, arg) <- (params zip vs)
+                } yield param.lhs -> arg.kill(vars, false)).toMap
+                st = st.copy(locals = newLocals, constr = st.constr.onlySym)
+              })(st)
+              node = callee.entry
+              funcs += callee
+              calls ::= call
+            } else doCall(call, EClo(f, Nil), args)
+          case ICall(_, fexpr, args) => doCall(call, fexpr, args)
+          case _                     => pop // TODO: handle other calls
       case branch: Branch if target.branch == branch =>
         // reached the target branch, check the constraint
         refine(branch, target.cond)
@@ -187,6 +148,45 @@ class SymInterp(
             case (_, Some(enode)) if !side => push(branch, false); node = enode
             case _                         => pop
         }
+  }
+
+  def doCall(
+    call: Call,
+    fexpr: Expr,
+    args: List[Expr],
+  )(using np: NodePoint[?]): Unit = {
+    given callerNp: NodePoint[Call] = np.copy(node = call)
+    val (retV, newSt) = (for {
+      fv <- transfer.transfer(fexpr)
+      st <- get
+      given AbsState = st
+      fty = fv.ty
+      vs <- join(args.map(transfer.transfer))
+    } yield {
+      var retV = AbsValue.Bot
+      fty.clo match
+        case CloTopTy           => retV ⊔= AbsValue(AnyT)
+        case CloArrowTy(_, ret) => retV ⊔= AbsValue(ret)
+        case CloSetTy(names) =>
+          for {
+            fname <- names
+            f <- cfg.fnameMap.get(fname)
+            v = doCall(callerNp, f, st, vs)
+          } retV ⊔= v
+      fty.cont match
+        case Inf => retV ⊔= AbsValue(AnyT)
+        case Fin(fids) =>
+          for {
+            fid <- fty.cont.toIterable(stop = false)
+            f <- cfg.funcMap.get(fid)
+            v = doCall(callerNp, f, st, vs)
+          } retV ⊔= v
+      retV
+    })(st)
+    st = newSt.define(call.lhs, retV)
+    call.next match
+      case Some(next) => node = next
+      case None       => pop
   }
 
   /** handle calls */
@@ -263,11 +263,10 @@ class SymInterp(
         AbsState(true, locals, symEnv, TypeConstr())
       case _ => AbsState.Bot
     }
-    funcs += func
   }
 
   // get the current configuration
-  def getConfig: Config = Config(st, prev, funcs, loops)
+  def getConfig: Config = Config(st, prev, funcs, calls, loops)
 
   // push the current config and refine it using the branch condition and side
   def push(branch: Branch, taken: Boolean)(using NodePoint[?]): Unit =
@@ -283,6 +282,7 @@ class SymInterp(
       st = config.state
       prev = config.prev
       funcs = config.funcs
+      calls = config.calls
       loops = config.loops
     case Some(_, config) =>
       prev = config.prev
@@ -304,6 +304,7 @@ class SymInterp(
     state: AbsState,
     prev: Option[(Cond, Config)],
     funcs: Set[Func],
+    calls: List[Call],
     loops: Set[Branch],
   ) {
     def path: List[Cond] = prev.map { (c, s) => c :: s.path }.getOrElse(Nil)
@@ -319,8 +320,9 @@ class SymInterp(
         for (cond <- config.path.reverse)
           app :> s"${cond.branch.id}:${if (cond.cond) "T" else "F"}"
       }
-      app :> s"Funcs: ${config.funcs.map(_.id).mkString(", ")}"
-      app :> s"Loops: ${config.loops.map(_.id).mkString(", ")}"
+      app :> s"Funcs: ${config.funcs.toList.map(_.id).sorted.mkString(", ")}"
+      app :> s"Calls: ${config.calls.map(_.id).mkString(", ")}"
+      app :> s"Loops: ${config.loops.toList.map(_.id).sorted.mkString(", ")}"
     }
   }
 
@@ -344,5 +346,81 @@ object SymInterp {
     tyChecker.analyze
     new SymInterp(tyChecker, _, _, timeLimit = timeLimit, detail = detail)
   }
+
+  /** BFS from `func` over the reverse call graph, mapping each reached function
+    * to its distance (the number of call edges) from `func`. Traversal records
+    * functions in `stopAt` but does not explore their callers.
+    */
+  def reachingDists(
+    func: Func,
+    stopAt: Set[Func] = Set.empty,
+  )(using cfg: CFG): Map[Func, Int] = {
+    val dist = MMap(func -> 0)
+    val queue = Queue(func)
+    while (queue.nonEmpty) {
+      val cur = queue.dequeue()
+      val nextDist = dist(cur) + 1
+      if (!stopAt.contains(cur))
+        for {
+          caller <- cfg.callerOf.getOrElse(cur, Set.empty)
+          if !dist.contains(caller)
+        } {
+          dist(caller) = nextDist
+          queue.enqueue(caller)
+        }
+    }
+    dist.toMap
+  }
+
+  /** built-in entries reaching the given branch, mapped to their distance (the
+    * number of call edges from the entry to the branch's function)
+    */
+  def findEntries(branch: Branch)(using cfg: CFG): Map[Func, Int] =
+    val func = cfg.funcOf(branch)
+    if (func.isBuiltin) Map(func -> 0)
+    else reachingDists(func).filter(_._1.isBuiltin)
+
+  /** built-in entries reaching the given branch, ordered from the closest to
+    * the farthest
+    */
+  def sortedEntries(branch: Branch)(using cfg: CFG): List[Func] =
+    findEntries(branch).toList.sortBy(_._2).map(_._1)
+
+  /** functions that may lie on a call path from `entry` to `target` (always
+    * including `entry` itself)
+    */
+  def candidateFuncs(entry: Func, target: Func)(using cfg: CFG): Set[Func] =
+    if (target == entry) Set(target)
+    else reachingDists(target, stopAt = Set(entry)).keySet + entry
+
+  /** nodes within candidate functions that can still reach the `target` branch
+    */
+  def candidateNodes(entry: Func, target: Branch)(using cfg: CFG): Set[Node] =
+    val targetFunc = cfg.funcOf(target)
+    val funcs = candidateFuncs(entry, targetFunc)
+    for {
+      func <- funcs + entry
+      node <- computeCandidateNodes(func, funcs, targetFunc, target)
+    } yield node
+
+  private def computeCandidateNodes(
+    func: Func,
+    candidateFuncs: Set[Func],
+    targetFunc: Func,
+    target: Branch,
+  )(using cfg: CFG): Set[Node] =
+    if (func == targetFunc) func.reachingTo(target) // direct reachables
+    else {
+      // reachables to call sites that can reach the target
+      val callTargets = for {
+        callTarget <- func.nodes.collect { case c: Call => c }
+        calleeName <- callTarget.callInst match
+          case ICall(_, EClo(fn, _), _) => Some(fn)
+          case _                        => None
+        callee <- cfg.fnameMap.get(calleeName)
+        if candidateFuncs.contains(callee)
+      } yield callTarget
+      callTargets.flatMap(func.reachingTo)
+    }
 }
 type SymInterpRunner = (Func, Cond) => SymInterp

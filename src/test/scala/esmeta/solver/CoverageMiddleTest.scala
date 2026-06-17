@@ -108,7 +108,7 @@ class CoverageMiddleTest extends SolverTest {
     def entriesFor(b: Branch): List[Func] =
       funcEntryCache.getOrElseUpdate(
         cfg.funcOf(b).id,
-        Solve.findEntries(b).filter(accessibleBuiltins.contains),
+        SymInterp.sortedEntries(b).filter(accessibleBuiltins.contains),
       )
     val targetBranchEntries: List[(Func, Branch)] = {
       val seen = MSet[Int]()

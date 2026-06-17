@@ -79,6 +79,14 @@ trait AbsStateDecl { self: TyChecker =>
         val newConstr = l.constr || r.constr
         AbsState(true, newLocals, newSymEnv, newConstr)
 
+    /** copy operator */
+    def copy(
+      reachable: Boolean = reachable,
+      locals: Map[Local, AbsValue] = locals,
+      symEnv: Map[Sym, ValueTy] = symEnv,
+      constr: TypeConstr = constr,
+    ): AbsState = AbsState(reachable, locals, symEnv, constr)
+
     /** get imprecise bases compared with another state */
     def getImprecBases(that: AbsState): Set[Base] =
       val locals = (for {

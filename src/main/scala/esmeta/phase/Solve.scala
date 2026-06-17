@@ -27,7 +27,7 @@ case object Solve extends Phase[CFG, String] {
 
     given CFG = cfg
 
-    val entries = findEntries(branch)
+    val entries = SymInterp.sortedEntries(branch)
 
     given SymInterpRunner = SymInterp(cfg, detail = config.detail)
 
@@ -41,21 +41,6 @@ case object Solve extends Phase[CFG, String] {
           case None     => s"[solve] $cond: no solution"
       }
       .mkString("\n")
-
-  def findEntries(branch: Branch)(using cfg: CFG): List[Func] =
-    val func = cfg.funcOf(branch)
-    if (func.isBuiltin) List(func)
-    else {
-      val reached = MSet(func)
-      val queue = Queue(func)
-      while (queue.nonEmpty) {
-        for {
-          caller <- cfg.callerOf.getOrElse(queue.dequeue(), Set.empty)
-          if reached.add(caller)
-        } queue.enqueue(caller)
-      }
-      reached.filter(_.isBuiltin).toList
-    }
 
   /** symbolic walk -> JS reification */
   def solve(
