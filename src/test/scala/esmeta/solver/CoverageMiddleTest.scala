@@ -138,6 +138,7 @@ class CoverageMiddleTest extends SolverTest {
         js: Option[String],
         elapsed: Long,
         path: Option[List[Cond]],
+        calls: Option[List[Call]],
         saturated: Option[Map[Int, ValueTy]],
       )
 
@@ -162,6 +163,7 @@ class CoverageMiddleTest extends SolverTest {
             "timeout",
             None,
             solveTimeout.toNanos,
+            None,
             None,
             None,
           )
@@ -211,6 +213,7 @@ class CoverageMiddleTest extends SolverTest {
                         Some(js),
                         elapsedNanos,
                         Some(conf.path),
+                        Some(conf.calls),
                         Some(conf.state.symEnv),
                       )
                     else
@@ -224,6 +227,7 @@ class CoverageMiddleTest extends SolverTest {
                         Some(js),
                         elapsedNanos,
                         Some(conf.path),
+                        Some(conf.calls),
                         Some(conf.state.symEnv),
                       )
                   case None =>
@@ -237,6 +241,7 @@ class CoverageMiddleTest extends SolverTest {
                       None,
                       elapsedNanos,
                       Some(conf.path),
+                      Some(conf.calls),
                       Some(conf.state.symEnv),
                     )
               case None =>
@@ -251,6 +256,7 @@ class CoverageMiddleTest extends SolverTest {
                   if (interp.timeout) "timeout" else "unsolved",
                   None,
                   elapsedNanos,
+                  None,
                   None,
                   None,
                 )
@@ -392,7 +398,15 @@ class CoverageMiddleTest extends SolverTest {
           r.js.foreach(js => dumpFile.println(s"    js:  $js"))
           r.path.foreach(ps =>
             val ss = ps.map(c => s"${c.branch.id}:${sideString(c.cond)}")
-            dumpFile.println(s"    path: [${ss.size}] ${ss.mkString(" -> ")}"),
+            dumpFile.println(s"    path: [${ss.size}] ${ss.mkString(" <- ")}"),
+          )
+          r.calls.foreach(cs =>
+            val ss = cs.map(c =>
+              c.callInst match
+                case ICall(_, EClo(name, _), _) => s"${c.id}:$name"
+                case _                          => s"${c.id}",
+            )
+            dumpFile.println(s"    calls: [${ss.size}] ${ss.mkString(" <- ")}"),
           )
           r.saturated.filter(_.nonEmpty).foreach { fs =>
             dumpFile.println("    saturated:")
