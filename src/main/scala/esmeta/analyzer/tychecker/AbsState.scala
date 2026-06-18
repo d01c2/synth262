@@ -137,6 +137,11 @@ trait AbsStateDecl { self: TyChecker =>
       case l: Local => get(l).ty
       case s: Sym   => get(s)
 
+    def getMayMust(sym: Sym): (ValueTy, ValueTy) = (
+      mayMust.may.get(sym) && get(sym),
+      mayMust.must.get(sym) && get(sym),
+    )
+
     /** getter for symbolic expressions */
     def getTy(expr: SymExpr): ValueTy = {
       import SymExpr.*

@@ -19,14 +19,14 @@ trait Solver { self: SymInterp =>
   /** reify a satisfiable path into an ECMAScript program */
   def reify: Option[String] =
     given AbsState = st
-    val thisValue = st.get(SThis.sym)
-    val rest = st.get(SArgs.sym) // TODO : handle variadic parameters
-    val newTarget = st.get(SNewTarget.sym)
+    val thisValue = st.getMayMust(SThis.sym)
+    val rest = st.getMayMust(SArgs.sym) // TODO : handle variadic parameters
+    val newTarget = st.getMayMust(SNewTarget.sym)
     val len = entryFunc.head match {
       case Some(h: BuiltinHead) => h.arity._2
       case _                    => 0
     }
-    val args = (0 until len).toList.map(i => st.get(i))
+    val args = (0 until len).toList.map(i => st.getMayMust(i))
     for {
       path <- getPath(entryFunc)
       thisV <- getJSExpr(thisValue)
@@ -35,9 +35,14 @@ trait Solver { self: SymInterp =>
         path,
         thisV,
         vs,
-        if (UndefT ⊑ newTarget) None else getJSExpr(newTarget),
+        getNewTargetExpr(newTarget),
       )
     } yield code
+
+  // get a JavaScript expression representing the may/must value type
+  def getJSExpr(mayMustTy: (ValueTy, ValueTy)): Option[String] =
+    val (mayTy, mustTy) = mayMustTy
+    getJSExpr(mustTy).orElse(getJSExpr(mayTy))
 
   // get a JavaScript expression representing the value type
   def getJSExpr(ty: ValueTy): Option[String] =
@@ -55,6 +60,11 @@ trait Solver { self: SymInterp =>
     else if (ty.bigInt.contains(BigInt(0))) Some("0n")
     else if (ty.bigInt.contains(BigInt(1))) Some("1n")
     else Solver.defaultFor(ty)
+
+  // get a JavaScript expression representing the newTarget value type
+  def getNewTargetExpr(mayMustTy: (ValueTy, ValueTy)): Option[String] =
+    val (mayTy, mustTy) = mayMustTy
+    if (UndefT ⊑ mayTy) None else getJSExpr(mayTy)
 
   def getPath(func: Func): Option[BuiltinPath] = func.head match {
     case Some(h: BuiltinHead) => Some(h.path)

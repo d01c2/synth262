@@ -156,6 +156,10 @@ trait TypeGuardDecl { self: TyChecker =>
     def isTop: Boolean = this == Top
     def isBottom: Boolean = this == Bot
 
+    def get(x: Base): ValueTy = this match
+      case Bot       => BotT
+      case Elem(map) => map.getOrElse(x, AnyT)
+
     def map(f: Map[Base, ValueTy] => Map[Base, ValueTy]): TypeConstr =
       this match
         case Bot       => Bot
