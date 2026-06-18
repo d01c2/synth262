@@ -973,41 +973,8 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             }
             TypeGuard(guard)
           }
-        case EExists(Field(x: Local, field)) =>
-          for {
-            bv <- transfer(x)
-            fv <- transfer(field)
-            given AbsState <- get
-          } yield {
-            var guard: Map[DemandType, TypeConstr] = Map()
-            for {
-              bref <- toSymRef(x, bv)
-              fref <- toSymRef(field, fv)
-              pexpr = SEExists(SField(bref, fref))
-            } guard += DemandType(TrueT) -> TypeConstr(
-              Map(),
-              Some(pexpr),
-            )
-            TypeGuard(guard)
-          }
-        case EBinary(BOp.Eq, ETypeOf(l), ETypeOf(r)) =>
-          for {
-            lv <- transfer(l)
-            rv <- transfer(r)
-          } yield {
-            var guard: Map[DemandType, TypeConstr] = Map()
-            for {
-              lref <- toSymRef(l, lv)
-              rref <- toSymRef(r, rv)
-              ltypeOf = SETypeOf(SERef(lref))
-              rtypeOf = SETypeOf(SERef(rref))
-              pexpr = SEEq(ltypeOf, rtypeOf)
-            } guard += DemandType(TrueT) -> TypeConstr(
-              Map(),
-              Some(pexpr),
-            )
-            TypeGuard(guard)
-          }
+        // case EExists(Field(x: Local, field)) => TODO
+        // case EBinary(BOp.Eq, ETypeOf(l), ETypeOf(r)) => TODO
         case EBinary(BOp.Eq, ETypeOf(ERef(ref)), r) =>
           for {
             lv <- transfer(ref)
@@ -1337,7 +1304,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
       constr: TypeConstr,
       map: Map[Sym, AbsValue],
     )(using st: AbsState): TypeConstr = TypeConstr(
-      map = for {
+      for {
         case (x: Sym, ty) <- constr.map
         v <- map.get(x)
         y <- v.symty match
@@ -1346,10 +1313,6 @@ trait AbsTransferDecl { analyzer: TyChecker =>
         (z, zty) <- toBase(y -> ty)
         if !(st.getTy(z) <= zty)
       } yield z -> zty,
-      sexpr = for {
-        e <- constr.sexpr
-        newExpr <- instantiate(e, map)
-      } yield newExpr,
     )
 
     /** instantiation of symbolic expressions */
@@ -1534,40 +1497,10 @@ trait AbsTransferDecl { analyzer: TyChecker =>
     def refine(
       constr: TypeConstr,
     )(using np: NodePoint[?]): Updater =
-      val TypeConstr(map, expr) = constr
-
-      /** Alias handling */
-      val alias: Map[Base, Base] = expr.fold(Map()) {
-        case SEEq(SETypeOf(SERef(x: SymBase)), SETypeOf(SERef(y: SymBase))) =>
-          Map(x.toBase -> y.toBase, y.toBase -> x.toBase)
-        case _ => Map()
-      }
-      def typeOfType(givenTy: ValueTy): ValueTy = {
-        var ty = BotT
-        givenTy.typeOfNames.map {
-          case "Number"    => ty ||= NumberT
-          case "BigInt"    => ty ||= BigIntT
-          case "String"    => ty ||= StrT
-          case "Boolean"   => ty ||= BoolT
-          case "Undefined" => ty ||= UndefT
-          case "Null"      => ty ||= NullT
-          case "Object"    => ty ||= ObjectT
-          case "Symbol"    => ty ||= SymbolT
-          case _           =>
-        }
-        ty
-      }
+      val TypeConstr(map) = constr
 
       for {
-        _ <- join(map.map {
-          case (x, ty) =>
-            for {
-              _ <- modify(refine(x, ty))
-              _ <- alias.get(x) match
-                case Some(y) => modify(refine(y, typeOfType(ty)))
-                case None    => pure(())
-            } yield ()
-        })
+        _ <- join(map.map { case (x, ty) => modify(refine(x, ty)) })
         _ <- modify(st => st.copy(constr = constr.lift(using st)))
       } yield ()
 
@@ -1824,10 +1757,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
         "SameType" -> { (func, vs, retTy, st) =>
           given AbsState = st
           val expr = SEEq(SETypeOf(SERef(SSym(0))), SETypeOf(SERef(SSym(1))))
-          AbsValue(
-            STy(BoolT),
-            TypeGuard(DemandType(TrueT) -> TypeConstr(expr)),
-          )
+          AbsValue(STy(BoolT))
         },
         "TypedArrayElementType" -> { (func, vs, retTy, st) =>
           AbsValue(

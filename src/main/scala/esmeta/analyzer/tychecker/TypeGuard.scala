@@ -29,12 +29,6 @@ trait TypeGuardDecl { self: TyChecker =>
       if newConstr.nonTop
     } yield dty -> newConstr)
 
-    def forReturn(symEnv: Map[Sym, ValueTy]): TypeGuard = TypeGuard(for {
-      (dty, constr) <- map
-      newConstr = constr.forReturn(symEnv)
-      if newConstr.nonTop
-    } yield dty -> newConstr)
-
     def filter(ty: ValueTy): TypeGuard =
       TypeGuard(map.filter { (dty, _) => !(dty.ty && ty).isBottom })
 
@@ -154,68 +148,48 @@ trait TypeGuardDecl { self: TyChecker =>
   /** type constraints */
   case class TypeConstr(
     map: Map[Base, ValueTy] = Map(),
-    sexpr: Option[SymExpr] = None,
   ) {
-    def isTop: Boolean = map.isEmpty && sexpr.isEmpty
+    def isTop: Boolean = map.isEmpty
 
     def nonTop: Boolean = !isTop
 
-    def <=(that: TypeConstr): Boolean =
-      that.map.forall {
-        case (x, rty) =>
-          this.map.get(x).fold(false) { _ <= rty }
-      } && (this.sexpr == that.sexpr)
+    def <=(that: TypeConstr): Boolean = that.map.forall {
+      case (x, rty) =>
+        this.map.get(x).fold(false) { _ <= rty }
+    }
 
-    def ||(that: TypeConstr): TypeConstr =
-      TypeConstr(
-        map = (for {
-          x <- (this.map.keySet intersect that.map.keySet).toList
-          lty = this.map(x)
-          rty = that.map(x)
-          pair = {
-            if (lty <= rty) rty
-            else if (rty <= lty) lty
-            else lty || rty
-          }
-        } yield x -> pair).toMap,
-        sexpr = this.sexpr || that.sexpr,
-      )
+    def ||(that: TypeConstr): TypeConstr = TypeConstr(
+      (for {
+        x <- (this.map.keySet intersect that.map.keySet).toList
+        lty = this.map(x)
+        rty = that.map(x)
+        pair = {
+          if (lty <= rty) rty
+          else if (rty <= lty) lty
+          else lty || rty
+        }
+      } yield x -> pair).toMap,
+    )
 
-    def &&(that: TypeConstr): TypeConstr =
-      TypeConstr(
-        map = (for {
-          x <- (this.map.keySet ++ that.map.keySet).toList
-          lty = this.map.getOrElse(x, ValueTy.Top)
-          rty = that.map.getOrElse(x, ValueTy.Top)
-          pair = {
-            if (lty <= rty) lty
-            else if (rty <= lty) rty
-            else lty && rty
-          }
-        } yield x -> pair).toMap,
-        sexpr = this.sexpr && that.sexpr,
-      )
+    def &&(that: TypeConstr): TypeConstr = TypeConstr(
+      (for {
+        x <- (this.map.keySet ++ that.map.keySet).toList
+        lty = this.map.getOrElse(x, ValueTy.Top)
+        rty = that.map.getOrElse(x, ValueTy.Top)
+        pair = {
+          if (lty <= rty) lty
+          else if (rty <= lty) rty
+          else lty && rty
+        }
+      } yield x -> pair).toMap,
+    )
 
-    def has(x: Base): Boolean =
-      map.contains(x) || sexpr.fold(false)(_.has(x))
+    def has(x: Base): Boolean = map.contains(x)
 
-    def bases: Set[Base] =
-      map.keySet.collect { case s: Sym => s } ++
-      sexpr.fold(Set[Base]())(_.bases)
+    def bases: Set[Base] = map.keySet.collect { case s: Sym => s }
 
     def kill(bases: Set[Base])(using AbsState): TypeConstr =
-      this.copy(
-        map.filter { case (x, _) => !bases.contains(x) },
-        sexpr.fold(None)(_.kill(bases)),
-      )
-
-    def forReturn(symEnv: Map[Sym, ValueTy]): TypeConstr = TypeConstr(
-      map = for {
-        case (x: Sym, ty) <- map
-        origTy = symEnv.getOrElse(x, BotT)
-      } yield x -> (origTy && ty),
-      sexpr = None,
-    )
+      TypeConstr(map.filter { case (x, _) => !bases.contains(x) })
 
     def lift(using st: AbsState): TypeConstr =
       this && st.constr
@@ -231,15 +205,25 @@ trait TypeGuardDecl { self: TyChecker =>
     }
 
     def onlySym: TypeConstr =
-      TypeConstr(map = map.collect { case (x: Sym, ty) => x -> ty })
+      TypeConstr(map.collect { case (x: Sym, ty) => x -> ty })
 
     override def toString: String = (new Appender >> this).toString
   }
   object TypeConstr {
-    def apply(sexpr: SymExpr): TypeConstr =
-      TypeConstr(sexpr = Some(sexpr))
-    def apply(pairs: (Base, ValueTy)*): TypeConstr =
-      TypeConstr(pairs.toMap, None)
+    def apply(pairs: (Base, ValueTy)*): TypeConstr = TypeConstr(pairs.toMap)
+  }
+
+  case class MayMust(may: ValueTy, must: ValueTy) {
+    def <=(that: MayMust): Boolean =
+      this.may <= that.may && this.must <= that.must
+    def &&(that: MayMust): MayMust =
+      MayMust(this.may && that.may, this.must && that.must)
+    def ||(that: MayMust): MayMust =
+      MayMust(this.may || that.may, this.must || that.must)
+  }
+  object MayMust {
+    val Bot: MayMust = MayMust(BotT, BotT)
+    val Top: MayMust = MayMust(AnyT, AnyT)
   }
 
   /** symbolic expressions */
@@ -336,7 +320,7 @@ trait TypeGuardDecl { self: TyChecker =>
     import SymTy.given
     given Rule[Map[Base, ValueTy]] = sortedMapRule(sep = ": ")
     if (constr.map.nonEmpty) app >> constr.map
-    constr.sexpr.fold(app) { app >> _ }
+    app
 
   /** TypeGuard */
   given Rule[TypeGuard] = (app, guard) =>

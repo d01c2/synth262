@@ -36,8 +36,8 @@ trait AbsStateDecl { self: TyChecker =>
             AbsState(_, llocals, lsymEnv, lconstr),
             AbsState(_, rlocals, rsymEnv, rconstr),
           ) =>
-        val TypeConstr(lmap, lexpr) = lconstr
-        val TypeConstr(rmap, rexpr) = rconstr
+        val TypeConstr(lmap) = lconstr
+        val TypeConstr(rmap) = rconstr
         llocals.forall { (x, lv) =>
           rlocals.get(x).fold(false) { rv =>
             AbsValue.orderHelper(lv, this, rv, that)
@@ -46,8 +46,7 @@ trait AbsStateDecl { self: TyChecker =>
         lsymEnv.forall { (sym, ty) => rsymEnv.get(sym).fold(false)(ty <= _) } &&
         rmap.forall {
           case (r, rty) => lmap.get(r).fold(false) { _ <= rty }
-        } &&
-        rexpr.forall { r => lexpr.fold(false)(_ == r) }
+        }
 
     /** not partial order */
     def !⊑(that: AbsState): Boolean = !(this ⊑ that)
