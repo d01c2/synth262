@@ -118,7 +118,7 @@ class SymInterp(
                 val newLocals: Map[Local, AbsValue] = (for {
                   (param, arg) <- (params zip vs)
                 } yield param.lhs -> arg.kill(vars, false)).toMap
-                st = st.copy(locals = newLocals, constr = st.constr.onlySym)
+                st = st.copy(locals = newLocals, mayMust = st.mayMust.onlySym)
               })(st)
               node = callee.entry
               funcs += callee
@@ -221,12 +221,12 @@ class SymInterp(
       val rp = ReturnPoint(callee, emptyView)
       val ret = getResult(rp)
       val AbsRet(_, noSym, syms) = ret
-      for ((_, (v, constr)) <- syms) {
-        val newConstr = instantiate(constr, vs, callerNp, callerSt)
-        val newSt = transfer.refine(newConstr)(callerSt)
+      for ((_, (v, mayMust)) <- syms) {
+        val newMayMust = instantiate(mayMust, vs, callerNp, callerSt)
+        val newSt = transfer.refine(newMayMust)(callerSt)
         val newV = instantiate(v, vs, callerNp, callerSt)
         _configs ::= wrap.copy(
-          state = newSt.define(x, newV).copy(constr = newConstr),
+          state = newSt.define(x, newV).copy(mayMust = newMayMust),
           node = next,
         )
       }
@@ -255,16 +255,16 @@ class SymInterp(
 
   /** instantiation of return value */
   def instantiate(
-    constr: TypeConstr,
+    mayMust: MayMust,
     vs: List[AbsValue],
     callerNp: NodePoint[Call],
     callerSt: AbsState,
-  ): TypeConstr =
+  ): MayMust =
     given AbsState = callerSt
     val map = vs.zipWithIndex.map {
       case (v, i) => i -> v
     }.toMap
-    transfer.instantiate(callerNp.node, constr, map)
+    transfer.instantiate(callerNp.node, mayMust, map)
 
   // ---------------------------------------------------------------------------
   // helper functions for configuration manipulation
@@ -297,7 +297,7 @@ class SymInterp(
         ) ++ (for ((p, i) <- ps if p.kind != Variadic) yield {
           i -> ESValueT
         })
-        AbsState(true, locals, symEnv, TypeConstr())
+        AbsState(true, locals, symEnv, MayMust.Top)
       case _ => AbsState.Bot
     }
   }

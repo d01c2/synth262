@@ -8,7 +8,7 @@ trait AbsRetDecl { self: TyChecker =>
   case class AbsRet(
     value: AbsValue = AbsValue.Bot,
     noSym: AbsValue = AbsValue.Bot,
-    syms: Map[NodePoint[?], (AbsValue, TypeConstr)] = Map.empty,
+    syms: Map[NodePoint[?], (AbsValue, MayMust)] = Map.empty,
   ) extends AbsRetLike {
     import AbsRet.*
 
@@ -37,9 +37,9 @@ trait AbsRetDecl { self: TyChecker =>
 
     /** appender */
     given rule: Rule[AbsRet] = (app, elem) =>
-      (app >> elem.noSym).wrap {
-        for ((np, (v, constr)) <- elem.syms.toList.sortBy(_._1.node.id))
-          app :> np.node.name >> " -> " >> v >> " (" >> constr >> ")"
+      (app >> elem.value).wrap {
+        for ((np, (v, mayMust)) <- elem.syms.toList.sortBy(_._1.node.id))
+          app :> np.node.name >> " -> " >> v >> " (" >> mayMust >> ")"
       }
   }
 }

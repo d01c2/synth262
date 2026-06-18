@@ -70,7 +70,7 @@ trait AbsValueDecl { self: TyChecker =>
       given AbsState = givenSt
       if (isTypeGuardCandidate(func)) {
         val xs = givenSt.getImprecBases(entrySt)
-        this.kill(xs, update = false)
+        this.onlySym.kill(xs, update = false)
       } else AbsValue(this.ty)
 
     /** get symbols */
@@ -85,15 +85,8 @@ trait AbsValueDecl { self: TyChecker =>
     /** check whether it has a local variable as a base */
     def hasLocalBase(x: Local): Boolean = bases.exists(_ == x)
 
-    /** check whether it has a type guard */
-    def hasTypeGuard(entrySt: AbsState): Boolean =
-      import SymTy.*, SymExpr.*
-      guard.map.exists { (kind, constr) =>
-        constr.map.exists {
-          case (x: Sym, ty) => !(entrySt.getTy(SERef(SSym(x))) <= ty)
-          case _            => false
-        }
-      }
+    /** heck whether it has a type guard */
+    def hasTypeGuard(entrySt: AbsState): Boolean = guard.nonEmpty
 
     def killMutable(using np: NodePoint[_], st: AbsState) =
       this.copy(guard = this.guard.kill(np.func.mutableLocals))

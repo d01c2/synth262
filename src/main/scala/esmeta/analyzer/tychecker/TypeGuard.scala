@@ -12,22 +12,21 @@ import esmeta.util.SystemUtils.exists
 trait TypeGuardDecl { self: TyChecker =>
 
   /** type guard */
-  case class TypeGuard(map: Map[DemandType, TypeConstr] = Map()) {
+  case class TypeGuard(map: Map[DemandType, MayMust] = Map()) {
     def isEmpty: Boolean = map.isEmpty
     def nonEmpty: Boolean = !isEmpty
     def dtys: Set[DemandType] = map.keySet
-    def get(dty: DemandType): Option[TypeConstr] = map.get(dty)
+    def get(dty: DemandType): Option[MayMust] = map.get(dty)
 
-    def apply(dty: DemandType): TypeConstr =
-      map.getOrElse(dty, TypeConstr())
+    def apply(dty: DemandType): MayMust = map.getOrElse(dty, MayMust.Top)
 
     def bases: Set[Base] = map.values.flatMap(_.bases).toSet
 
     def kill(bases: Set[Base])(using AbsState): TypeGuard = TypeGuard(for {
-      (dty, constr) <- map
-      newConstr = constr.kill(bases)
-      if newConstr.nonTop
-    } yield dty -> newConstr)
+      (dty, mayMust) <- map
+      newMayMust = mayMust.kill(bases)
+      if !newMayMust.isTop
+    } yield dty -> newMayMust)
 
     def filter(ty: ValueTy): TypeGuard =
       TypeGuard(map.filter { (dty, _) => !(dty.ty && ty).isBottom })
@@ -35,9 +34,9 @@ trait TypeGuardDecl { self: TyChecker =>
     def lift(ty: ValueTy = ValueTy.Top)(using st: AbsState): TypeGuard =
       this && TypeGuard((for {
         kind <- DemandType.from(ty).toList
-        constr = TypeConstr().lift
-        if constr.nonTop
-      } yield kind -> constr).toMap)
+        mayMust = st.mayMust
+        if !mayMust.isTop
+      } yield kind -> mayMust).toMap)
 
     def has(x: Base): Boolean = map.values.exists(_.has(x))
 
@@ -55,34 +54,34 @@ trait TypeGuardDecl { self: TyChecker =>
       TypeGuard((for {
         dty <- dtys.toList
         ty = lty || rty
-        constr = (this.evaluate(ty, dty.ty), that.evaluate(ty, dty.ty)) match
+        mayMust = (this.evaluate(ty, dty.ty), that.evaluate(ty, dty.ty)) match
           case (l, r) if (lty && dty.ty).isBottom => r
           case (l, r) if (rty && dty.ty).isBottom => l
           case (l, r)                             => l || r
-        if !constr.isTop
-      } yield dty -> constr).toMap)
+        if !mayMust.isTop
+      } yield dty -> mayMust).toMap)
 
     def &&(that: TypeGuard): TypeGuard = TypeGuard((for {
       dty <- (this.dtys ++ that.dtys).toList
-      constr = this(dty) && that(dty)
-      if !constr.isTop
-    } yield dty -> constr).toMap)
+      mayMust = this(dty) && that(dty)
+      if !mayMust.isTop
+    } yield dty -> mayMust).toMap)
 
-    def evaluate(lty: ValueTy, rty: ValueTy): TypeConstr =
-      if (lty && rty).isBottom then TypeConstr()
+    def evaluate(lty: ValueTy, rty: ValueTy): MayMust =
+      if ((lty && rty).isBottom) MayMust.Top
       else {
-        val constrs = for {
-          (dty, constr) <- map
+        val mayMusts = for {
+          (dty, mayMust) <- map
           if rty <= dty.ty
-        } yield constr
-        if constrs.isEmpty then TypeConstr()
-        else constrs.reduce(_ && _)
+        } yield mayMust
+        if (mayMusts.isEmpty) MayMust.Top
+        else mayMusts.reduce(_ && _)
       }
 
     def simple: TypeGuard =
-      TypeGuard(map.filterNot { (dty, constr) =>
-        map.exists { (tdty, tconstr) =>
-          (dty.ty != tdty.ty && dty.ty <= tdty.ty && tconstr <= constr)
+      TypeGuard(map.filterNot { (dty, mayMust) =>
+        map.exists { (tdty, tMayMust) =>
+          (dty.ty != tdty.ty && dty.ty <= tdty.ty && tMayMust <= mayMust)
         }
       })
 
@@ -91,13 +90,16 @@ trait TypeGuardDecl { self: TyChecker =>
     def hasSym: Boolean = map.values.exists(_.hasSym)
 
     def onlySym: TypeGuard =
-      TypeGuard(map.map { (dty, constr) => dty -> constr.onlySym })
+      TypeGuard(map.map { (dty, mayMust) => dty -> mayMust.onlySym })
+
+    def normalize: TypeGuard =
+      TypeGuard(map.filterNot { (_, mayMust) => mayMust.isTop })
 
     override def toString: String = (new Appender >> this).toString
   }
   object TypeGuard {
     val Empty: TypeGuard = TypeGuard()
-    def apply(ps: (DemandType, TypeConstr)*): TypeGuard = TypeGuard(
+    def apply(ps: (DemandType, MayMust)*): TypeGuard = TypeGuard(
       ps.toMap,
     )
   }
@@ -146,84 +148,130 @@ trait TypeGuardDecl { self: TyChecker =>
   }
 
   /** type constraints */
-  case class TypeConstr(
-    map: Map[Base, ValueTy] = Map(),
-  ) {
-    def isTop: Boolean = map.isEmpty
+  enum TypeConstr {
+    case Bot
+    case Elem(map: Map[Base, ValueTy])
 
-    def nonTop: Boolean = !isTop
+    import TypeConstr.*
+    def isTop: Boolean = this == Top
+    def isBottom: Boolean = this == Bot
 
-    def <=(that: TypeConstr): Boolean = that.map.forall {
-      case (x, rty) =>
-        this.map.get(x).fold(false) { _ <= rty }
-    }
+    def map(f: Map[Base, ValueTy] => Map[Base, ValueTy]): TypeConstr =
+      this match
+        case Bot       => Bot
+        case Elem(map) => Elem(f(map))
 
-    def ||(that: TypeConstr): TypeConstr = TypeConstr(
-      (for {
-        x <- (this.map.keySet intersect that.map.keySet).toList
-        lty = this.map(x)
-        rty = that.map(x)
-        pair = {
-          if (lty <= rty) rty
-          else if (rty <= lty) lty
-          else lty || rty
-        }
-      } yield x -> pair).toMap,
-    )
+    def fold[T](default: => T)(f: Map[Base, ValueTy] => T): T = this match
+      case Bot       => default
+      case Elem(map) => f(map)
 
-    def &&(that: TypeConstr): TypeConstr = TypeConstr(
-      (for {
-        x <- (this.map.keySet ++ that.map.keySet).toList
-        lty = this.map.getOrElse(x, ValueTy.Top)
-        rty = that.map.getOrElse(x, ValueTy.Top)
-        pair = {
-          if (lty <= rty) lty
-          else if (rty <= lty) rty
-          else lty && rty
-        }
-      } yield x -> pair).toMap,
-    )
+    def forall(f: Map[Base, ValueTy] => Boolean): Boolean = this match
+      case Bot       => true
+      case Elem(map) => f(map)
 
-    def has(x: Base): Boolean = map.contains(x)
+    def exists(f: Map[Base, ValueTy] => Boolean): Boolean = this match
+      case Bot       => false
+      case Elem(map) => f(map)
 
-    def bases: Set[Base] = map.keySet.collect { case s: Sym => s }
+    def <=(that: TypeConstr): Boolean = (this, that) match
+      case (Bot, _) => true
+      case (_, Bot) => true
+      case (Elem(lmap), Elem(rmap)) =>
+        rmap.forall { case (r, rty) => lmap.get(r).fold(false) { _ <= rty } }
+
+    def ||(that: TypeConstr): TypeConstr = (this, that) match
+      case (Bot, _) => that
+      case (_, Bot) => this
+      case (Elem(lmap), Elem(rmap)) =>
+        Elem((for {
+          x <- (lmap.keySet intersect rmap.keySet).toList
+          lty = lmap(x)
+          rty = rmap(x)
+          pair = {
+            if (lty <= rty) rty
+            else if (rty <= lty) lty
+            else lty || rty
+          }
+        } yield x -> pair).toMap)
+
+    def &&(that: TypeConstr): TypeConstr = (this, that) match
+      case (Bot, _) | (_, Bot) => Bot
+      case (Elem(lmap), Elem(rmap)) =>
+        Elem((for {
+          x <- (lmap.keySet ++ rmap.keySet).toList
+          lty = lmap.getOrElse(x, AnyT)
+          rty = rmap.getOrElse(x, AnyT)
+          pair = {
+            if (lty <= rty) lty
+            else if (rty <= lty) rty
+            else lty && rty
+          }
+        } yield x -> pair).toMap)
+
+    def toMay: MayMust = MayMust(this, TypeConstr.Bot)
+    def toMust: MayMust = MayMust(this, this)
+
+    def has(x: Base): Boolean = exists(_.contains(x))
+
+    def bases: Set[Base] = this match
+      case Bot       => Set()
+      case Elem(map) => map.keySet.collect { case s: Sym => s }
 
     def kill(bases: Set[Base])(using AbsState): TypeConstr =
-      TypeConstr(map.filter { case (x, _) => !bases.contains(x) })
+      map(_.filter { case (x, _) => !bases.contains(x) })
 
-    def lift(using st: AbsState): TypeConstr =
-      this && st.constr
+    def hasLocal: Boolean = exists(_.keySet.exists {
+      case _: Local => true
+      case _        => false
+    })
 
-    def hasLocal: Boolean = map.keySet.exists {
+    def hasSym: Boolean = exists(_.keySet.exists {
       case s: Sym => true
       case _      => false
-    }
-
-    def hasSym: Boolean = map.keySet.exists {
-      case s: Sym => true
-      case _      => false
-    }
+    })
 
     def onlySym: TypeConstr =
-      TypeConstr(map.collect { case (x: Sym, ty) => x -> ty })
+      map(_.collect { case (x: Sym, ty) => x -> ty })
 
     override def toString: String = (new Appender >> this).toString
   }
   object TypeConstr {
-    def apply(pairs: (Base, ValueTy)*): TypeConstr = TypeConstr(pairs.toMap)
+    val Top: TypeConstr = Elem(Map())
+    def apply(pairs: (Base, ValueTy)*): TypeConstr = Elem(pairs.toMap)
   }
 
-  case class MayMust(may: ValueTy, must: ValueTy) {
+  case class MayMust(may: TypeConstr, must: TypeConstr) {
+    def isTop: Boolean = may.isTop && must.isTop
+    def isBottom: Boolean = may.isBottom && must.isBottom
     def <=(that: MayMust): Boolean =
       this.may <= that.may && this.must <= that.must
     def &&(that: MayMust): MayMust =
       MayMust(this.may && that.may, this.must && that.must)
     def ||(that: MayMust): MayMust =
       MayMust(this.may || that.may, this.must || that.must)
+
+    def dropMust: MayMust = MayMust(may, TypeConstr.Bot)
+
+    def map(f: TypeConstr => TypeConstr): MayMust =
+      MayMust(f(may), f(must))
+
+    def has(x: Base): Boolean = may.has(x) || must.has(x)
+
+    def bases: Set[Base] = may.bases ++ must.bases
+
+    def kill(bases: Set[Base])(using AbsState): MayMust = map(_.kill(bases))
+
+    def lift(using st: AbsState): MayMust = this && st.mayMust
+
+    def hasLocal: Boolean = may.hasLocal || must.hasLocal
+
+    def hasSym: Boolean = may.hasSym || must.hasSym
+
+    def onlySym: MayMust = map(_.onlySym)
   }
   object MayMust {
-    val Bot: MayMust = MayMust(BotT, BotT)
-    val Top: MayMust = MayMust(AnyT, AnyT)
+    val Bot: MayMust = MayMust(TypeConstr.Bot, TypeConstr.Bot)
+    val Top: MayMust = MayMust(TypeConstr.Top, TypeConstr.Top)
   }
 
   /** symbolic expressions */
@@ -314,14 +362,6 @@ trait TypeGuardDecl { self: TyChecker =>
   // Expose the helper as the given instance, avoiding self-referential implicit search issues.
   given Rule[SymExpr] = symExprRule
 
-  /** TypeConstr */
-  given Rule[TypeConstr] = (app, constr) =>
-    import TypeConstr.*
-    import SymTy.given
-    given Rule[Map[Base, ValueTy]] = sortedMapRule(sep = ": ")
-    if (constr.map.nonEmpty) app >> constr.map
-    app
-
   /** TypeGuard */
   given Rule[TypeGuard] = (app, guard) =>
     given Ordering[DemandType] = Ordering.by(_.toString)
@@ -329,6 +369,25 @@ trait TypeGuardDecl { self: TyChecker =>
     given Rule[Map[DemandType, TypeConstr]] =
       sortedMapRule("{", "}", " => ")
     app >> guard.simple.map
+
+  /** TypeConstr */
+  given Rule[TypeConstr] = (app, constr) =>
+    import TypeConstr.*
+    import SymTy.given
+    given Rule[Map[Base, MayMust]] = sortedMapRule(sep = ": ")
+    constr match
+      case Bot => app >> "⊥"
+      case Elem(map) =>
+        if (map.nonEmpty) app >> map
+        app
+
+  /** MayMust */
+  given Rule[MayMust] = (app, mayMust) =>
+    import MayMust.*
+    app >> mayMust.may
+    if (mayMust.may != mayMust.must)
+      app >> " (MUST: " >> mayMust.must >> ")"
+    app
 
   /** RefinementTarget */
   given Rule[RefinementTarget] = (app, target) =>

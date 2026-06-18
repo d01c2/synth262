@@ -57,21 +57,22 @@ trait AbsTransferDecl { analyzer: TyChecker =>
           (for { v <- transfer(c); newSt <- get } yield {
             if (v.ty.bool.contains(true))
               val rst = refine(c, v, TrueT, Some(BranchTarget(br, true)))(newSt)
-              val constr = v.guard.get(DemandType(TrueT))
-              if (detail) logRefined(BranchTarget(br, true), constr, newSt, rst)
+              val mayMust = v.guard.get(DemandType(TrueT))
+              if (detail)
+                logRefined(BranchTarget(br, true), mayMust, newSt, rst)
               thenNode.map(analyzer += getNextNp(np, _) -> rst)
             if (v.ty.bool.contains(false))
               val rst =
                 refine(c, v, FalseT, Some(BranchTarget(br, false)))(newSt)
-              val constr = v.guard.get(DemandType(FalseT))
+              val mayMust = v.guard.get(DemandType(FalseT))
               if (detail)
-                logRefined(BranchTarget(br, false), constr, newSt, rst)
+                logRefined(BranchTarget(br, false), mayMust, newSt, rst)
               elseNode.map(analyzer += getNextNp(np, _) -> rst)
           })(st)
 
     def logRefined(
       target: RefinementTarget,
-      constr: Option[TypeConstr],
+      mayMust: Option[MayMust],
       st: AbsState,
       refinedSt: AbsState,
     ): Unit =
@@ -92,15 +93,16 @@ trait AbsTransferDecl { analyzer: TyChecker =>
     )(using np: NodePoint[?]): Updater = st =>
       import DemandType.*
       given AbsState = st
-      val kind = DemandType(ty)
+      val dty = DemandType(ty)
       if (inferTypeGuard) {
-        val const = v.guard.evaluate(v.ty, kind.ty)
-        if (detail && target.isDefined) refineWithLog(target.get, const, ty)(st)
+        val mayMust = v.guard.evaluate(v.ty, dty.ty)
+        if (detail && target.isDefined)
+          refineWithLog(target.get, mayMust, ty)(st)
         else if ((v.ty ⊓ ty).isBottom) AbsState.Bot
-        else refine(const)(st)
+        else refine(mayMust)(st)
       } else {
-        v.guard.get(kind) match
-          case Some(constr) => refine(constr)(st) // for default type guards
+        v.guard.get(dty) match
+          case Some(mayMust) => refine(mayMust)(st) // for default type guards
           case None =>
             ty match // syntactic refinement
               case _ if noRefine => st
@@ -500,13 +502,13 @@ trait AbsTransferDecl { analyzer: TyChecker =>
         val AbsRet(oldV, noSym, syms) = getResult(rp)
         if (!oldV.isBottom && useRepl) Repl.merged = true
         if ((newV !⊑ oldV)(using entrySt)) {
-          val constr = givenSt.constr.onlySym
+          val mayMust = givenSt.mayMust.onlySym
           val hasSym = v.symty.hasSym
           val newRet = AbsRet(
             oldV ⊔ newV,
             if (hasSym) noSym else noSym ⊔ newV,
             if (hasSym)
-              syms + (np -> (v.onlySym(using givenSt), constr))
+              syms + (np -> (v.onlySym(using givenSt), mayMust))
             else syms - np,
           )
           rpMap += rp -> newRet
@@ -763,7 +765,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
       expr match {
         case EBool(bool) =>
           val dty = if (bool) DemandType(TrueT) else DemandType(FalseT)
-          get(st => TypeGuard(Map(dty -> TypeConstr().lift(using st))))
+          get(st => TypeGuard(Map(dty -> MayMust.Top.lift(using st))))
         case ERecord(tname @ "CompletionRecord", fields) =>
           for {
             pairs <- join(fields.map {
@@ -843,33 +845,33 @@ trait AbsTransferDecl { analyzer: TyChecker =>
               )
               if (lty != refinedTy) Some(refinedTy) else None
             }
-            var lmap: Map[DemandType, TypeConstr] = Map()
+            var lmap: Map[DemandType, MayMust] = Map()
             toSymRef(l, lv).map { ref =>
               aux(lty, rty, true, true).map { thenTy =>
                 if (lty != thenTy && !thenTy.isBottom)
                   toBase(ref -> thenTy).map { pair =>
-                    lmap += DemandType(TrueT) -> TypeConstr(pair).lift
+                    lmap += DemandType(TrueT) -> TypeConstr(pair).toMay.lift
                   }
               }
               aux(lty, rty, false, true).map { elseTy =>
                 if (lty != elseTy && !elseTy.isBottom)
                   toBase(ref -> elseTy).map { pair =>
-                    lmap += DemandType(FalseT) -> TypeConstr(pair).lift
+                    lmap += DemandType(FalseT) -> TypeConstr(pair).toMay.lift
                   }
               }
             }
-            var rmap: Map[DemandType, TypeConstr] = Map()
+            var rmap: Map[DemandType, MayMust] = Map()
             toSymRef(r, rv).map { ref =>
               aux(rty, lty, true, false).map { thenTy =>
                 if (rty != thenTy && !thenTy.isBottom)
                   toBase(ref -> thenTy).map { pair =>
-                    rmap += DemandType(TrueT) -> TypeConstr(pair).lift
+                    rmap += DemandType(TrueT) -> TypeConstr(pair).toMay.lift
                   }
               }
               aux(rty, lty, false, false).map { elseTy =>
                 if (rty != elseTy && !elseTy.isBottom)
                   toBase(ref -> elseTy).map { pair =>
-                    rmap += DemandType(FalseT) -> TypeConstr(pair).lift
+                    rmap += DemandType(FalseT) -> TypeConstr(pair).toMay.lift
                   }
               }
             }
@@ -877,13 +879,13 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             val rguard = TypeGuard(rmap)
             val guard = (for {
               dty <- List(DemandType(TrueT), DemandType(FalseT))
-              constr = {
+              mayMust = {
                 lguard(dty) &&
                 rguard(dty)
               }
-              newConstr = constr.lift
-              if newConstr.nonTop
-            } yield dty -> newConstr).toMap
+              newMayMust = mayMust.lift
+              if !newMayMust.isTop
+            } yield dty -> newMayMust).toMap
             TypeGuard(guard)
           }
         case EBinary(BOp.Eq, e, EBool(true)) =>
@@ -903,18 +905,18 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             val rty = rv.ty
             val thenTy = lty && rty
             val elseTy = if (rty.isSingle) lty -- rty else lty
-            var guard: Map[DemandType, TypeConstr] = Map()
+            var guard: Map[DemandType, MayMust] = Map()
             var bools = Set(true, false)
             toSymRef(ref, lv).map { ref =>
               if (thenTy.isBottom) bools -= true
               else
                 toBase(ref -> thenTy).map { pair =>
-                  guard += DemandType(TrueT) -> TypeConstr(pair).lift
+                  guard += DemandType(TrueT) -> TypeConstr(pair).toMay.lift
                 }
               if (elseTy.isBottom) bools -= false
               else
                 toBase(ref -> elseTy).map { pair =>
-                  guard += DemandType(FalseT) -> TypeConstr(pair).lift
+                  guard += DemandType(FalseT) -> TypeConstr(pair).toMay.lift
                 }
             }
             TypeGuard(guard)
@@ -928,20 +930,20 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             val rty = givenTy.toValue
             val thenTy = lty && rty
             val elseTy = lty -- rty
-            var guard: Map[DemandType, TypeConstr] = Map()
+            var guard: Map[DemandType, MayMust] = Map()
             var bools = Set(true, false)
             toSymRef(ref, lv).map { ref =>
               if (lty != thenTy)
                 if (thenTy.isBottom) bools -= true
                 else
                   toBase(ref -> thenTy).map { pair =>
-                    guard += DemandType(TrueT) -> TypeConstr(pair).lift
+                    guard += DemandType(TrueT) -> TypeConstr(pair).toMust.lift
                   }
               if (lty != elseTy)
                 if (elseTy.isBottom) bools -= false
                 else
                   toBase(ref -> elseTy).map { pair =>
-                    guard += DemandType(FalseT) -> TypeConstr(pair).lift
+                    guard += DemandType(FalseT) -> TypeConstr(pair).toMust.lift
                   }
             }
             TypeGuard(guard)
@@ -959,20 +961,20 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             )
             val thenTy = aux(binding)
             val elseTy = aux(lty.record(field) -- binding)
-            var guard: Map[DemandType, TypeConstr] = Map()
+            var guard: Map[DemandType, MayMust] = Map()
             var bools = Set(true, false)
             toSymRef(x, lv).map { ref =>
               if (lty != thenTy)
                 if (thenTy.isBottom) bools -= true
                 else
                   toBase(ref -> thenTy).map { pair =>
-                    guard += DemandType(TrueT) -> TypeConstr(pair).lift
+                    guard += DemandType(TrueT) -> TypeConstr(pair).toMay.lift
                   }
               if (lty != elseTy)
                 if (elseTy.isBottom) bools -= false
                 else
                   toBase(ref -> elseTy).map { pair =>
-                    guard += DemandType(FalseT) -> TypeConstr(pair).lift
+                    guard += DemandType(FalseT) -> TypeConstr(pair).toMay.lift
                   }
             }
             TypeGuard(guard)
@@ -994,20 +996,20 @@ trait AbsTransferDecl { analyzer: TyChecker =>
               case _ => lty
             val thenTy = aux(true)
             val elseTy = aux(false)
-            var guard: Map[DemandType, TypeConstr] = Map()
+            var guard: Map[DemandType, MayMust] = Map()
             var bools = Set(true, false)
             toSymRef(ref, lv).map { ref =>
               if (lty != thenTy)
                 if (thenTy.isBottom) bools -= true
                 else
                   toBase(ref -> thenTy).map { pair =>
-                    guard += DemandType(TrueT) -> TypeConstr(pair).lift
+                    guard += DemandType(TrueT) -> TypeConstr(pair).toMay.lift
                   }
               if (lty != elseTy)
                 if (elseTy.isBottom) bools -= false
                 else
                   toBase(ref -> elseTy).map { pair =>
-                    guard += DemandType(FalseT) -> TypeConstr(pair).lift
+                    guard += DemandType(FalseT) -> TypeConstr(pair).toMay.lift
                   }
             }
             TypeGuard(guard)
@@ -1021,7 +1023,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             lt = guard(DemandType(TrueT))
             lf = guard(DemandType(FalseT))
           } yield {
-            var guard: Map[DemandType, TypeConstr] = Map()
+            var guard: Map[DemandType, MayMust] = Map()
             guard += DemandType(TrueT) -> lf.lift
             guard += DemandType(FalseT) -> lt.lift
             TypeGuard(guard)
@@ -1039,21 +1041,21 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             lt = lguard(DemandType(TrueT))
             lf = lguard(DemandType(FalseT))
           } yield {
-            var guard: Map[DemandType, TypeConstr] = Map()
+            var guard: Map[DemandType, MayMust] = Map()
             val refinedSt = if (lf.isTop) st else refine(lf)(st)
-            val (thenConstr, _) = (for {
+            val (thenMayMust, _) = (for {
               rv <- transfer(r)
               rt = rv.guard(DemandType(TrueT))
             } yield if (hasT) lt || rt else rt)(refinedSt)
-            if (thenConstr.nonTop)
-              guard += DemandType(TrueT) -> thenConstr.lift
-            val (elseConstr, _) = (for {
+            if (!thenMayMust.isTop)
+              guard += DemandType(TrueT) -> thenMayMust.lift
+            val (elseMayMust, _) = (for {
               rv <- transfer(r)
               rf = rv.guard(DemandType(FalseT))
               hasF = lty.bool.contains(false)
             } yield lf && rf)(refinedSt)
-            if (elseConstr.nonTop)
-              guard += DemandType(FalseT) -> elseConstr.lift
+            if (!elseMayMust.isTop)
+              guard += DemandType(FalseT) -> elseMayMust.lift
             TypeGuard(guard)
           }
         case EBinary(BOp.And, l, r) =>
@@ -1069,20 +1071,20 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             lt = lguard(DemandType(TrueT))
             lf = lguard(DemandType(FalseT))
           } yield {
-            var guard: Map[DemandType, TypeConstr] = Map()
+            var guard: Map[DemandType, MayMust] = Map()
             val refinedSt = if (lt.isTop) st else refine(lt)(st)
-            val (thenConstr, _) = (for {
+            val (thenMayMust, _) = (for {
               rv <- transfer(r)
               rt = rv.guard(DemandType(TrueT))
             } yield lt && rt)(refinedSt)
-            if (thenConstr.nonTop)
-              guard += DemandType(TrueT) -> thenConstr.lift
-            val (elseConstr, _) = (for {
+            if (!thenMayMust.isTop)
+              guard += DemandType(TrueT) -> thenMayMust.lift
+            val (elseMayMust, _) = (for {
               rv <- transfer(r)
               rf = rv.guard(DemandType(FalseT))
             } yield if (hasF) lf || rf else rf)(refinedSt)
-            if (elseConstr.nonTop)
-              guard += DemandType(FalseT) -> elseConstr.lift
+            if (!elseMayMust.isTop)
+              guard += DemandType(FalseT) -> elseMayMust.lift
             TypeGuard(guard)
           }
         case EEnum(name) =>
@@ -1090,7 +1092,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             get(st => {
               TypeGuard(
                 Map(
-                  DemandType(EnumT(name)) -> TypeConstr().lift(using st),
+                  DemandType(EnumT(name)) -> MayMust.Top.lift(using st),
                 ),
               )
             })
@@ -1295,29 +1297,35 @@ trait AbsTransferDecl { analyzer: TyChecker =>
     )(using st: AbsState): AbsValue =
       val AbsValue(symty, guard) = value
       val newGuard = TypeGuard((for {
-        (dty, constr) <- guard.map
-        newConstr = instantiate(call, constr, map)
-        if newConstr.nonTop
-      } yield dty -> newConstr).toMap)
+        (dty, mayMust) <- guard.map
+        newMayMust = instantiate(call, mayMust, map)
+        if !newMayMust.isTop
+      } yield dty -> newMayMust).toMap)
       val ivalue @ AbsValue(isymty, iguard) = instantiate(symty, map)
       AbsValue(isymty, newGuard && iguard)
 
-    /** instantiation of type constraint */
+    def instantiate(
+      call: Call,
+      mayMust: MayMust,
+      map: Map[Sym, AbsValue],
+    )(using st: AbsState): MayMust = mayMust.map(instantiate(call, _, map))
+
+    /** instantiation of may/must type constraint */
     def instantiate(
       call: Call,
       constr: TypeConstr,
       map: Map[Sym, AbsValue],
-    )(using st: AbsState): TypeConstr = TypeConstr(
+    )(using st: AbsState): TypeConstr = constr.map { m =>
       for {
-        case (x: Sym, ty) <- constr.map
+        case (x: Sym, ty: ValueTy) <- m
         v <- map.get(x)
         y <- v.symty match
           case x: SymRef => Some(x)
           case _         => None
         (z, zty) <- toBase(y -> ty)
         if !(st.getTy(z) <= zty)
-      } yield z -> zty,
-    )
+      } yield z -> zty
+    }
 
     /** instantiation of symbolic expressions */
     def instantiate(
@@ -1466,24 +1474,23 @@ trait AbsTransferDecl { analyzer: TyChecker =>
       import DemandType.*
       given AbsState = getResult(np)
       val refined = refinedValue.ty
-
       join(
         for {
-          (dty, constr) <- value.guard.map
+          (dty, mayMust) <- value.guard.map
           if refined <= dty.ty
         } yield
           if (detail)
             refineWithLog(
               currentTarget.getOrElse(RefinementTarget.NodeTarget(np.node)),
-              constr,
+              mayMust,
               refined,
             )
-          else refine(constr),
+          else refine(mayMust),
       )
 
     def refineWithLog(
       target: RefinementTarget,
-      constr: TypeConstr,
+      mayMust: MayMust,
       refinedTo: ValueTy,
     )(using np: NodePoint[_]): Updater =
       // Ensure nested notice() calls see this target.
@@ -1491,22 +1498,22 @@ trait AbsTransferDecl { analyzer: TyChecker =>
       currentTarget = Some(target)
       for {
         st <- get
-        _ <- refine(constr)
+        _ <- refine(mayMust)
         refinedSt <- get
       } yield {
         currentTarget = saved
       }
 
     /** refine types using type constraints */
-    def refine(
-      constr: TypeConstr,
-    )(using np: NodePoint[?]): Updater =
-      val TypeConstr(map) = constr
-
-      for {
-        _ <- join(map.map { case (x, ty) => modify(refine(x, ty)) })
-        _ <- modify(st => st.copy(constr = constr.lift(using st)))
-      } yield ()
+    def refine(mayMust: MayMust)(using np: NodePoint[?]): Updater =
+      mayMust.may.fold[Updater](_ => AbsState.Bot) { map =>
+        for {
+          _ <- join(map.map {
+            case (x, ty) => modify(refine(x, ty))
+          })
+          _ <- modify(st => st.copy(mayMust = mayMust.lift(using st)))
+        } yield ()
+      }
 
     /** refine references using types */
     def refine(
@@ -1542,11 +1549,11 @@ trait AbsTransferDecl { analyzer: TyChecker =>
           val field = x.str.getSingle match
             case One(elem) => elem
             case _         => return None
-          val refinedTy = ValueTy(
+          val refined = ValueTy(
             ast = bty.ast,
             record = bty.record.update(field, givenTy, refine = true),
           )
-          toBase(base -> refinedTy)
+          toBase(base -> refined)
         case _ => None
     }
 
@@ -1720,18 +1727,17 @@ trait AbsTransferDecl { analyzer: TyChecker =>
         },
         "RequireInternalSlot" -> { (func, vs, retTy, st) =>
           given AbsState = st
-          val refined = vs(1).ty.str.getSingle match
+          val mayMust = vs(1).ty.str.getSingle match
             case One(f) =>
-              ValueTy(
+              val ty = ValueTy(
                 record = ObjectT.record.update(f, Binding.Exist, refine = true),
               )
-            case _ => ObjectT
+              TypeConstr(0 -> ty).toMust
+            case _ => TypeConstr(0 -> ObjectT).toMay
           val guard =
             if (useBooleanGuard) TypeGuard()
             else
-              TypeGuard(
-                DemandType(NormalT) -> TypeConstr(0 -> refined),
-              )
+              TypeGuard(DemandType(NormalT) -> mayMust)
           AbsValue(STy(retTy), guard)
         },
         "NewPromiseCapability" -> { (func, vs, retTy, st) =>
@@ -1740,7 +1746,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             if (useBooleanGuard) TypeGuard()
             else
               TypeGuard(
-                DemandType(NormalT) -> TypeConstr(0 -> ConstructorT),
+                DemandType(NormalT) -> TypeConstr(0 -> ConstructorT).toMay,
               )
           AbsValue(STy(retTy), guard)
         },
