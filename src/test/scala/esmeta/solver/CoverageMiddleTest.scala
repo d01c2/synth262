@@ -491,7 +491,7 @@ class CoverageMiddleTest extends SolverTest {
         summaryFile.println(s"\n  [non-entry] ${nonEntryAONames.size}")
         nonEntryAONames.foreach(name => summaryFile.println(s"    $name"))
       } finally summaryFile.close()
-      
+
       // -------------------------------------------------------------------------
       // XXX: remove later
       // -------------------------------------------------------------------------
