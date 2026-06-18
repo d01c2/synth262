@@ -1,13 +1,14 @@
 package esmeta.solver
 
-import esmeta.{ESMetaTest, SOLVER_LOG_DIR}
-import esmeta.util.SystemUtils.{mkdir, getPrintWriter}
+import esmeta.{ESMetaTest, SOLVER_LOG_DIR, BASE_DIR}
+import esmeta.util.SystemUtils.{mkdir, getPrintWriter, readJson, exists}
 import esmeta.cfg.{Branch, CFG, Call, Func}
 import esmeta.es.util.Coverage
 import esmeta.es.util.Coverage.Cond
 import esmeta.ty.ValueTy
 import esmeta.ir.{EBool, EClo, ICall}
 import esmeta.phase.Solve
+import io.circe.*, io.circe.generic.semiauto.*
 import scala.collection.mutable.{Set => MSet, Queue}
 import scala.concurrent.{Future, Await, ExecutionContext}
 import scala.concurrent.duration.Duration
@@ -24,6 +25,32 @@ class CoverageMiddleTest extends SolverTest {
   val name = "solverCovTest"
 
   lazy val cfg = ESMetaTest.cfg
+
+  // -------------------------------------------------------------------------
+  // XXX: remove later
+  // -------------------------------------------------------------------------
+  private case class ExpectedEntry(branch: Int, side: String, js: String)
+  private case class ExpectedData(
+    fingerprint: String,
+    expected: List[ExpectedEntry],
+  )
+  private given Decoder[ExpectedEntry] = deriveDecoder
+  private given Decoder[ExpectedData] = deriveDecoder
+
+  private lazy val expectedInjection: Map[(Int, Boolean), String] =
+    val file = s"$BASE_DIR/src/test/resources/expected.json"
+    if (!exists(file)) Map.empty
+    else
+      val data = readJson[ExpectedData](file)
+      if (data.fingerprint != cfg.fingerprint)
+        println(
+          "  [WARN] expected.json fingerprint mismatch with current CFG; " +
+          "branch ids may be stale " +
+          s"(json ${data.fingerprint.take(12)}..., " +
+          s"cfg ${cfg.fingerprint.take(12)}...)",
+        )
+      data.expected.map(e => (e.branch, e.side == "T") -> e.js).toMap
+  // -------------------------------------------------------------------------
 
   /** coverage-style branch filter: exclude compiler boilerplate */
   private def isTargetBranch(b: Branch): Boolean =
@@ -164,6 +191,13 @@ class CoverageMiddleTest extends SolverTest {
         )
         out(s"    cfg: ${r.targetCfg}")
         r.js.foreach(js => out(s"    js:  $js"))
+        // -------------------------------------------------------------------------
+        // XXX: remove later
+        // -------------------------------------------------------------------------
+        expectedInjection
+          .get((r.bid, r.side))
+          .foreach(js => out(s"    expected: $js"))
+        // -------------------------------------------------------------------------
         r.conds.foreach(ps =>
           val ss = ps.map(c => s"${c.branch.id}:${sideString(c.cond)}")
           out(s"    conds: [${ss.size}] ${ss.mkString(" <- ")}"),
@@ -457,6 +491,21 @@ class CoverageMiddleTest extends SolverTest {
         summaryFile.println(s"\n  [non-entry] ${nonEntryAONames.size}")
         nonEntryAONames.foreach(name => summaryFile.println(s"    $name"))
       } finally summaryFile.close()
+      
+      // -------------------------------------------------------------------------
+      // XXX: remove later
+      // -------------------------------------------------------------------------
+      val dumpFile = getPrintWriter(s"$SOLVER_LOG_DIR/fail-verify-todo")
+      try
+        missedResults
+          .filter(r => expectedInjection.contains((r.bid, r.side)))
+          .sortBy(r => (r.conds.map(_.size).getOrElse(0), r.bid))
+          .foreach { r =>
+            dumpCase(s => dumpFile.println(s), r)
+            dumpFile.println()
+          }
+      finally dumpFile.close()
+      // -------------------------------------------------------------------------
       println(s"dumped to $SOLVER_LOG_DIR/")
 
       assert(solved > 0)
