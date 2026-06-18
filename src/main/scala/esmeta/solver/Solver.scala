@@ -150,6 +150,7 @@ object Solver {
   private val defaults: List[(ValueTy, String)] = List(
     // generic kinds first
     SymbolT -> "Symbol()",
+    ConstructorT -> "function() {}",
     FunctionT -> "() => {}",
     ArrayT -> "[]",
     // exotic typed records
