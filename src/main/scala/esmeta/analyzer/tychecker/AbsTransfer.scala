@@ -886,7 +886,11 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             } yield dty -> newConstr).toMap
             TypeGuard(guard)
           }
-        case EBinary(BOp.Eq, e, EBool(true)) => getTypeGuard(e)
+        case EBinary(BOp.Eq, e, EBool(true)) =>
+          for {
+            v <- transfer(e)
+            given AbsState <- get
+          } yield v.guard
         case EBinary(BOp.Eq, e, EBool(false)) =>
           getTypeGuard(EUnary(UOp.Not, e))
         case EBinary(BOp.Eq, ERef(ref), r) =>
