@@ -143,24 +143,30 @@ object Solver {
     if (ty.isBottom) None
     else if (ty == ObjectT) Some("{}")
     else
-      defaults.collectFirst {
-        case (tyCase, js) if !(ty && tyCase).isBottom => js
-      }
+      defaults
+        .collectFirst { case (tyCase, js) if tyCase ⊑ ty => js }
+        .orElse(defaults.collectFirst {
+          case (tyCase, js) if !(ty && tyCase).isBottom => js
+        })
 
   private val defaults: List[(ValueTy, String)] = List(
-    // generic kinds first
     SymbolT -> "Symbol()",
     ConstructorT -> "function() {}",
     FunctionT -> "() => {}",
+    RecordT("ProxyExoticObject") -> "new Proxy({}, {})",
+    RecordT("BoundFunctionExoticObject") -> "(function(){}).bind()",
+    RecordT("BuiltinFunctionObject") -> "Math.max",
     ArrayT -> "[]",
-    // exotic typed records
-    RecordT("TypedArray") -> "new Int8Array()",
+    TypedArrayT -> "new Int8Array()",
+    RecordT("BigInt64Array") -> "new BigInt64Array()",
+    RecordT("BigUint64Array") -> "new BigUint64Array()",
     RecordT("ArrayIteratorInstance") -> "[][Symbol.iterator]()",
-    RecordT("RegExp") -> "/./",
+    RegExpT -> "/./",
     RecordT("BooleanObject") -> "Object(true)",
     RecordT("NumberObject") -> "Object(0)",
-    RecordT("BigIntObject") -> "Object(0n)",
     RecordT("StringExoticObject") -> "Object('')",
+    RecordT("SymbolObject") -> "Object(Symbol())",
+    RecordT("BigIntObject") -> "Object(0n)",
     RecordT("Map") -> "new Map()",
     RecordT("Set") -> "new Set()",
     RecordT("WeakMap") -> "new WeakMap()",
@@ -175,8 +181,7 @@ object Solver {
     RecordT("AsyncGenerator") -> "(async function*(){})()",
     RecordT("WeakRef") -> "new WeakRef({})",
     RecordT("FinalizationRegistry") -> "new FinalizationRegistry(() => {})",
-    RecordT("ProxyExoticObject") -> "new Proxy({}, {})",
-    // TODO: add more defaults (e.g. pending promise, ...)
+    RecordT("ArgumentsExoticObject") -> "(function(){ return arguments; })()",
     ObjectT -> "{}",
   )
 }
