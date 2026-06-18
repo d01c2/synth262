@@ -18,7 +18,7 @@ trait TypeGuardDecl { self: TyChecker =>
     def dtys: Set[DemandType] = map.keySet
     def get(dty: DemandType): Option[MayMust] = map.get(dty)
 
-    def apply(dty: DemandType): MayMust = map.getOrElse(dty, MayMust.Top)
+    def apply(dty: DemandType): MayMust = map.getOrElse(dty, MayMust.Must)
 
     def bases: Set[Base] = map.values.flatMap(_.bases).toSet
 
@@ -68,13 +68,13 @@ trait TypeGuardDecl { self: TyChecker =>
     } yield dty -> mayMust).toMap)
 
     def evaluate(lty: ValueTy, rty: ValueTy): MayMust =
-      if ((lty && rty).isBottom) MayMust.Top
+      if ((lty && rty).isBottom) MayMust.Must
       else {
         val mayMusts = for {
           (dty, mayMust) <- map
           if rty <= dty.ty
         } yield mayMust
-        if (mayMusts.isEmpty) MayMust.Top
+        if (mayMusts.isEmpty) MayMust.Must
         else mayMusts.reduce(_ && _)
       }
 
@@ -275,7 +275,8 @@ trait TypeGuardDecl { self: TyChecker =>
   }
   object MayMust {
     val Bot: MayMust = MayMust(TypeConstr.Bot, TypeConstr.Bot)
-    val Top: MayMust = MayMust(TypeConstr.Top, TypeConstr.Top)
+    val Must: MayMust = MayMust(TypeConstr.Top, TypeConstr.Top)
+    val May: MayMust = MayMust(TypeConstr.Top, TypeConstr.Bot)
   }
 
   /** symbolic expressions */
@@ -378,7 +379,7 @@ trait TypeGuardDecl { self: TyChecker =>
   given Rule[TypeConstr] = (app, constr) =>
     import TypeConstr.*
     import SymTy.given
-    given Rule[Map[Base, MayMust]] = sortedMapRule(sep = ": ")
+    given Rule[Map[Base, ValueTy]] = sortedMapRule(sep = ": ")
     constr match
       case Bot => app >> "⊥"
       case Elem(map) =>

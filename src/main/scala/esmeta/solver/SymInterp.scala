@@ -177,6 +177,8 @@ class SymInterp(
     } yield {
       _configs = Nil
       var retV = AbsValue.Bot
+      var retMay = TypeConstr.Bot
+      var retMust = TypeConstr.Top
       fty.clo match
         case CloTopTy           => retV ⊔= AbsValue(AnyT)
         case CloArrowTy(_, ret) => retV ⊔= AbsValue(ret)
@@ -184,18 +186,23 @@ class SymInterp(
           for {
             fname <- names
             f <- cfg.fnameMap.get(fname)
-            v = pushCall(callerNp, f, st, vs, x, next)
-          } retV ⊔= v
+            (v, MayMust(may, must)) = pushCall(callerNp, f, st, vs, x, next)
+          } { retV ⊔= v; retMay ||= may; retMust &&= must }
       fty.cont match
         case Inf => retV ⊔= AbsValue(AnyT)
         case Fin(fids) =>
           for {
             fid <- fty.cont.toIterable(stop = false)
             f <- cfg.funcMap.get(fid)
-            v = pushCall(callerNp, f, st, vs, x, next)
-          } retV ⊔= v
+            (v, MayMust(may, must)) = pushCall(callerNp, f, st, vs, x, next)
+          } { retV ⊔= v; retMay ||= may; retMust &&= must }
       if (!retV.isBottom)
-        push(wrap.copy(state = st.define(x, retV), node = next))
+        push(
+          wrap.copy(
+            state = st.define(x, retV).copy(mayMust = MayMust(retMay, retMust)),
+            node = next,
+          ),
+        )
       push(_configs)
     })(st)
   }
@@ -208,7 +215,7 @@ class SymInterp(
     vs: List[AbsValue],
     x: Local,
     next: Node,
-  ): AbsValue = {
+  ): (AbsValue, MayMust) = {
     given NodePoint[Call] = callerNp
     given AbsState = callerSt
     val call = callerNp.node
@@ -217,7 +224,7 @@ class SymInterp(
       refiner <- transfer.manualRefiners.get(callee.name)
       v = refiner(callee, vs, retTy, callerSt)
       newV = instantiate(v, vs, callerNp, callerSt)
-    } yield newV).getOrElse {
+    } yield (newV, MayMust.May)).getOrElse {
       val rp = ReturnPoint(callee, emptyView)
       val ret = getResult(rp)
       val AbsRet(_, noSym, syms) = ret
@@ -230,7 +237,11 @@ class SymInterp(
           node = next,
         )
       }
-      instantiate(noSym, vs, callerNp, callerSt)
+      val (v, mayMust) = noSym
+      (
+        instantiate(v, vs, callerNp, callerSt),
+        instantiate(mayMust, vs, callerNp, callerSt),
+      )
     }
   }
 
@@ -297,7 +308,7 @@ class SymInterp(
         ) ++ (for ((p, i) <- ps if p.kind != Variadic) yield {
           i -> ESValueT
         })
-        AbsState(true, locals, symEnv, MayMust.Top)
+        AbsState(true, locals, symEnv, MayMust.Must)
       case _ => AbsState.Bot
     }
   }

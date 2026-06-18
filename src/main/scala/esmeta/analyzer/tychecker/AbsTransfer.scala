@@ -246,7 +246,10 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             calleeNp = NodePoint(callee, callee.entry, calleeView)
           } {
             // add callee to worklist
-            analyzer += calleeNp -> calleeSt
+            analyzer += calleeNp -> (
+              if (callee.isMethod) calleeSt.dropMust
+              else calleeSt
+            )
             // add return edges from callee to caller
             val rp = ReturnPoint(callee, calleeNp.view)
             val set = retEdges.getOrElse(rp, Set())
@@ -499,16 +502,15 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             AbsValue(STy(givenTy && expectedTy), givenV.guard)
       // no propagation if the return value is bottom
       if (!newV.isBottom)
-        val AbsRet(oldV, noSym, syms) = getResult(rp)
+        val AbsRet(oldV, noSym @ (noSymV, noSymMayMust), syms) = getResult(rp)
         if (!oldV.isBottom && useRepl) Repl.merged = true
         if ((newV !⊑ oldV)(using entrySt)) {
           val mayMust = givenSt.mayMust.onlySym
           val hasSym = v.symty.hasSym
           val newRet = AbsRet(
             oldV ⊔ newV,
-            if (hasSym) noSym else noSym ⊔ newV,
-            if (hasSym)
-              syms + (np -> (v.onlySym(using givenSt), mayMust))
+            if (hasSym) noSym else (noSymV ⊔ newV, noSymMayMust || mayMust),
+            if (hasSym) syms + (np -> (v.onlySym(using givenSt), mayMust))
             else syms - np,
           )
           rpMap += rp -> newRet
@@ -765,7 +767,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
       expr match {
         case EBool(bool) =>
           val dty = if (bool) DemandType(TrueT) else DemandType(FalseT)
-          get(st => TypeGuard(Map(dty -> MayMust.Top.lift(using st))))
+          get(st => TypeGuard(Map(dty -> MayMust.Must.lift(using st))))
         case ERecord(tname @ "CompletionRecord", fields) =>
           for {
             pairs <- join(fields.map {
@@ -1003,13 +1005,13 @@ trait AbsTransferDecl { analyzer: TyChecker =>
                 if (thenTy.isBottom) bools -= true
                 else
                   toBase(ref -> thenTy).map { pair =>
-                    guard += DemandType(TrueT) -> TypeConstr(pair).toMay.lift
+                    guard += DemandType(TrueT) -> TypeConstr(pair).toMust.lift
                   }
               if (lty != elseTy)
                 if (elseTy.isBottom) bools -= false
                 else
                   toBase(ref -> elseTy).map { pair =>
-                    guard += DemandType(FalseT) -> TypeConstr(pair).toMay.lift
+                    guard += DemandType(FalseT) -> TypeConstr(pair).toMust.lift
                   }
             }
             TypeGuard(guard)
@@ -1092,7 +1094,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             get(st => {
               TypeGuard(
                 Map(
-                  DemandType(EnumT(name)) -> MayMust.Top.lift(using st),
+                  DemandType(EnumT(name)) -> MayMust.Must.lift(using st),
                 ),
               )
             })
@@ -1308,7 +1310,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
       call: Call,
       mayMust: MayMust,
       map: Map[Sym, AbsValue],
-    )(using st: AbsState): MayMust = mayMust.map(instantiate(call, _, map))
+    )(using st: AbsState): MayMust = mayMust.map(instantiate(call, _, map)).lift
 
     /** instantiation of may/must type constraint */
     def instantiate(
@@ -1538,12 +1540,8 @@ trait AbsTransferDecl { analyzer: TyChecker =>
     )(using st: AbsState): Option[(Base, ValueTy)] = {
       val (ref, givenTy) = pair
       ref match
-        case v @ SVar(x) =>
-          val ty = v.ty
-          if (ty <= givenTy) None else Some(x -> givenTy)
-        case v @ SSym(s) =>
-          val ty = st.get(s)
-          if (ty <= givenTy) None else Some(s -> givenTy)
+        case v @ SVar(x) => Some(x -> givenTy)
+        case v @ SSym(s) => Some(s -> givenTy)
         case SField(base, STy(x)) if x <= StrT && x.isSingle =>
           val bty = base.ty
           val field = x.str.getSingle match

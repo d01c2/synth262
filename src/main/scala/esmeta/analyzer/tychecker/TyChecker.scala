@@ -325,8 +325,9 @@ class TyChecker(
         if (useSyntacticKill) (x -> AbsValue(STy(value.ty)), sym -> ValueTy.Bot)
         else (x -> AbsValue(SSym(sym)), sym -> value.ty)
       }).unzip
-      AbsState(true, newLocals.toMap, symEnv.toMap, MayMust.Top)
-    } else AbsState(true, locals.toMap, Map(), MayMust.Top)
+      val mayMust = if (callee.isMethod) MayMust.May else MayMust.Must
+      AbsState(true, newLocals.toMap, symEnv.toMap, mayMust)
+    } else AbsState(true, locals.toMap, Map(), MayMust.Must)
 
   /** get initial abstract states in each node point */
   private def getInitNpMap(

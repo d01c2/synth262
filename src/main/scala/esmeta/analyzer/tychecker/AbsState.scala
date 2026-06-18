@@ -142,6 +142,8 @@ trait AbsStateDecl { self: TyChecker =>
       mayMust.must.get(sym) && get(sym),
     )
 
+    def dropMust: AbsState = copy(mayMust = mayMust.dropMust)
+
     /** getter for symbolic expressions */
     def getTy(expr: SymExpr): ValueTy = {
       import SymExpr.*
@@ -342,11 +344,11 @@ trait AbsStateDecl { self: TyChecker =>
 
     /** bottom element */
     lazy val Bot: AbsState =
-      AbsState(false, Map(), Map(), MayMust.Top)
+      AbsState(false, Map(), Map(), MayMust.Must)
 
     /** empty element */
     lazy val Empty: AbsState =
-      AbsState(true, Map(), Map(), MayMust.Top)
+      AbsState(true, Map(), Map(), MayMust.Must)
 
     /** appender */
     given rule: Rule[AbsState] = mkRule(true)
