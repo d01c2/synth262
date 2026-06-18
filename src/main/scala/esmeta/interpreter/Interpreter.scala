@@ -339,7 +339,7 @@ class Interpreter(
     case EKeys(map, intSorted) => st.keys(eval(map).asAddr, intSorted)
     case EMath(n)              => Math(n)
     case EInfinity(pos)        => Infinity(pos)
-    case ENumber(n) if n.isNaN => Number(Double.NaN)
+    case ENumber(n) if n.isNaN => Number.NaN
     case ENumber(n)            => Number(n)
     case EBigInt(n)            => BigInt(n)
     case EStr(str)             => Str(str)

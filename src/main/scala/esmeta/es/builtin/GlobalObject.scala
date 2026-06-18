@@ -26,8 +26,8 @@ case class GlobalObject(cfg: CFG) {
     var nmap = List(
       // NOTE: globalThis is added in SetDefaultGlobalBindings
       Str("print") -> DataDesc(intrAddr("print"), T, F, T),
-      Str("Infinity") -> DataDesc(Number(Double.PositiveInfinity), F, F, F),
-      Str("NaN") -> DataDesc(Number(Double.NaN), F, F, F),
+      Str("Infinity") -> DataDesc(Number.Inf, F, F, F),
+      Str("NaN") -> DataDesc(Number.NaN, F, F, F),
       Str("undefined") -> DataDesc(Undef, F, F, F),
       // test262
       Str("$262") -> DataDesc(intrAddr("$262"), T, F, T),

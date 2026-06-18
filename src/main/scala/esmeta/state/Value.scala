@@ -142,6 +142,11 @@ sealed trait Numeric extends SimpleValue:
     case BigInt(bigInt) => Math(bigInt)
 case class Number(double: Double) extends Numeric with DoubleEquals {
   def isNaN: Boolean = double.isNaN
+  def unary_- : Number = Number(-double)
+}
+object Number {
+  val NaN: Number = Number(Double.NaN)
+  val Inf: Number = Number(Double.PositiveInfinity)
 }
 case class BigInt(bigInt: scala.math.BigInt) extends Numeric
 

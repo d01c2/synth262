@@ -41,13 +41,12 @@ trait Solver { self: SymInterp =>
 
   // get a JavaScript expression representing the value type
   def getJSExpr(ty: ValueTy): Option[String] =
-    import Double.*
     if (ty.number.contains(Number(0))) Some("0")
     else if (ty.number.contains(Number(-1))) Some("-1")
     else if (ty.number.contains(Number(1))) Some("1")
-    else if (ty.number.contains(Number(NaN))) Some("NaN")
-    else if (ty.number.contains(Number(PositiveInfinity))) Some("Infinity")
-    else if (ty.number.contains(Number(NegativeInfinity))) Some("-Infinity")
+    else if (ty.number.contains(Number.NaN)) Some("NaN")
+    else if (ty.number.contains(Number.Inf)) Some("Infinity")
+    else if (ty.number.contains(-Number.Inf)) Some("-Infinity")
     else if (!ty.undef.isBottom) Some("undefined")
     else if (!ty.nullv.isBottom) Some("null")
     else if (ty.str.contains("")) Some("\"\"")

@@ -286,7 +286,8 @@ class Stringifier(
     ty.canon match
       case t if t.isTop                 => app >> "Number"
       case t if t == NumberTy.NaN.canon => app >> "NaN"
-      // case ty if ty.isBottom => app >> "Number[Bot]"
+      case NumberSignTy(sign, false) if sign.isTop =>
+        app >> "(Number \\ NaN)"
       case NumberSignTy(sign, hasNaN) =>
         app >> "Number" >> sign
         app >> (if (hasNaN) " | NaN" else "")

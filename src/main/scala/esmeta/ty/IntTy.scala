@@ -183,9 +183,9 @@ sealed trait IntTy extends TyElem with Lattice[IntTy] {
         else Many
 
   def canon: IntTy = this match
-    case s @ IntSetTy(set)              => s
-    case IntSignTy(sign) if sign.isZero => IntSetTy(Set(0))
-    case IntSignTy(_)                   => this
+    case IntSignTy(sign) if sign.isZero   => IntSetTy(Set(0))
+    case IntSignTy(sign) if sign.isBottom => IntSetTy(Set())
+    case _                                => this
 
   def toMathSet: Option[Set[Math]] = this.canon match
     case IntSetTy(set) => Some(set.map(Math(_)))
