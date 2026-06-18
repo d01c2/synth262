@@ -55,11 +55,7 @@ trait Solver { self: SymInterp =>
     else if (ty.bool.contains(true)) Some("true")
     else if (ty.bigInt.contains(BigInt(0))) Some("0n")
     else if (ty.bigInt.contains(BigInt(1))) Some("1n")
-    else if (!(ty && SymbolT).isBottom) Some("Symbol()")
-    else if (!(ty && FunctionT).isBottom) Some("() => {}")
-    else if (!(ty && ArrayT).isBottom) Some("[]")
-    else if (!(ty && ObjectT).isBottom) Some("{}")
-    else None
+    else Solver.defaultFor(ty)
 
   def getPath(func: Func): Option[BuiltinPath] = func.head match {
     case Some(h: BuiltinHead) => Some(h.path)
@@ -141,5 +137,45 @@ object Solver {
     "RegExpStringIteratorPrototype" -> """Object.getPrototypeOf(RegExp.prototype[Symbol.matchAll](""))""",
     "WrapForValidIteratorPrototype" -> "Object.getPrototypeOf(Iterator.from({ [Symbol.iterator](){ return {}; } }))",
     "ThrowTypeError" -> """(function() { "use strict"; return Object.getOwnPropertyDescriptor(arguments, "callee").get })()""",
+  )
+
+  def defaultFor(ty: ValueTy): Option[String] =
+    if (ty.isBottom) None
+    else if (ty == ObjectT) Some("{}")
+    else
+      defaults.collectFirst {
+        case (tyCase, js) if !(ty && tyCase).isBottom => js
+      }
+
+  private val defaults: List[(ValueTy, String)] = List(
+    // generic kinds first
+    SymbolT -> "Symbol()",
+    FunctionT -> "() => {}",
+    ArrayT -> "[]",
+    // exotic typed records
+    RecordT("TypedArray") -> "new Int8Array()",
+    RecordT("ArrayIteratorInstance") -> "[][Symbol.iterator]()",
+    RecordT("RegExp") -> "/./",
+    RecordT("BooleanObject") -> "Object(true)",
+    RecordT("NumberObject") -> "Object(0)",
+    RecordT("BigIntObject") -> "Object(0n)",
+    RecordT("StringExoticObject") -> "Object('')",
+    RecordT("Map") -> "new Map()",
+    RecordT("Set") -> "new Set()",
+    RecordT("WeakMap") -> "new WeakMap()",
+    RecordT("WeakSet") -> "new WeakSet()",
+    RecordT("ArrayBuffer") -> "new ArrayBuffer(0)",
+    RecordT("SharedArrayBuffer") -> "new SharedArrayBuffer(0)",
+    RecordT("DataView") -> "new DataView(new ArrayBuffer(0))",
+    RecordT("Date") -> "new Date()",
+    RecordT("Promise") -> "new Promise(() => {})",
+    RecordT("ErrorObject") -> "new Error()",
+    RecordT("Generator") -> "(function*(){})()",
+    RecordT("AsyncGenerator") -> "(async function*(){})()",
+    RecordT("WeakRef") -> "new WeakRef({})",
+    RecordT("FinalizationRegistry") -> "new FinalizationRegistry(() => {})",
+    RecordT("ProxyExoticObject") -> "new Proxy({}, {})",
+    // TODO: add more defaults (e.g. pending promise, ...)
+    ObjectT -> "{}",
   )
 }
