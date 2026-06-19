@@ -304,7 +304,7 @@ class SymInterp(
         val symEnv = Map(
           SThis.sym -> ESValueT,
           SArgs.sym -> ListT(ESValueT),
-          SNewTarget.sym -> ESValueT,
+          SNewTarget.sym -> (ConstructorT || UndefT),
         ) ++ (for ((p, i) <- ps if p.kind != Variadic) yield {
           i -> ESValueT
         })
