@@ -12,13 +12,13 @@ import esmeta.util.SystemUtils.exists
 trait TypeGuardDecl { self: TyChecker =>
 
   /** type guard */
-  case class TypeGuard(map: Map[DemandType, MayMust] = Map()) {
+  case class TypeGuard(map: Map[TargetType, MayMust] = Map()) {
     def isEmpty: Boolean = map.isEmpty
     def nonEmpty: Boolean = !isEmpty
-    def dtys: Set[DemandType] = map.keySet
-    def get(dty: DemandType): Option[MayMust] = map.get(dty)
+    def dtys: Set[TargetType] = map.keySet
+    def get(dty: TargetType): Option[MayMust] = map.get(dty)
 
-    def apply(dty: DemandType): MayMust = map.getOrElse(dty, MayMust.Must)
+    def apply(dty: TargetType): MayMust = map.getOrElse(dty, MayMust.Must)
 
     def bases: Set[Base] = map.values.flatMap(_.bases).toSet
 
@@ -29,11 +29,11 @@ trait TypeGuardDecl { self: TyChecker =>
     } yield dty -> newMayMust)
 
     def filter(ty: ValueTy): TypeGuard =
-      TypeGuard(map.filter { (dty, _) => !(dty.ty && ty).isBottom })
+      TypeGuard(map.filter { (dty, _) => dty.ty overlap ty })
 
     def lift(ty: ValueTy = ValueTy.Top)(using st: AbsState): TypeGuard =
       this && TypeGuard((for {
-        kind <- DemandType.from(ty).toList
+        kind <- TargetType.from(ty).toList
         mayMust = st.mayMust
         if !mayMust.isTop
       } yield kind -> mayMust).toMap)
@@ -49,15 +49,15 @@ trait TypeGuardDecl { self: TyChecker =>
     def ||(that: TypeGuard)(lty: ValueTy, rty: ValueTy): TypeGuard =
       val (ldtys, rdtys) = (this.dtys, that.dtys)
       val dtys =
-        ldtys.filter(k => (k.ty && rty).isBottom || rdtys.contains(k)) ++
-        rdtys.filter(k => (k.ty && lty).isBottom || ldtys.contains(k))
+        ldtys.filter(k => (k.ty distinct rty) || rdtys.contains(k)) ++
+        rdtys.filter(k => (k.ty distinct lty) || ldtys.contains(k))
       TypeGuard((for {
         dty <- dtys.toList
         ty = lty || rty
         mayMust = (this.evaluate(ty, dty.ty), that.evaluate(ty, dty.ty)) match
-          case (l, r) if (lty && dty.ty).isBottom => r
-          case (l, r) if (rty && dty.ty).isBottom => l
-          case (l, r)                             => l || r
+          case (l, r) if (lty distinct dty.ty) => r
+          case (l, r) if (rty distinct dty.ty) => l
+          case (l, r)                          => l || r
         if !mayMust.isTop
       } yield dty -> mayMust).toMap)
 
@@ -68,7 +68,7 @@ trait TypeGuardDecl { self: TyChecker =>
     } yield dty -> mayMust).toMap)
 
     def evaluate(lty: ValueTy, rty: ValueTy): MayMust =
-      if ((lty && rty).isBottom) MayMust.Must
+      if (lty distinct rty) MayMust.Must
       else {
         val mayMusts = for {
           (dty, mayMust) <- map
@@ -99,27 +99,14 @@ trait TypeGuardDecl { self: TyChecker =>
   }
   object TypeGuard {
     val Empty: TypeGuard = TypeGuard()
-    def apply(ps: (DemandType, MayMust)*): TypeGuard = TypeGuard(
+    def apply(ps: (TargetType, MayMust)*): TypeGuard = TypeGuard(
       ps.toMap,
     )
   }
 
-  /** type refinement target */
-  enum RefinementTarget:
-    case BranchTarget(branch: Branch, isTrue: Boolean)
-    case AssertTarget(block: Block, idx: Int)
-    case NodeTarget(nd: Node)
-    def node: Node = this match
-      case BranchTarget(branch, _) => branch
-      case AssertTarget(block, _)  => block
-      case NodeTarget(nd)          => nd
-    def func: Func = cfg.funcOf(node)
+  case class TargetType(ty: ValueTy)
 
-  case class DemandType(private val _ty: ValueTy) {
-    def ty: ValueTy = _ty
-  }
-
-  object DemandType {
+  object TargetType {
     val set: Set[ValueTy] = Set(
       TrueT,
       FalseT,
@@ -131,17 +118,16 @@ trait TypeGuardDecl { self: TyChecker =>
       ENUMT_ASYNC,
     )
 
-    def apply(ty: ValueTy): DemandType =
-      if (DemandType.set.contains(ty)) new DemandType(ty)
+    def apply(ty: ValueTy): TargetType =
+      if (TargetType.set.contains(ty)) new TargetType(ty)
       else {
-        Thread.dumpStack()
-        throw notSupported(s"Unsupported DemandType: $ty")
+        throw notSupported(s"Unsupported TargetType: $ty")
       }
 
-    def from(givenTy: ValueTy): Set[DemandType] =
-      DemandType.set
-        .filter(ty => !(givenTy && ty).isBottom)
-        .map(DemandType(_))
+    def from(givenTy: ValueTy): Set[TargetType] =
+      TargetType.set
+        .filter(givenTy overlap _)
+        .map(TargetType(_))
   }
 
   /** type constraints */
@@ -367,9 +353,9 @@ trait TypeGuardDecl { self: TyChecker =>
 
   /** TypeGuard */
   given Rule[TypeGuard] = (app, guard) =>
-    given Ordering[DemandType] = Ordering.by(_.toString)
-    given Rule[DemandType] = (app, dty) => app >> dty.ty
-    given Rule[Map[DemandType, TypeConstr]] =
+    given Ordering[TargetType] = Ordering.by(_.toString)
+    given Rule[TargetType] = (app, dty) => app >> dty.ty
+    given Rule[Map[TargetType, TypeConstr]] =
       sortedMapRule("{", "}", " => ")
     app >> guard.simple.map
 
@@ -391,24 +377,4 @@ trait TypeGuardDecl { self: TyChecker =>
     if (mayMust.may != mayMust.must)
       app >> " (MUST: " >> mayMust.must >> ")"
     app
-
-  /** RefinementTarget */
-  given Rule[RefinementTarget] = (app, target) =>
-    import RefinementTarget.*
-    val node = target.node
-    val func = target.func
-    app >> func.nameWithId >> ":" >> node.name >> ":"
-    target match
-      case BranchTarget(branch, isTrue) =>
-        app >> (if (isTrue) "T" else "F")
-      case AssertTarget(block, idx) =>
-        app >> idx
-      case NodeTarget(nd) => app
-  given Ordering[RefinementTarget] = Ordering.by { target =>
-    import RefinementTarget.*
-    target match
-      case BranchTarget(branch, isTrue) => (branch.id, if (isTrue) 1 else 0)
-      case AssertTarget(block, idx)     => (block.id, idx)
-      case NodeTarget(nd)               => (nd.id, 0)
-  }
 }

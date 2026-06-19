@@ -23,10 +23,7 @@ trait AbsStateDecl { self: TyChecker =>
     given AbsState = this
 
     /** bottom check */
-    def isBottom: Boolean = !reachable
-
-    /** bottom inclusion check */
-    def hasBottom: Boolean = locals.values.exists(_.isBottom)
+    def isBottom: Boolean = !reachable || locals.values.exists(_.isBottom)
 
     /** partial order */
     def ⊑(that: AbsState): Boolean = (this, that) match
@@ -252,14 +249,14 @@ trait AbsStateDecl { self: TyChecker =>
       guard: TypeGuard,
       field: AbsValue,
     )(using AbsState): TypeGuard = {
-      import DemandType.*
+      import TargetType.*
       field.ty.str.getSingle match
         case One("Value") =>
           TypeGuard(guard.map.collect {
-            case (DemandType(ty), map) if ty == NormalT(TrueT) =>
-              DemandType(TrueT) -> map
-            case (DemandType(ty), map) if ty == NormalT(FalseT) =>
-              DemandType(FalseT) -> map
+            case (TargetType(ty), map) if ty == NormalT(TrueT) =>
+              TargetType(TrueT) -> map
+            case (TargetType(ty), map) if ty == NormalT(FalseT) =>
+              TargetType(FalseT) -> map
           })
         case _ => TypeGuard.Empty
     }

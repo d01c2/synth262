@@ -181,7 +181,7 @@ object Solver {
       defaults
         .collectFirst { case (tyCase, js) if tyCase ⊑ ty => js }
         .orElse(defaults.collectFirst {
-          case (tyCase, js) if !(ty && tyCase).isBottom => js
+          case (tyCase, js) if ty overlap tyCase => js
         })
 
   private def isBasePlainObject(ty: ValueTy): Boolean = ty.record match

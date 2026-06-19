@@ -136,6 +136,9 @@ sealed trait ValueTy extends Ty with Lattice[ValueTy] {
         this.nullv && that.nullv,
       )
 
+  inline def overlap(that: ValueTy): Boolean = !(this distinct that)
+  inline def distinct(that: ValueTy): Boolean = (this && that).isBottom
+
   /** prune type */
   def --(that: => ValueTy): ValueTy =
     if (this eq that) Bot
@@ -186,6 +189,11 @@ sealed trait ValueTy extends Ty with Lattice[ValueTy] {
     case Bool(b)                         => bool contains b
     case Undef                           => undef
     case Null                            => nullv
+
+  def contains(d: Double): Boolean = number.contains(Number(d))
+  def continas(i: scala.BigInt): Boolean = bigInt.contains(i)
+  def contains(s: String): Boolean = str.contains(s)
+  def contains(b: Boolean): Boolean = bool.contains(b)
 
   /** copy value type */
   def copied(

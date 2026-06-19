@@ -107,11 +107,6 @@ class TyChecker(
           ),
           "guards" -> typeGuards.size,
         )
-        if (detail)
-          info :+= "refined" -> Map(
-            "targets" -> refinedTargets,
-            "locals" -> refinedLocals,
-          )
         Yaml(info*)
       },
       filename = s"$ANALYZE_LOG_DIR/summary.yml",
@@ -151,8 +146,6 @@ class TyChecker(
         this.analyzedNodes.size, // analyzed nodes
         cfg.nodes.size, // total nodes
         typeGuards.size, // guards
-        if (detail) refinedTargets else 0, // refined targets
-        if (detail) refinedLocals else 0, // refined locals
       ).mkString("\t"),
       filename = s"$ANALYZE_LOG_DIR/summary",
       silent = silent,
@@ -208,12 +201,6 @@ class TyChecker(
         silent = silent,
       )
       dumpFile(
-        name = "refined targets",
-        data = refinedString,
-        filename = s"$ANALYZE_LOG_DIR/refined",
-        silent = silent,
-      )
-      dumpFile(
         name = "type guard information",
         data = typeGuards
           .sortBy { case (f, _) => f.id }
@@ -223,21 +210,6 @@ class TyChecker(
         silent = silent,
       )
   }
-
-  /** refined targets */
-  var refined: Map[RefinementTarget, Set[Local]] = Map()
-  def refinedTargets: Int = refined.size
-  def refinedLocals: Int = refined.values.map(_.size).sum
-  def refinedString: String =
-    given Rule[Map[RefinementTarget, Set[Local]]] =
-      (app, refined) =>
-        val sorted = refined.toList.sortBy { (t, _) => t }
-        for ((target, xs) <- sorted)
-          app >> target >> " -> "
-          app >> xs.toList.sorted.mkString("[locals: ", ", ", "]")
-          app >> LINE_SEP
-        app
-    (new Appender >> refined).toString
 
   /** inferred type guards */
   def getTypeGuards: List[(Func, AbsValue)] =
@@ -283,7 +255,7 @@ class TyChecker(
     val (np, newSt) = pair
     val oldSt = getResult(np)
     if (!oldSt.isBottom && useRepl) Repl.merged = true
-    if (!newSt.hasBottom && !(newSt ⊑ oldSt))
+    if (!newSt.isBottom && !(newSt ⊑ oldSt))
       npMap += np -> (oldSt ⊔ newSt)
       worklist += np
 

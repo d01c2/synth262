@@ -151,7 +151,6 @@ class SymInterp(
           throw Found(wrap)
         else unwrap(pop)
       case branch @ Branch(_, kind, cond, _, thenNode, elseNode, _) =>
-        import RefinementTarget.*
         // already visited this loop, skip it
         if (loops.contains(branch)) unwrap(pop)
         else {
@@ -160,8 +159,7 @@ class SymInterp(
           (for { v <- transfer.transfer(cond); newSt <- get } yield {
             def aux(to: Node, taken: Boolean): Config =
               val b = BoolT(taken)
-              val target = Some(BranchTarget(branch, taken))
-              val takenSt = transfer.refine(cond, v, b, target)(st)
+              val takenSt = transfer.refine(v, b)(st)
               wrap.copy(node = to, state = takenSt).push(Cond(branch, taken))
             (thenNode, elseNode) match
               case (Some(t), Some(e)) =>
@@ -265,7 +263,6 @@ class SymInterp(
     callerNp: NodePoint[Call],
     callerSt: AbsState,
   ): AbsValue =
-    import DemandType.*
     given AbsState = callerSt
     val call = callerNp.node
     val map = vs.zipWithIndex.map {
@@ -345,13 +342,11 @@ class SymInterp(
 
   // refine the current abstract state based on the branch condition and side
   def refine(branch: Branch, taken: Boolean)(using NodePoint[?]): Updater = {
-    import tychecker.RefinementTarget.*
     val expr = branch.cond
     for {
       v <- transfer.transfer(expr)
       newSt <- get
-      target = Some(BranchTarget(branch, taken))
-      _ <- transfer.refine(expr, v, BoolT(taken), target)
+      _ <- transfer.refine(v, BoolT(taken))
     } yield ()
   }
 
