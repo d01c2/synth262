@@ -177,10 +177,26 @@ class Stringifier(
         app
     }
     given Rule[Iterable[String]] = iterableRule(sep = OR)
-    given Rule[List[(String, FieldMap)]] = iterableRule(sep = OR)
+    given mapRule: Rule[List[(String, FieldMap)]] = iterableRule(sep = OR)
+    given propsRule: Rule[List[(Property, Desc)]] = iterableRule(sep = ", ")
+    given Rule[(Property, Desc)] = (app, pair) =>
+      val (prop, desc) = pair
+      app >> prop >> ": " >> desc
+    given Rule[Property] = (app, prop) =>
+      import Property.*
+      prop match
+        case PStr(s) => app >> s
+        case PSym(s) => app >> "[@@" >> s >> "]"
+    given Rule[Desc] = (app, desc) =>
+      val Desc(getThrow, setThrow, ty) = desc
+      var strs = Vector[String]()
+      if (getThrow) strs :+= "<GET>"
+      if (setThrow) strs :+= "<SET>"
+      if (!ty.isBottom) strs :+= ty.toString
+      app >> strs.mkString("|")
     ty match
       case Top => app >> "Record"
-      case Elem(map) =>
+      case Elem(map, props) =>
         var m = map
         var prevExists = false
         def mayOR =
@@ -238,6 +254,7 @@ class Stringifier(
         if (m.nonEmpty || preds.nonEmpty)
           if (prevExists) app >> OR
           app >> "Record[" >> (m.toList ++ preds).sortBy(_._1) >> "]"
+        if (props.nonEmpty) app >> " {{ " >> props.toList.sortBy(_._1) >> " }}"
         else app
 
   /** AST value types */

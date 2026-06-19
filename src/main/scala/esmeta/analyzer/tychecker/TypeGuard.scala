@@ -213,7 +213,8 @@ trait TypeGuardDecl { self: TyChecker =>
         } yield x -> pair).toMap)
 
     def toMay: MayMust = MayMust(this, TypeConstr.Bot)
-    def toMust: MayMust = MayMust(this, this)
+    def toMayMust: MayMust = MayMust(this, this)
+    def toMust: MayMust = MayMust(TypeConstr.Top, this)
 
     def has(x: Base): Boolean = exists(_.contains(x))
 

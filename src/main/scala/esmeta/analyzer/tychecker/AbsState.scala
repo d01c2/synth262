@@ -142,6 +142,9 @@ trait AbsStateDecl { self: TyChecker =>
       mayMust.must.get(sym) && get(sym),
     )
 
+    def mayMustForSyms: Map[Sym, (ValueTy, ValueTy)] =
+      (for (sym <- symEnv.keySet.toList) yield sym -> getMayMust(sym)).toMap
+
     def dropMust: AbsState = copy(mayMust = mayMust.dropMust)
 
     /** getter for symbolic expressions */
@@ -352,6 +355,18 @@ trait AbsStateDecl { self: TyChecker =>
 
     /** appender */
     given rule: Rule[AbsState] = mkRule(true)
+
+    val mayMustMapRule: Rule[Map[Sym, (ValueTy, ValueTy)]] = (app, map) => {
+      given Rule[(ValueTy, ValueTy)] = (app, pair) => {
+        val (may, must) = pair
+        app.wrap("", "") {
+          app :> "- may : " >> may
+          app :> "- must: " >> must
+        }
+      }
+      given Rule[Sym] = (app, sym) => app >> SymTy.SSym(sym)
+      sortedMapRule[Sym, (ValueTy, ValueTy)]("", "", ": ")(app, map)
+    }
 
     // appender generator
     private def mkRule(detail: Boolean): Rule[AbsState] = (app, elem) =>

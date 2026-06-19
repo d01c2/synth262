@@ -331,25 +331,8 @@ trait AbsTransferDecl { analyzer: TyChecker =>
       locals: List[(Local, AbsValue)],
     ): List[(View, List[(Local, AbsValue)])] = {
       given AbsState = getResult(callerNp)
-      if (typeSens) {
-        val tys = locals.map { (_, value) => value.ty }
-        val xs = locals.map { (x, _) => x }
-        for {
-          ts <- toAtomic(tys)
-          view = View(ts)
-          newLocals = xs zip ts.map(AbsValue(_))
-        } yield view -> newLocals
-      } else List(emptyView -> locals.map { (x, v) => x -> AbsValue(v.ty) })
+      List(emptyView -> locals.map { (x, v) => x -> AbsValue(v.ty) })
     }
-
-    def toAtomic(tys: List[ValueTy]): List[List[ValueTy]] = tys match
-      case Nil => List(Nil)
-      case head :: tail =>
-        val tails = toAtomic(tail)
-        for {
-          h <- head.toAtomicTys
-          t <- tails
-        } yield h :: t
 
     /** propagate callee analysis result */
     def propagate(rp: ReturnPoint, callerNp: NodePoint[Call]): Unit = {
@@ -938,14 +921,14 @@ trait AbsTransferDecl { analyzer: TyChecker =>
               if (lty != thenTy)
                 if (thenTy.isBottom) bools -= true
                 else
-                  toBase(ref -> thenTy).map { pair =>
-                    guard += DemandType(TrueT) -> TypeConstr(pair).toMust.lift
+                  toBase(ref -> thenTy).map { p =>
+                    guard += DemandType(TrueT) -> TypeConstr(p).toMayMust.lift
                   }
               if (lty != elseTy)
                 if (elseTy.isBottom) bools -= false
                 else
-                  toBase(ref -> elseTy).map { pair =>
-                    guard += DemandType(FalseT) -> TypeConstr(pair).toMust.lift
+                  toBase(ref -> elseTy).map { p =>
+                    guard += DemandType(FalseT) -> TypeConstr(p).toMayMust.lift
                   }
             }
             TypeGuard(guard)
@@ -1004,14 +987,14 @@ trait AbsTransferDecl { analyzer: TyChecker =>
               if (lty != thenTy)
                 if (thenTy.isBottom) bools -= true
                 else
-                  toBase(ref -> thenTy).map { pair =>
-                    guard += DemandType(TrueT) -> TypeConstr(pair).toMust.lift
+                  toBase(ref -> thenTy).map { p =>
+                    guard += DemandType(TrueT) -> TypeConstr(p).toMayMust.lift
                   }
               if (lty != elseTy)
                 if (elseTy.isBottom) bools -= false
                 else
-                  toBase(ref -> elseTy).map { pair =>
-                    guard += DemandType(FalseT) -> TypeConstr(pair).toMust.lift
+                  toBase(ref -> elseTy).map { p =>
+                    guard += DemandType(FalseT) -> TypeConstr(p).toMayMust.lift
                   }
             }
             TypeGuard(guard)
@@ -1361,10 +1344,12 @@ trait AbsTransferDecl { analyzer: TyChecker =>
       symty: SymTy,
       map: Map[Sym, AbsValue],
     )(using st: AbsState): AbsValue = symty match
-      case STy(ty)      => AbsValue(ty)
-      case SVar(x)      => AbsValue.Bot
-      case SSym(s)      => map.getOrElse(s, AbsValue.Bot)
-      case SField(b, f) => st.get(instantiate(b, map), instantiate(f, map))
+      case STy(ty)        => AbsValue(ty)
+      case SVar(x)        => AbsValue.Bot
+      case SSym(s)        => map.getOrElse(s, AbsValue.Bot)
+      case SField(b, f)   => st.get(instantiate(b, map), instantiate(f, map))
+      case SPropStr(b, p) => ???
+      case SPropSym(b, s) => ???
       case SNormal(symty) =>
         val ty = instantiate(symty, map).symty match
           case STy(ty) => STy(NormalT(ty))
@@ -1664,7 +1649,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
     type Refinements = Map[DemandType, Map[Local, ValueTy]]
     type Refinement = (Func, List[AbsValue], ValueTy, AbsState) => AbsValue
     val manualRefiners: Map[String, Refinement] = {
-      import DemandType.*, SymExpr.*, SymTy.*
+      import DemandType.*, SymExpr.*, SymTy.*, Property.*
       Map(
         "__APPEND_LIST__" -> { (func, vs, retTy, st) =>
           given AbsState = st
@@ -1730,7 +1715,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
               val ty = ValueTy(
                 record = ObjectT.record.update(f, Binding.Exist, refine = true),
               )
-              TypeConstr(0 -> ty).toMust
+              TypeConstr(0 -> ty).toMay
             case _ => TypeConstr(0 -> ObjectT).toMay
           val guard =
             if (useBooleanGuard) TypeGuard()
@@ -1762,11 +1747,6 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             } yield refined).getOrElse(retTy),
           )
         },
-        "SameType" -> { (func, vs, retTy, st) =>
-          given AbsState = st
-          val expr = SEEq(SETypeOf(SERef(SSym(0))), SETypeOf(SERef(SSym(1))))
-          AbsValue(STy(BoolT))
-        },
         "TypedArrayElementType" -> { (func, vs, retTy, st) =>
           AbsValue(
             EnumT(
@@ -1786,6 +1766,52 @@ trait AbsTransferDecl { analyzer: TyChecker =>
         },
         "TypedArrayElementSize" -> { (func, vs, retTy, st) =>
           AbsValue(PosIntT)
+        },
+        "Get" -> { (func, vs, retTy, st) =>
+          given AbsState = st
+          val ty = vs(1).ty
+          val prop = ty.getSingle match
+            case One(Str(p)) => Some(PStr(p))
+            case _ if ty <= SymbolT =>
+              ty.record("Description").value.getSingle match
+                case One(Str(p)) => Some(PSym(p))
+                case _           => None
+            case _ => None
+          val guard = prop match
+            case Some(p) =>
+              val normalT = ValueTy(
+                record = ObjectT.record.update(p, Desc(ty = ESValueT)),
+              )
+              val abruptT = ValueTy(
+                record = ObjectT.record.update(p, Desc(getThrow = true)),
+              )
+              TypeGuard(
+                DemandType(NormalT) -> TypeConstr(0 -> normalT).toMust,
+                DemandType(AbruptT) -> TypeConstr(0 -> abruptT).toMust,
+              )
+            case None => TypeGuard()
+          AbsValue(STy(retTy), guard)
+        },
+        "Set" -> { (func, vs, retTy, st) =>
+          given AbsState = st
+          val ty = vs(1).ty
+          val prop = ty.getSingle match
+            case One(Str(p)) => Some(PStr(p))
+            case _ if ty <= SymbolT =>
+              ty.record("Description").value.getSingle match
+                case One(Str(p)) => Some(PSym(p))
+                case _           => None
+            case _ => None
+          val guard = prop match
+            case Some(p) =>
+              val abruptT = ValueTy(
+                record = ObjectT.record.update(p, Desc(setThrow = true)),
+              )
+              TypeGuard(
+                DemandType(AbruptT) -> TypeConstr(0 -> abruptT).toMust,
+              )
+            case None => TypeGuard()
+          AbsValue(STy(retTy), guard)
         },
       )
     }

@@ -155,8 +155,24 @@ trait UnitWalker extends BasicUnitWalker {
   def walk(ty: RecordTy): Unit =
     import RecordTy.*
     ty match
-      case Top       =>
-      case Elem(map) => walkMap(map, walk, walk)
+      case Top =>
+      case Elem(map, props) =>
+        walkMap(map, walk, walk)
+        walkMap(props, walk, walk)
+
+  /** properties */
+  def walk(prop: Property): Unit =
+    import Property.*
+    prop match
+      case PStr(str) => walk(str)
+      case PSym(sym) => walk(sym)
+
+  /** property descriptors */
+  def walk(desc: Desc): Unit =
+    val Desc(getThrow, setThrow, ty) = desc
+    walk(getThrow)
+    walk(setThrow)
+    walk(ty)
 
   /** list types */
   def walk(ty: ListTy): Unit = ty match

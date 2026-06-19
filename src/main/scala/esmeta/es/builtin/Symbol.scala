@@ -18,7 +18,7 @@ case class Symbol(cfg: CFG) {
   } yield symbolField)
 
   /** get symbol record */
-  def ty: ValueTy = RecordT("", symbols.map(_ -> SymbolT).toMap)
+  def ty: ValueTy = RecordT("", symbols.map(x => x -> SymbolT(x)).toMap)
 
   /** get symbol record */
   def obj: RecordObj = recordObj("")(

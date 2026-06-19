@@ -142,7 +142,7 @@ object Appender {
   ): Rule[Iterable[(K, V)]] = (app, map) =>
     given Rule[(K, V)] = arrowRule(sep)
     if (map.size == 0) app >> left >> right
-    else app.wrap(for (pair <- map.toList.sortBy(_._1)) app :> pair)
+    else app.wrap(left, right)(for (p <- map.toList.sortBy(_._1)) app :> p)
 
   // appender with filtering
   class FilterApp(val app: Appender, sep: String) {

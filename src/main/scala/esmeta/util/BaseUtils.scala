@@ -175,8 +175,9 @@ object BaseUtils {
   def shuffle[T](seq: Seq[T]) = rand.shuffle(seq)
 
   /** stringify */
-  def stringify[T](t: T)(using rule: Appender.Rule[T]): String =
-    rule(Appender(), t).toString
+  def stringify[T](t: T)(using Appender.Rule[T]): String = stringify(t, "  ")
+  def stringify[T](t: T, tab: String)(using rule: Appender.Rule[T]): String =
+    rule(Appender(tab), t).toString
 
   /** get a simple string for success ratio */
   def ratioSimpleString(pass: Int, total: Int): String =

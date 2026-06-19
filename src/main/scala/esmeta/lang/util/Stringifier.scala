@@ -942,7 +942,7 @@ class Stringifier(detail: Boolean, location: Boolean) {
     // named records
     ty.record match {
       case RecordTy.Top => app >> "Record".withArticle(article)
-      case recordTy @ RecordTy.Elem(map) => {
+      case recordTy @ RecordTy.Elem(map, _) => {
         given Rule[ValueTy] = valueTyRule(article, true)
         var m = map
         if (CompT.record <= recordTy)

@@ -1,17 +1,20 @@
 package esmeta.solver
 
-import esmeta.{ESMetaTest, SOLVER_LOG_DIR, BASE_DIR}
-import esmeta.util.SystemUtils.{mkdir, getPrintWriter, readJson, exists}
 import esmeta.cfg.{Branch, CFG, Call, Func}
 import esmeta.es.util.Coverage
 import esmeta.es.util.Coverage.Cond
-import esmeta.ty.ValueTy
 import esmeta.ir.{EBool, EClo, ICall}
 import esmeta.phase.Solve
+import esmeta.ty.ValueTy
+import esmeta.util.Appender.*
+import esmeta.util.Appender.{*, given}
+import esmeta.util.BaseUtils.*
+import esmeta.util.SystemUtils.{mkdir, getPrintWriter, readJson, exists}
+import esmeta.{ESMetaTest, SOLVER_LOG_DIR, BASE_DIR}
 import io.circe.*, io.circe.generic.semiauto.*
 import scala.collection.mutable.{Set => MSet, Queue}
-import scala.concurrent.{Future, Await, ExecutionContext}
 import scala.concurrent.duration.Duration
+import scala.concurrent.{Future, Await, ExecutionContext}
 import java.util.concurrent.{
   Callable,
   ExecutorCompletionService,
@@ -86,8 +89,10 @@ class CoverageMiddleTest extends SolverTest {
     val cov = Coverage(cfg, timeLimit = Some(10))
     val solveTimeLimit = 5
     val solveTimeout = Duration(solveTimeLimit, "seconds")
-    val runner = SymInterp(cfg, timeLimit = Some(solveTimeLimit))
     val allBuiltins = cfg.funcs.filter(_.isBuiltin).sortBy(_.name)
+
+    val runner = SymInterp(cfg, timeLimit = Some(solveTimeLimit))
+    import runner.tyChecker.{cfg => _, *}, AbsState.given
 
     val nThreads = Runtime.getRuntime.availableProcessors
     val pool = Executors.newFixedThreadPool(
@@ -166,7 +171,7 @@ class CoverageMiddleTest extends SolverTest {
         elapsed: Long,
         conds: Option[List[Cond]],
         calls: Option[List[Call]],
-        saturated: Option[Map[Int, ValueTy]],
+        saturated: Option[Map[Sym, (ValueTy, ValueTy)]],
       )
 
       def sideString(side: Boolean): String = if (side) "T" else "F"
@@ -183,44 +188,33 @@ class CoverageMiddleTest extends SolverTest {
       )
 
       // per-case detail, written into one file per (branch, taken side)
-      def dumpCase(out: String => Unit, r: BranchResult): Unit = {
-        out(
-          f"[${r.status.toUpperCase}] ${caseLabel(r)}  " +
-          f"Branch[${r.bid}]:${sideString(r.side)}" +
-          f"  (${r.elapsed / 1e9}%.3fs)",
-        )
-        out(s"    cfg: ${r.targetCfg}")
-        r.js.foreach(js => out(s"    js:  $js"))
-        // -------------------------------------------------------------------------
-        // XXX: remove later
-        // -------------------------------------------------------------------------
-        expectedInjection
-          .get((r.bid, r.side))
-          .foreach(js => out(s"    expected: $js"))
-        // -------------------------------------------------------------------------
-        r.conds.foreach(ps =>
-          val ss = ps.map(c => s"${c.branch.id}:${sideString(c.cond)}")
-          out(s"    conds: [${ss.size}] ${ss.mkString(" <- ")}"),
-        )
-        r.calls.foreach(cs =>
-          val ss = cs.map(c =>
-            val func = cfg.funcOf(c)
-            s"${func.name}:${c.id}",
-          )
-          out(s"    calls: [${ss.size}] ${ss.mkString(" <- ")}"),
-        )
-        r.saturated.filter(_.nonEmpty).foreach { fs =>
-          out("    saturated:")
-          fs.toList
-            .sortBy(_._1)
-            .foreach { (k, v) =>
-              val x = k match
-                case -1 => "#THIS"
-                case -2 => "#ARGS"
-                case -3 => "#NEW_TARGET"
-                case i  => s"#$i"
-              out(s"      $x -> $v")
-            }
+      def dumpCase(out: String => Unit, r: BranchResult): Unit =
+        out(stringify(r, "    "))
+
+      given Rule[BranchResult] = (app, r) => {
+        app >> f"[${r.status.toUpperCase}] ${caseLabel(r)}  "
+        app >> f"Branch[${r.bid}]:${sideString(r.side)}"
+        app >> f"  (${r.elapsed / 1e9}%.3fs)"
+        app.wrap("", "") {
+          app :> s"cfg: ${r.targetCfg}"
+          for (js <- r.js) app :> s"js:  $js"
+          // -------------------------------------------------------------------
+          // XXX: remove later
+          // -------------------------------------------------------------------
+          for (js <- expectedInjection.get((r.bid, r.side)))
+            app :> s"expected: $js"
+          // -------------------------------------------------------------------
+          for (ps <- r.conds) {
+            val ss = ps.map(c => s"${c.branch.id}:${sideString(c.cond)}")
+            app :> s"conds: [${ss.size}] ${ss.mkString(" <- ")}"
+          }
+          for (cs <- r.calls) {
+            val ss = cs.map(c => s"${cfg.funcOf(c).name}:${c.id}")
+            app :> s"calls: [${ss.size}] ${ss.mkString(" <- ")}"
+          }
+          given Rule[Map[Sym, (ValueTy, ValueTy)]] = AbsState.mayMustMapRule
+          for (fs <- r.saturated if fs.nonEmpty)
+            app :> s"saturated: " >> fs
         }
       }
 
@@ -301,7 +295,7 @@ class CoverageMiddleTest extends SolverTest {
                         elapsedNanos,
                         Some(conf.conds),
                         Some(conf.calls),
-                        Some(conf.state.symEnv),
+                        Some(conf.state.mayMustForSyms),
                       )
                     else
                       BranchResult(
@@ -315,7 +309,7 @@ class CoverageMiddleTest extends SolverTest {
                         elapsedNanos,
                         Some(conf.conds),
                         Some(conf.calls),
-                        Some(conf.state.symEnv),
+                        Some(conf.state.mayMustForSyms),
                       )
                   case None =>
                     BranchResult(
@@ -329,7 +323,7 @@ class CoverageMiddleTest extends SolverTest {
                       elapsedNanos,
                       Some(conf.conds),
                       Some(conf.calls),
-                      Some(conf.state.symEnv),
+                      Some(conf.state.mayMustForSyms),
                     )
               case None =>
                 // symbolic execution returned no model: distinguish a genuine

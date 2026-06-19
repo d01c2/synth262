@@ -136,27 +136,34 @@ class SymInterp(
           // -------------------------------------------------------------------
           // XXX: remove
           // -------------------------------------------------------------------
+          import AbsState.mayMustMapRule
           log("=" * 80)
-          log(s"FOUND: $st")
+          log(s"FOUND: ${stringify(st.mayMustForSyms)(using mayMustMapRule)}")
           log("-" * 80)
           log(node)
           // -------------------------------------------------------------------
           throw Found(wrap)
         else unwrap(pop)
       case branch @ Branch(_, kind, cond, _, thenNode, elseNode, _) =>
+        import RefinementTarget.*
         // already visited this loop, skip it
         if (loops.contains(branch)) unwrap(pop)
         else {
           // first time visiting this loop, explore it
           if (branch.isLoop) loops += branch
-          def aux(to: Node, taken: Boolean): Config = wrap
-            .copy(node = to, state = refine(branch, taken)(st))
-            .push(Cond(branch, taken))
-          (thenNode, elseNode) match
-            case (Some(t), Some(e)) => push(aux(e, false)); unwrap(aux(t, true))
-            case (Some(t), None)    => unwrap(aux(t, true))
-            case (None, Some(e))    => unwrap(aux(e, false))
-            case (None, None)       => unwrap(pop)
+          (for { v <- transfer.transfer(cond); newSt <- get } yield {
+            def aux(to: Node, taken: Boolean): Config =
+              val b = BoolT(taken)
+              val target = Some(BranchTarget(branch, taken))
+              val takenSt = transfer.refine(cond, v, b, target)(st)
+              wrap.copy(node = to, state = takenSt).push(Cond(branch, taken))
+            (thenNode, elseNode) match
+              case (Some(t), Some(e)) =>
+                push(aux(e, false)); unwrap(aux(t, true))
+              case (Some(t), None) => unwrap(aux(t, true))
+              case (None, Some(e)) => unwrap(aux(e, false))
+              case (None, None)    => unwrap(pop)
+          })(st)
         }
   }
 
@@ -224,7 +231,7 @@ class SymInterp(
       refiner <- transfer.manualRefiners.get(callee.name)
       v = refiner(callee, vs, retTy, callerSt)
       newV = instantiate(v, vs, callerNp, callerSt)
-    } yield (newV, MayMust.May)).getOrElse {
+    } yield (newV, MayMust.Must)).getOrElse {
       val rp = ReturnPoint(callee, emptyView)
       val ret = getResult(rp)
       val AbsRet(_, noSym, syms) = ret
@@ -388,7 +395,7 @@ object SymInterp {
   ): SymInterpRunner = {
     val tyChecker = TyChecker(cfg, silent = true)
     tyChecker.analyze
-    new SymInterp(tyChecker, _, _, timeLimit = timeLimit, detail = detail)
+    SymInterpRunner(tyChecker, timeLimit, detail)
   }
 
   /** BFS from `func` over the reverse call graph, mapping each reached function
@@ -467,4 +474,11 @@ object SymInterp {
       callTargets.flatMap(func.reachingTo)
     }
 }
-type SymInterpRunner = (Func, Cond) => SymInterp
+case class SymInterpRunner(
+  tyChecker: TyChecker,
+  timeLimit: Option[Int] = None,
+  detail: Boolean = false,
+) {
+  def apply(func: Func, cond: Cond): SymInterp =
+    new SymInterp(tyChecker, func, cond, timeLimit, detail)
+}

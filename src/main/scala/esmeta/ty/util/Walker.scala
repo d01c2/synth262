@@ -165,8 +165,21 @@ trait Walker extends BasicWalker {
   def walk(ty: RecordTy): RecordTy =
     import RecordTy.*
     ty match
-      case Top       => Top
-      case Elem(map) => Elem(walkMap(map, walk, walk))
+      case Top => Top
+      case Elem(map, props) =>
+        Elem(walkMap(map, walk, walk), walkMap(props, walk, walk))
+
+  /** properties */
+  def walk(prop: Property): Property =
+    import Property.*
+    prop match
+      case PStr(str) => PStr(walk(str))
+      case PSym(sym) => PSym(walk(sym))
+
+  /** property descriptors */
+  def walk(desc: Desc): Desc =
+    val Desc(getThrow, setThrow, ty) = desc
+    Desc(walk(getThrow), walk(setThrow), walk(ty))
 
   /** list types */
   def walk(ty: ListTy): ListTy = ty match

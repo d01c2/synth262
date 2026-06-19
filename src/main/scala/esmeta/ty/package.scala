@@ -95,6 +95,8 @@ def NilT: ValueTy = ValueTy(list = ListTy.Nil)
 def ListT: ValueTy = ValueTy(list = ListTy.Top)
 def ListT(ty: ValueTy): ValueTy = ValueTy(list = ListTy(ty))
 lazy val SymbolT: ValueTy = RecordT("Symbol")
+def SymbolT(name: String): ValueTy =
+  RecordT("Symbol", Map("Description" -> StrT(name)))
 lazy val AstT: ValueTy = ValueTy(ast = AstTy.Top)
 def AstT(xs: Set[String]): ValueTy =
   if (xs.isEmpty) BotT
