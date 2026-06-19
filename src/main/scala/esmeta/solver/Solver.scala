@@ -31,12 +31,7 @@ trait Solver { self: SymInterp =>
       path <- getPath(entryFunc)
       thisV <- getJSExpr(thisValue)
       vs <- args.map(getJSExpr).sequence
-      code <- reify(
-        path,
-        thisV,
-        vs,
-        getNewTargetExpr(newTarget),
-      )
+      code <- reify(path, thisV, vs, getNewTargetExpr(newTarget))
     } yield code
 
   // get a JavaScript expression representing the may/must value type

@@ -168,6 +168,7 @@ class CoverageMiddleTest extends SolverTest {
         side: Boolean,
         status: String,
         js: Option[String],
+        execAttempts: Int,
         elapsed: Long,
         conds: Option[List[Cond]],
         calls: Option[List[Call]],
@@ -195,6 +196,7 @@ class CoverageMiddleTest extends SolverTest {
         app >> f"[${r.status.toUpperCase}] ${caseLabel(r)}  "
         app >> f"Branch[${r.bid}]:${sideString(r.side)}"
         app >> f"  (${r.elapsed / 1e9}%.3fs)"
+        app >> f"  attempts=${r.execAttempts}"
         app.wrap("", "") {
           app :> s"cfg: ${r.targetCfg}"
           for (js <- r.js) app :> s"js:  $js"
@@ -232,7 +234,11 @@ class CoverageMiddleTest extends SolverTest {
       mkdir(SOLVER_LOG_DIR, remove = true)
 
       val results = {
-        def timeoutResult(f: Func, cond: Cond): BranchResult = {
+        def timeoutResult(
+          f: Func,
+          cond: Cond,
+          execAttempts: Int = 0,
+        ): BranchResult = {
           val b = cond.branch
           val targetFunc = cfg.funcOf(b)
           BranchResult(
@@ -243,6 +249,7 @@ class CoverageMiddleTest extends SolverTest {
             cond.cond,
             "timeout",
             None,
+            execAttempts,
             solveTimeout.toNanos,
             None,
             None,
@@ -262,6 +269,7 @@ class CoverageMiddleTest extends SolverTest {
             status: String,
             js: Option[String],
             conf: Option[interp.Config],
+            execAttempts: Int,
           ): BranchResult = BranchResult(
             f.name,
             targetFunc.name,
@@ -270,6 +278,7 @@ class CoverageMiddleTest extends SolverTest {
             cond.cond,
             status,
             js,
+            execAttempts,
             elapsedNanos,
             conf.map(_.conds),
             conf.map(_.calls),
@@ -280,10 +289,13 @@ class CoverageMiddleTest extends SolverTest {
             js: Option[String],
             conf: interp.Config,
           )
-          def rejectedResult(rejected: Option[Rejected]): BranchResult =
+          def rejectedResult(
+            rejected: Option[Rejected],
+            execAttempts: Int,
+          ): BranchResult =
             rejected
-              .map(r => result(r.status, r.js, Some(r.conf)))
-              .getOrElse(result("unsolved", None, None))
+              .map(r => result(r.status, r.js, Some(r.conf), execAttempts))
+              .getOrElse(result("unsolved", None, None, execAttempts))
           Thread
             .currentThread()
             .setName(
@@ -304,6 +316,7 @@ class CoverageMiddleTest extends SolverTest {
               case _: Throwable        => false
             }
 
+          var execAttempts = 0
           try {
             @scala.annotation.tailrec
             def retry(rejected: Option[Rejected]): BranchResult = {
@@ -311,10 +324,12 @@ class CoverageMiddleTest extends SolverTest {
               interp.nextCandidate() match {
                 case Some(conf) =>
                   interp.reify match {
-                    case Some(js) if verifies(js) =>
-                      result("pass", Some(js), Some(conf))
-                    case Some(js) => // reified but not covering target
-                      retry(Some(Rejected("fail-verify", Some(js), conf)))
+                    case Some(js) =>
+                      execAttempts += 1
+                      if (verifies(js))
+                        result("pass", Some(js), Some(conf), execAttempts)
+                      else // reified but not covering target
+                        retry(Some(Rejected("fail-verify", Some(js), conf)))
                     case None if rejected.isEmpty =>
                       retry(Some(Rejected("fail-reify", None, conf)))
                     case None => retry(rejected)
@@ -322,13 +337,13 @@ class CoverageMiddleTest extends SolverTest {
                 case None =>
                   // symbolic execution returned no model: distinguish a genuine
                   // "unsolved" from one aborted by the per-side time limit
-                  if (interp.timeout) timeoutResult(f, cond)
-                  else rejectedResult(rejected)
+                  if (interp.timeout) timeoutResult(f, cond, execAttempts)
+                  else rejectedResult(rejected, execAttempts)
               }
             }
             retry(None)
           } catch {
-            case _: TimeoutException => timeoutResult(f, cond)
+            case _: TimeoutException => timeoutResult(f, cond, execAttempts)
           }
         }
 
@@ -383,7 +398,7 @@ class CoverageMiddleTest extends SolverTest {
       val verified = verifiedResults.size
       val timings =
         (verifiedResults ++ missedResults)
-          .map(r => (r.fname, r.bid, r.side, r.elapsed))
+          .map(r => (r.fname, r.bid, r.side, r.elapsed, r.execAttempts))
 
       val statusOrder =
         List("pass", "fail-verify", "fail-reify", "unsolved", "timeout")
@@ -401,25 +416,33 @@ class CoverageMiddleTest extends SolverTest {
           val rs = byStatus(status)
           val totalS = rs.map(_.elapsed).sum / 1e9
           val avgS = totalS / rs.size
+          val avgExecAttempts = rs.map(_.execAttempts).sum.toDouble / rs.size
           val pct = if (totalCount == 0) 0.0 else rs.size * 100.0 / totalCount
           out(
             f"    $status%-12s ${rs.size}%5d (${pct}%5.1f%%)  " +
-            f"(total $totalS%8.1fs, avg $avgS%6.3fs)",
+            f"(total $totalS%8.1fs, avg $avgS%6.3fs, " +
+            f"avg attempts $avgExecAttempts%5.1f)",
           )
         }
         val grandTotalS = results.map(_.elapsed).sum / 1e9
+        val avgExecAttempts =
+          if (totalCount == 0) 0.0
+          else results.map(_.execAttempts).sum.toDouble / totalCount
         out(
           f"    ${"total"}%-12s $totalCount%5d (100.0%%)  " +
-          f"(total $grandTotalS%8.1fs)",
+          f"(total $grandTotalS%8.1fs, avg attempts $avgExecAttempts%5.1f)",
         )
         // timing summary
         if (timings.nonEmpty) {
           out("\n  Top 10 slowest:")
-          for ((name, bid, side, ns) <- timings.sortBy(-_._4).take(10))
-            out(
-              f"    ${ns / 1e9}%8.3fs  " +
-              s"$name Branch[$bid]:${sideString(side)}",
-            )
+          for {
+            (name, bid, side, ns, execAttempts) <-
+              timings.sortBy(-_._4).take(10)
+          } out(
+            f"    ${ns / 1e9}%8.3fs  " +
+            f"${execAttempts}%4d attempts  " +
+            s"$name Branch[$bid]:${sideString(side)}",
+          )
           val totalS = timings.map(_._4).sum / 1e9
           val avgS = totalS / timings.size
           out(f"\n  Solve time: $totalS%.1fs total, $avgS%.3fs avg")
@@ -460,6 +483,7 @@ class CoverageMiddleTest extends SolverTest {
         results.sortBy(-_.elapsed).foreach { r =>
           summaryFile.println(
             f"    ${r.elapsed / 1e9}%8.3fs  ${r.status}%-12s " +
+            f"${r.execAttempts}%4d attempts  " +
             f"Branch[${r.bid}]:${sideString(r.side)}  ${caseLabel(r)}",
           )
         }
