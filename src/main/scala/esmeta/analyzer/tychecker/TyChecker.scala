@@ -15,11 +15,6 @@ import esmeta.util.SystemUtils.*
 class TyChecker(
   val cfg: CFG,
   val targetPattern: Option[String] = None,
-  val inferTypeGuard: Boolean = true,
-  val useBooleanGuard: Boolean = false,
-  val useSyntacticKill: Boolean = false,
-  val noRefine: Boolean = false,
-  val typeSens: Boolean = false,
   val config: TyChecker.Config = TyChecker.Config(),
   val ignore: TyChecker.Ignore = Ignore(),
   val log: Boolean = false,
@@ -102,11 +97,6 @@ class TyChecker(
         var info = Vector[(String, Any)]()
         cfg.spec.version.map(v => info :+= "version" -> v.toString)
         info ++= Vector(
-          "options" -> Map(
-            "typeSens" -> typeSens,
-            "inferTypeGuard" -> inferTypeGuard,
-            "useSyntacticKill" -> useSyntacticKill,
-          ),
           "duration" -> f"${time}%,d ms",
           "error" -> errors.size,
           "iter" -> iter,
@@ -115,13 +105,13 @@ class TyChecker(
             "nodes" -> ratioSimpleString(analyzedNodes.size, cfg.nodes.size),
             "returns" -> ratioSimpleString(analyzedReturns.size, cfg.funcs.size),
           ),
+          "guards" -> typeGuards.size,
         )
         if (detail)
           info :+= "refined" -> Map(
             "targets" -> refinedTargets,
             "locals" -> refinedLocals,
           )
-        if (inferTypeGuard) info :+= "guards" -> typeGuards.size
         Yaml(info*)
       },
       filename = s"$ANALYZE_LOG_DIR/summary.yml",
@@ -160,9 +150,9 @@ class TyChecker(
         cfg.funcs.size, // total funcs
         this.analyzedNodes.size, // analyzed nodes
         cfg.nodes.size, // total nodes
+        typeGuards.size, // guards
         if (detail) refinedTargets else 0, // refined targets
         if (detail) refinedLocals else 0, // refined locals
-        if (inferTypeGuard) typeGuards.size else 0, // guards
       ).mkString("\t"),
       filename = s"$ANALYZE_LOG_DIR/summary",
       silent = silent,
@@ -223,27 +213,15 @@ class TyChecker(
         filename = s"$ANALYZE_LOG_DIR/refined",
         silent = silent,
       )
-      if (inferTypeGuard) {
-        dumpFile(
-          name = "type guard information",
-          data = typeGuards
-            .sortBy { case (f, _) => f.id }
-            .map { (f, v) => s"[${f.id}] ${f.name} -> $v" }
-            .mkString(LINE_SEP),
-          filename = s"$ANALYZE_LOG_DIR/guards",
-          silent = silent,
-        )
-        if (useSyntacticKill) {
-          dumpFile(
-            name = "mutated locals",
-            data = cfg.funcs
-              .map(f => f.nameWithId -> f.mutableLocals.mkString(", "))
-              .mkString(LINE_SEP),
-            filename = s"$ANALYZE_LOG_DIR/mutated",
-            silent = silent,
-          )
-        }
-      }
+      dumpFile(
+        name = "type guard information",
+        data = typeGuards
+          .sortBy { case (f, _) => f.id }
+          .map { (f, v) => s"[${f.id}] ${f.name} -> $v" }
+          .mkString(LINE_SEP),
+        filename = s"$ANALYZE_LOG_DIR/guards",
+        silent = silent,
+      )
   }
 
   /** refined targets */
@@ -317,17 +295,12 @@ class TyChecker(
   ): AbsState =
     import SymExpr.*, SymTy.*
     given AbsState = callerSt
-    if (inferTypeGuard) {
-      val idxLocals = locals.zipWithIndex
-      val (newLocals, symEnv) = (for {
-        ((x, value), sym) <- idxLocals
-      } yield {
-        if (useSyntacticKill) (x -> AbsValue(STy(value.ty)), sym -> ValueTy.Bot)
-        else (x -> AbsValue(SSym(sym)), sym -> value.ty)
-      }).unzip
-      val mayMust = if (callee.isMethod) MayMust.May else MayMust.Must
-      AbsState(true, newLocals.toMap, symEnv.toMap, mayMust)
-    } else AbsState(true, locals.toMap, Map(), MayMust.Must)
+    val idxLocals = locals.zipWithIndex
+    val (newLocals, symEnv) = (for {
+      ((x, value), sym) <- idxLocals
+    } yield (x -> AbsValue(SSym(sym)), sym -> value.ty)).unzip
+    val mayMust = if (callee.isMethod) MayMust.May else MayMust.Must
+    AbsState(true, newLocals.toMap, symEnv.toMap, mayMust)
 
   /** get initial abstract states in each node point */
   private def getInitNpMap(
@@ -344,8 +317,7 @@ class TyChecker(
       case Param(x, ty, _, _) => x -> ty.ty.toValue
     }
     val locals = pairs.map { (x, v) => x -> AbsValue(v) }
-    val view = if (typeSens) View(pairs.map(_._2)) else emptyView
-    List(view -> getCalleeState(AbsState.Empty, locals, func))
+    List(emptyView -> getCalleeState(AbsState.Empty, locals, func))
 
   /** initialization of ECMAScript environment */
   lazy val init: Initialize = cfg.init

@@ -94,22 +94,11 @@ trait AbsTransferDecl { analyzer: TyChecker =>
       import DemandType.*
       given AbsState = st
       val dty = DemandType(ty)
-      if (inferTypeGuard) {
-        val mayMust = v.guard.evaluate(v.ty, dty.ty)
-        if (detail && target.isDefined)
-          refineWithLog(target.get, mayMust, ty)(st)
-        else if ((v.ty ⊓ ty).isBottom) AbsState.Bot
-        else refine(mayMust)(st)
-      } else {
-        v.guard.get(dty) match
-          case Some(mayMust) => refine(mayMust)(st) // for default type guards
-          case None =>
-            ty match // syntactic refinement
-              case _ if noRefine => st
-              case TrueT         => syntacticRefine(expr, true)(st)
-              case FalseT        => syntacticRefine(expr, false)(st)
-              case _ => throw new Exception(s"Unsupported type: $ty")
-      }
+      val mayMust = v.guard.evaluate(v.ty, dty.ty)
+      if (detail && target.isDefined)
+        refineWithLog(target.get, mayMust, ty)(st)
+      else if ((v.ty ⊓ ty).isBottom) AbsState.Bot
+      else refine(mayMust)(st)
 
     /** get next node point */
     def getNextNp(fromCp: NodePoint[Node], to: Node): NodePoint[Node] =
@@ -172,8 +161,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
                 for {
                   fid <- fty.cont.toIterable(stop = false)
                   f <- cfg.funcMap.get(fid)
-                  view = if (typeSens) View(vs.map(_.ty)) else emptyView
-                  tgt = Some(NodePoint(f, f.entry, view))
+                  tgt = Some(NodePoint(f, f.entry, emptyView))
                 } {
                   val captured: Map[Name, AbsValue] = Map() // TODO
                   doCall(callerNp, f, st, args, vs, captured, f.isMethod, tgt)
@@ -227,7 +215,6 @@ trait AbsTransferDecl { analyzer: TyChecker =>
           val v = AbsValue(retTy)
           v.lift
         }
-        if (useSyntacticKill) newRetV = newRetV.killMutable(using callerNp)
         for {
           nextNp <- getAfterCallNp(callerNp)
           newSt = callerSt.define(call.lhs, newRetV)
@@ -382,10 +369,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
       case IAssign(x: Local, expr) =>
         for {
           given AbsState <- get
-          tv <- transfer(expr)
-          v =
-            if (useSyntacticKill) AbsValue(tv.ty)
-            else tv
+          v <- transfer(expr)
           _ <- modify(_.update(x, v, refine = false))
         } yield ()
       case IAssign(Field(x: Var, EStr(f)), expr) =>
@@ -507,11 +491,9 @@ trait AbsTransferDecl { analyzer: TyChecker =>
       val (v, newSt) = (for {
         v <- basicTransfer(expr)
         given AbsState <- get
-        guard <- if (inferTypeGuard) getTypeGuard(expr) else pure(TypeGuard())
-        newV = if (inferTypeGuard) v.addGuard(guard) else v
-      } yield
-        if (!useSyntacticKill) newV
-        else newV.killMutable)(st)
+        guard <- getTypeGuard(expr)
+        newV = v.addGuard(guard)
+      } yield newV)(st)
       // No propagation if the result of the expression is bottom
       if (v.isBottom) (v, AbsState.Bot) else (v, newSt)
     }
@@ -654,7 +636,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
               ("Value", expr),
               ("Target", EEnum("empty")),
             ),
-          ) if inferTypeGuard =>
+          ) =>
         for {
           v <- transfer(expr)
           given AbsState <- get
@@ -1268,11 +1250,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
       val map = vs.zipWithIndex.map {
         case (v, i) => i -> v
       }.toMap
-      val newV = instantiate(call, value, map)
-      if (inferTypeGuard && useSyntacticKill)
-        newV.lift.killMutable(using callerNp)
-      else if (inferTypeGuard) newV.lift
-      else newV
+      instantiate(call, value, map).lift
 
     /** instantiation of abstract values */
     def instantiate(
@@ -1717,20 +1695,14 @@ trait AbsTransferDecl { analyzer: TyChecker =>
               )
               TypeConstr(0 -> ty).toMay
             case _ => TypeConstr(0 -> ObjectT).toMay
-          val guard =
-            if (useBooleanGuard) TypeGuard()
-            else
-              TypeGuard(DemandType(NormalT) -> mayMust)
+          val guard = TypeGuard(DemandType(NormalT) -> mayMust)
           AbsValue(STy(retTy), guard)
         },
         "NewPromiseCapability" -> { (func, vs, retTy, st) =>
           given AbsState = st
-          val guard =
-            if (useBooleanGuard) TypeGuard()
-            else
-              TypeGuard(
-                DemandType(NormalT) -> TypeConstr(0 -> ConstructorT).toMay,
-              )
+          val guard = TypeGuard(
+            DemandType(NormalT) -> TypeConstr(0 -> ConstructorT).toMay,
+          )
           AbsValue(STy(retTy), guard)
         },
         "CreateListFromArrayLike" -> { (func, vs, retTy, st) =>

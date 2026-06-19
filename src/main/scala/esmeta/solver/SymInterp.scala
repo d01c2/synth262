@@ -271,11 +271,7 @@ class SymInterp(
     val map = vs.zipWithIndex.map {
       case (v, i) => i -> v
     }.toMap
-    val newV = transfer.instantiate(call, value, map)
-    if (inferTypeGuard && useSyntacticKill)
-      newV.lift.killMutable(using callerNp)
-    else if (inferTypeGuard) newV.lift
-    else newV
+    transfer.instantiate(call, value, map).lift
 
   /** instantiation of return value */
   def instantiate(
