@@ -258,6 +258,32 @@ class CoverageMiddleTest extends SolverTest {
           def elapsedNanos: Long = System.nanoTime() - t0
           val b = cond.branch
           val targetFunc = cfg.funcOf(b)
+          def result(
+            status: String,
+            js: Option[String],
+            conf: Option[interp.Config],
+          ): BranchResult = BranchResult(
+            f.name,
+            targetFunc.name,
+            s"logs/cfg/func/${targetFunc.normalizedName}.cfg",
+            b.id,
+            cond.cond,
+            status,
+            js,
+            elapsedNanos,
+            conf.map(_.conds),
+            conf.map(_.calls),
+            conf.map(_.state.mayMustForSyms),
+          )
+          case class Rejected(
+            status: String,
+            js: Option[String],
+            conf: interp.Config,
+          )
+          def rejectedResult(rejected: Option[Rejected]): BranchResult =
+            rejected
+              .map(r => result(r.status, r.js, Some(r.conf)))
+              .getOrElse(result("unsolved", None, None))
           Thread
             .currentThread()
             .setName(
@@ -279,69 +305,28 @@ class CoverageMiddleTest extends SolverTest {
             }
 
           try {
-            interp.result match {
-              case Some(conf) =>
-                interp.reify match
-                  case Some(js) =>
-                    if (verifies(js))
-                      BranchResult(
-                        f.name,
-                        targetFunc.name,
-                        s"logs/cfg/func/${targetFunc.normalizedName}.cfg",
-                        b.id,
-                        cond.cond,
-                        "pass",
-                        Some(js),
-                        elapsedNanos,
-                        Some(conf.conds),
-                        Some(conf.calls),
-                        Some(conf.state.mayMustForSyms),
-                      )
-                    else
-                      BranchResult(
-                        f.name,
-                        targetFunc.name,
-                        s"logs/cfg/func/${targetFunc.normalizedName}.cfg",
-                        b.id,
-                        cond.cond,
-                        "fail-verify",
-                        Some(js),
-                        elapsedNanos,
-                        Some(conf.conds),
-                        Some(conf.calls),
-                        Some(conf.state.mayMustForSyms),
-                      )
-                  case None =>
-                    BranchResult(
-                      f.name,
-                      targetFunc.name,
-                      s"logs/cfg/func/${targetFunc.normalizedName}.cfg",
-                      b.id,
-                      cond.cond,
-                      "fail-reify",
-                      None,
-                      elapsedNanos,
-                      Some(conf.conds),
-                      Some(conf.calls),
-                      Some(conf.state.mayMustForSyms),
-                    )
-              case None =>
-                // symbolic execution returned no model: distinguish a genuine
-                // "unsolved" from one aborted by the per-side time limit
-                BranchResult(
-                  f.name,
-                  targetFunc.name,
-                  s"logs/cfg/func/${targetFunc.normalizedName}.cfg",
-                  b.id,
-                  cond.cond,
-                  if (interp.timeout) "timeout" else "unsolved",
-                  None,
-                  elapsedNanos,
-                  None,
-                  None,
-                  None,
-                )
+            @scala.annotation.tailrec
+            def retry(rejected: Option[Rejected]): BranchResult = {
+              checkTimeout()
+              interp.nextCandidate() match {
+                case Some(conf) =>
+                  interp.reify match {
+                    case Some(js) if verifies(js) =>
+                      result("pass", Some(js), Some(conf))
+                    case Some(js) => // reified but not covering target
+                      retry(Some(Rejected("fail-verify", Some(js), conf)))
+                    case None if rejected.isEmpty =>
+                      retry(Some(Rejected("fail-reify", None, conf)))
+                    case None => retry(rejected)
+                  }
+                case None =>
+                  // symbolic execution returned no model: distinguish a genuine
+                  // "unsolved" from one aborted by the per-side time limit
+                  if (interp.timeout) timeoutResult(f, cond)
+                  else rejectedResult(rejected)
+              }
             }
+            retry(None)
           } catch {
             case _: TimeoutException => timeoutResult(f, cond)
           }

@@ -28,19 +28,25 @@ class SymInterp(
   lazy val targetFunc: Func = cfg.funcOf(target.branch)
 
   // main entry point of symbolic execution
-  lazy val result: Option[Config] = {
-    if (!isCandidate(entryFunc)) None
+  lazy val result: Option[Config] = nextCandidate()
+  def nextCandidate(): Option[Config] = results.nextOption()
+
+  private lazy val results: Iterator[Config] =
+    if (!isCandidate(entryFunc)) Iterator.empty
     else
-      try {
-        initialize(entryFunc)
-        while (true) step
-        None
-      } catch {
-        case Found(config) => Some(config)
-        case NotFound      => None
-        case Timeout       => None
-      }
-  }
+      val first = Iterator.single(search(() => initialize(entryFunc)))
+      val rest = Iterator.continually(search(() => unwrap(pop)))
+      (first ++ rest).takeWhile(_.isDefined).flatten
+
+  private def search(resume: () => Unit): Option[Config] =
+    try {
+      resume()
+      while (true) step
+      None
+    } catch {
+      case Found(config)      => Some(config)
+      case NotFound | Timeout => None
+    }
 
   // ---------------------------------------------------------------------------
   // symbolic execution state
