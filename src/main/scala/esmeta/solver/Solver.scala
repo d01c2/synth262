@@ -164,27 +164,27 @@ object Solver {
           case (tyCase, js) if !(ty && tyCase).isBottom => js
         })
 
+  private def isBasePlainObject(ty: ValueTy): Boolean = ty.record match
+    case RecordTy.Elem(map, _) =>
+      ObjectT ⊑ ty.copied(record = RecordTy.Elem(map))
+    case _ => ObjectT ⊑ ty
+
   private def objectWithProps(ty: ValueTy): Option[String] =
-    val baseTy = withoutProps(ty)
-    if (!baseDefaultFor(baseTy).contains("{}")) None
+    if (!isBasePlainObject(ty)) None
     else
-      val members = propertyMembers(ty)
-      if (members.nonEmpty && members.forall(_.isDefined))
-        Some(members.flatten.mkString("{ ", ", ", " }"))
+      val props = properties(ty)
+      if (props.nonEmpty && props.forall(_.isDefined))
+        Some(props.flatten.mkString("{ ", ", ", " }"))
       else None
 
-  private def withoutProps(ty: ValueTy): ValueTy = ty.record match
-    case RecordTy.Elem(map, _) => ty.copied(record = RecordTy.Elem(map))
-    case _                     => ty
-
-  private def propertyMembers(ty: ValueTy): List[Option[String]] =
+  private def properties(ty: ValueTy): List[Option[String]] =
     ty.record match
       case RecordTy.Elem(_, props) =>
         props.toList.map { (prop, desc) =>
-          val key = propKey(prop)
-          if (desc.getThrow) Some(s"get $key() { throw 0; }")
-          else if (desc.setThrow) Some(s"set $key(_) { throw 0; }")
-          else if (!desc.ty.isBottom) exprFor(desc.ty).map(js => s"$key: $js")
+          val k = propKey(prop)
+          if (desc.getThrow) Some(s"get $k() { throw 0; }")
+          else if (desc.setThrow) Some(s"set $k(_) { throw 0; }")
+          else if (!desc.ty.isBottom) exprFor(desc.ty).map(v => s"$k: $v")
           else None
         }
       case _ => Nil
