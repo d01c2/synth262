@@ -45,21 +45,7 @@ trait Solver { self: SymInterp =>
     getJSExpr(mustTy).orElse(getJSExpr(mayTy))
 
   // get a JavaScript expression representing the value type
-  def getJSExpr(ty: ValueTy): Option[String] =
-    if (ty.number.contains(Number(0))) Some("0")
-    else if (ty.number.contains(Number(-1))) Some("-1")
-    else if (ty.number.contains(Number(1))) Some("1")
-    else if (ty.number.contains(Number.NaN)) Some("NaN")
-    else if (ty.number.contains(Number.Inf)) Some("Infinity")
-    else if (ty.number.contains(-Number.Inf)) Some("-Infinity")
-    else if (!ty.undef.isBottom) Some("undefined")
-    else if (!ty.nullv.isBottom) Some("null")
-    else if (ty.str.contains("")) Some("\"\"")
-    else if (ty.bool.contains(false)) Some("false")
-    else if (ty.bool.contains(true)) Some("true")
-    else if (ty.bigInt.contains(BigInt(0))) Some("0n")
-    else if (ty.bigInt.contains(BigInt(1))) Some("1n")
-    else Solver.defaultFor(ty)
+  def getJSExpr(ty: ValueTy): Option[String] = Solver.exprFor(ty)
 
   // get a JavaScript expression representing the newTarget value type
   def getNewTargetExpr(mayMustTy: (ValueTy, ValueTy)): Option[String] =
@@ -148,7 +134,27 @@ object Solver {
     "ThrowTypeError" -> """(function() { "use strict"; return Object.getOwnPropertyDescriptor(arguments, "callee").get })()""",
   )
 
+  def exprFor(ty: ValueTy): Option[String] =
+    if (ty.number.contains(Number(0))) Some("0")
+    else if (ty.number.contains(Number(-1))) Some("-1")
+    else if (ty.number.contains(Number(1))) Some("1")
+    else if (ty.number.contains(Number.NaN)) Some("NaN")
+    else if (ty.number.contains(Number.Inf)) Some("Infinity")
+    else if (ty.number.contains(-Number.Inf)) Some("-Infinity")
+    else if (!ty.undef.isBottom) Some("undefined")
+    else if (!ty.nullv.isBottom) Some("null")
+    else if (ty.str.contains("")) Some("\"\"")
+    else if (ty.bool.contains(false)) Some("false")
+    else if (ty.bool.contains(true)) Some("true")
+    else if (ty.bigInt.contains(BigInt(0))) Some("0n")
+    else if (ty.bigInt.contains(BigInt(1))) Some("1n")
+    else defaultFor(ty)
+
   def defaultFor(ty: ValueTy): Option[String] =
+    if (ty.isBottom) None
+    else objectWithProps(ty).orElse(baseDefaultFor(ty))
+
+  private def baseDefaultFor(ty: ValueTy): Option[String] =
     if (ty.isBottom) None
     else if (ty == ObjectT) Some("{}")
     else
@@ -157,6 +163,35 @@ object Solver {
         .orElse(defaults.collectFirst {
           case (tyCase, js) if !(ty && tyCase).isBottom => js
         })
+
+  private def objectWithProps(ty: ValueTy): Option[String] =
+    val baseTy = withoutProps(ty)
+    if (!baseDefaultFor(baseTy).contains("{}")) None
+    else
+      val members = propertyMembers(ty)
+      if (members.nonEmpty && members.forall(_.isDefined))
+        Some(members.flatten.mkString("{ ", ", ", " }"))
+      else None
+
+  private def withoutProps(ty: ValueTy): ValueTy = ty.record match
+    case RecordTy.Elem(map, _) => ty.copied(record = RecordTy.Elem(map))
+    case _                     => ty
+
+  private def propertyMembers(ty: ValueTy): List[Option[String]] =
+    ty.record match
+      case RecordTy.Elem(_, props) =>
+        props.toList.map { (prop, desc) =>
+          val key = propKey(prop)
+          if (desc.getThrow) Some(s"get $key() { throw 0; }")
+          else if (desc.setThrow) Some(s"set $key(_) { throw 0; }")
+          else if (!desc.ty.isBottom) exprFor(desc.ty).map(js => s"$key: $js")
+          else None
+        }
+      case _ => Nil
+
+  private def propKey(prop: Property): String = prop match
+    case Property.PStr(str) => str
+    case Property.PSym(sym) => s"[Symbol.$sym]"
 
   private val defaults: List[(ValueTy, String)] = List(
     SymbolT -> "Symbol()",
