@@ -937,18 +937,13 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             val thenTy = lty && rty
             val elseTy = if (rty.isSingle) lty -- rty else lty
             var guard: Map[TargetType, MayMust] = Map()
-            var bools = Set(true, false)
             toSymRef(ref, lv).map { ref =>
-              if (thenTy.isBottom) bools -= true
-              else
-                toBase(ref, thenTy).map { pair =>
-                  guard += TargetType(TrueT) -> TypeConstr(pair).toMay.lift
-                }
-              if (elseTy.isBottom) bools -= false
-              else
-                toBase(ref, elseTy).map { pair =>
-                  guard += TargetType(FalseT) -> TypeConstr(pair).toMay.lift
-                }
+              if (!thenTy.isBottom) toBase(ref, thenTy).map { pair =>
+                guard += TargetType(TrueT) -> TypeConstr(pair).toMay.lift
+              }
+              if (!elseTy.isBottom) toBase(ref, elseTy).map { pair =>
+                guard += TargetType(FalseT) -> TypeConstr(pair).toMay.lift
+              }
             }
             TypeGuard(guard)
           }
@@ -962,20 +957,21 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             val thenTy = lty && rty
             val elseTy = lty -- rty
             var guard: Map[TargetType, MayMust] = Map()
-            var bools = Set(true, false)
             toSymRef(ref, lv).map { ref =>
               if (lty != thenTy)
-                if (thenTy.isBottom) bools -= true
-                else
-                  toBase(ref, thenTy).map { p =>
+                if (!thenTy.isBottom) toBase(ref, thenTy).map {
+                  case p @ (_: Local, _) =>
+                    guard += TargetType(TrueT) -> TypeConstr(p).toMay.lift
+                  case p =>
                     guard += TargetType(TrueT) -> TypeConstr(p).toMayMust.lift
-                  }
+                }
               if (lty != elseTy)
-                if (elseTy.isBottom) bools -= false
-                else
-                  toBase(ref, elseTy).map { p =>
+                if (!elseTy.isBottom) toBase(ref, elseTy).map {
+                  case p @ (_: Local, _) =>
+                    guard += TargetType(FalseT) -> TypeConstr(p).toMay.lift
+                  case p =>
                     guard += TargetType(FalseT) -> TypeConstr(p).toMayMust.lift
-                  }
+                }
             }
             TypeGuard(guard)
           }
@@ -993,20 +989,15 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             val thenTy = aux(binding)
             val elseTy = aux(lty.record(field) -- binding)
             var guard: Map[TargetType, MayMust] = Map()
-            var bools = Set(true, false)
             toSymRef(x, lv).map { ref =>
               if (lty != thenTy)
-                if (thenTy.isBottom) bools -= true
-                else
-                  toBase(ref, thenTy).map { pair =>
-                    guard += TargetType(TrueT) -> TypeConstr(pair).toMay.lift
-                  }
+                if (!thenTy.isBottom) toBase(ref, thenTy).map { p =>
+                  guard += TargetType(TrueT) -> TypeConstr(p).toMayMust.lift
+                }
               if (lty != elseTy)
-                if (elseTy.isBottom) bools -= false
-                else
-                  toBase(ref, elseTy).map { pair =>
-                    guard += TargetType(FalseT) -> TypeConstr(pair).toMay.lift
-                  }
+                if (!elseTy.isBottom) toBase(ref, elseTy).map { p =>
+                  guard += TargetType(FalseT) -> TypeConstr(p).toMayMust.lift
+                }
             }
             TypeGuard(guard)
           }
@@ -1028,20 +1019,15 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             val thenTy = aux(true)
             val elseTy = aux(false)
             var guard: Map[TargetType, MayMust] = Map()
-            var bools = Set(true, false)
             toSymRef(ref, lv).map { ref =>
               if (lty != thenTy)
-                if (thenTy.isBottom) bools -= true
-                else
-                  toBase(ref, thenTy).map { p =>
-                    guard += TargetType(TrueT) -> TypeConstr(p).toMayMust.lift
-                  }
+                if (!thenTy.isBottom) toBase(ref, thenTy).map { p =>
+                  guard += TargetType(TrueT) -> TypeConstr(p).toMayMust.lift
+                }
               if (lty != elseTy)
-                if (elseTy.isBottom) bools -= false
-                else
-                  toBase(ref, elseTy).map { p =>
-                    guard += TargetType(FalseT) -> TypeConstr(p).toMayMust.lift
-                  }
+                if (!elseTy.isBottom) toBase(ref, elseTy).map { p =>
+                  guard += TargetType(FalseT) -> TypeConstr(p).toMayMust.lift
+                }
             }
             TypeGuard(guard)
           }

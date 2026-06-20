@@ -28,8 +28,8 @@ class SymInterp(
   lazy val targetFunc: Func = cfg.funcOf(target.branch)
 
   // main entry point of symbolic execution
-  lazy val result: Option[Config] = nextCandidate()
-  def nextCandidate(): Option[Config] = results.nextOption()
+  lazy val result: Option[Config] = nextCandidate
+  def nextCandidate: Option[Config] = results.nextOption
 
   private lazy val results: Iterator[Config] =
     if (!isCandidate(entryFunc)) Iterator.empty
@@ -341,14 +341,12 @@ class SymInterp(
     case config :: rest => configs = rest; config
 
   // refine the current abstract state based on the branch condition and side
-  def refine(branch: Branch, taken: Boolean)(using NodePoint[?]): Updater = {
-    val expr = branch.cond
+  def refine(branch: Branch, taken: Boolean)(using NodePoint[?]): Updater =
     for {
-      v <- transfer.transfer(expr)
+      v <- transfer.transfer(branch.cond)
       newSt <- get
       _ <- transfer.refine(v, BoolT(taken))
     } yield ()
-  }
 
   // configuration of symbolic execution
   case class Config(

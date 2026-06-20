@@ -164,10 +164,10 @@ trait SymTyDecl { self: TyChecker =>
         case STy(ty)   => app >> ty
         case SVar(x)   => app >> x.toString
         case SSym(sym) => app >> sym
-        case SField(base, STy(x)) if x.isBottom =>
+        case SField(base, STy(x)) =>
           x.getSingle match
-            case One(f: String) => app >> base >> "." >> f
-            case _              => app >> base >> "[" >> x >> "]"
+            case One(Str(f)) => app >> base >> "." >> f
+            case _           => app >> base >> "[" >> x >> "]"
         case SField(base, field) => app >> base >> "[" >> field >> "]"
         case SProp(base, prop)   => app >> base >> "[[" >> prop >> "]]"
         case SNormal(symty)      => app >> "Normal[" >> symty >> "]"

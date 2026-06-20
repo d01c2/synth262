@@ -336,7 +336,7 @@ class CoverageMiddleTest extends SolverTest {
             @scala.annotation.tailrec
             def retry(rejected: Option[Rejected]): BranchResult = {
               checkTimeout()
-              interp.nextCandidate() match {
+              interp.nextCandidate match {
                 case Some(conf) =>
                   interp.reifyWithSyms match {
                     case Some((js, syms)) =>
