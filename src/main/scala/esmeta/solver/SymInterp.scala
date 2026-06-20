@@ -268,7 +268,7 @@ class SymInterp(
     val map = vs.zipWithIndex.map {
       case (v, i) => i -> v
     }.toMap
-    transfer.instantiate(call, value, map).lift
+    transfer.instantiate(value, map).lift
 
   /** instantiation of return value */
   def instantiate(
@@ -281,7 +281,7 @@ class SymInterp(
     val map = vs.zipWithIndex.map {
       case (v, i) => i -> v
     }.toMap
-    transfer.instantiate(callerNp.node, mayMust, map)
+    transfer.instantiate(mayMust, map)
 
   // ---------------------------------------------------------------------------
   // helper functions for configuration manipulation

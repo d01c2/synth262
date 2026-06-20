@@ -21,7 +21,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
     import AbsValue.*
 
     /** loading constructors */
-    import SymExpr.*, SymTy.*
+    import SymTy.*, Property.*
 
     // =========================================================================
     // Implementation for General AbsTransfer
@@ -166,113 +166,6 @@ trait AbsTransferDecl { analyzer: TyChecker =>
           }
     }
 
-    /** transfer function for return points */
-    def apply(rp: ReturnPoint): Unit = if (!canUseReturnTy(rp.func)) {
-      val ReturnPoint(func, view) = rp
-      val entryNp = NodePoint(func, func.entry, emptyView)
-      val entrySt = getResult(entryNp)
-      val value = getResult(rp).value
-      for {
-        callerNps <- retEdges.get(rp)
-        callerNp <- callerNps
-        nextNp <- getAfterCallNp(callerNp)
-      } {
-        val callerSt: AbsState = callInfo(callerNp)
-        val retV = AbsValue(rp.func.retTy.ty.toValue)
-        val newV = (instantiate(value, callerNp) ⊓ retV)(using callerSt)
-        val nextSt = callerSt.update(callerNp.node.lhs, newV, refine = false)
-        analyzer += nextNp -> nextSt
-      }
-    }
-
-    /** get after call node point */
-    def getAfterCallNp(callerNp: NodePoint[Call]): Option[NodePoint[Node]] =
-      callerNp.node.next.map(nextNode => callerNp.copy(node = nextNode))
-
-    def refine(v: AbsValue, ty: ValueTy)(using
-      np: NodePoint[?],
-    ): Updater = st =>
-      import TargetType.*
-      val dty = TargetType(ty)
-      val vty = v.ty(using st)
-      val mayMust = v.guard.derive(vty, dty.ty)
-      if (vty distinct ty) AbsState.Bot
-      else refine(mayMust)(st)
-
-    /** refine types using may type constraints */
-    def refine(mayMust: MayMust)(using np: NodePoint[?]): Updater =
-      mayMust.may.fold[Updater](_ => AbsState.Bot) { map =>
-        for {
-          _ <- join(map.map { (x, ty) => modify(refine(x, ty)) })
-          _ <- modify(st => st.copy(mayMust = st.mayMust && mayMust))
-        } yield ()
-      }
-
-    /** refine references using types */
-    def refine(
-      ref: Base,
-      ty: ValueTy,
-    )(using np: NodePoint[?]): Updater = ref match
-      case sym: Sym =>
-        st =>
-          val refinedTy = st.symEnv.get(sym).fold(ty)(_ && ty)
-          st.copy(symEnv = st.symEnv + (sym -> refinedTy))
-      case x: Local =>
-        for {
-          v <- get(_.get(x))
-          given AbsState <- get
-          refinedV = if (v.ty <= ty.toValue) v else v ⊓ AbsValue(ty)
-          _ <- modify(_.update(x, refinedV, refine = true))
-          _ <- refine(v, refinedV.ty) // propagate type guard
-        } yield ()
-
-    def toBase(
-      pair: (SymRef, ValueTy),
-    )(using st: AbsState): Option[(Base, ValueTy)] = {
-      val (ref, givenTy) = pair
-      ref match
-        case v @ SVar(x) => Some(x -> givenTy)
-        case v @ SSym(s) => Some(s -> givenTy)
-        case SField(base, STy(x)) if x <= StrT && x.isSingle =>
-          val bty = base.ty
-          val field = x.str.getSingle match
-            case One(elem) => elem
-            case _         => return None
-          val refined = ValueTy(
-            ast = bty.ast,
-            record = bty.record.update(field, givenTy, refine = true),
-          )
-          toBase(base -> refined)
-        case _ => None
-    }
-
-    /** conversion to symbolic references */
-    def toSymRef(expr: Expr, value: AbsValue): Option[SymRef] =
-      value.symty match
-        case ref: SymRef => Some(ref)
-        case _ =>
-          expr match
-            case ERef(ref) => toSymRef(ref)
-            case _         => None
-
-    /** conversion to symbolic references */
-    def toSymRef(ref: Ref, value: AbsValue): Option[SymRef] =
-      value.symty match
-        case ref: SymRef => Some(ref)
-        case _           => toSymRef(ref)
-
-    /** conversion to symbolic references */
-    def toSymRef(ref: Ref): Option[SymRef] = ref match
-      case x: Local => Some(SVar(x))
-      case Field(base, EStr(field)) =>
-        for {
-          b <- toSymRef(base)
-        } yield SField(b, STy(StrT(field)))
-      case _ => None
-
-    def reduce(expr: Expr, value: AbsValue): AbsValue =
-      toSymRef(expr, value).map(AbsValue(_)).getOrElse(value)
-
     /** get local variables */
     def getLocals(
       callerNp: NodePoint[Call],
@@ -344,6 +237,198 @@ trait AbsTransferDecl { analyzer: TyChecker =>
           }
       }
     }
+
+    /** transfer function for return points */
+    def apply(rp: ReturnPoint): Unit = if (!canUseReturnTy(rp.func)) {
+      val ReturnPoint(func, view) = rp
+      val entryNp = NodePoint(func, func.entry, emptyView)
+      val entrySt = getResult(entryNp)
+      val value = getResult(rp).value
+      for {
+        callerNps <- retEdges.get(rp)
+        callerNp <- callerNps
+        nextNp <- getAfterCallNp(callerNp)
+      } {
+        val callerSt: AbsState = callInfo(callerNp)
+        val retV = AbsValue(rp.func.retTy.ty.toValue)
+        val newV = (instantiate(value, callerNp) ⊓ retV)(using callerSt)
+        val nextSt = callerSt.update(callerNp.node.lhs, newV, refine = false)
+        analyzer += nextNp -> nextSt
+      }
+    }
+
+    /** get after call node point */
+    def getAfterCallNp(callerNp: NodePoint[Call]): Option[NodePoint[Node]] =
+      callerNp.node.next.map(nextNode => callerNp.copy(node = nextNode))
+
+    // =========================================================================
+    // type refinements based on given facts
+    // =========================================================================
+    def refine(v: AbsValue, ty: ValueTy)(using
+      np: NodePoint[?],
+    ): Updater = st =>
+      import TargetType.*
+      val dty = TargetType(ty)
+      val vty = v.ty(using st)
+      val mayMust = v.guard.derive(vty, dty.ty)
+      if (vty distinct ty) AbsState.Bot
+      else refine(mayMust)(st)
+
+    /** refine types using may type constraints */
+    def refine(mayMust: MayMust)(using np: NodePoint[?]): Updater =
+      mayMust.may.fold[Updater](_ => AbsState.Bot) { map =>
+        for {
+          _ <- join(map.map { (x, ty) => modify(refine(x, ty)) })
+          _ <- modify(st => st.copy(mayMust = st.mayMust && mayMust))
+        } yield ()
+      }
+
+    /** refine references using types */
+    def refine(
+      ref: Base,
+      ty: ValueTy,
+    )(using np: NodePoint[?]): Updater = ref match
+      case sym: Sym =>
+        st =>
+          val refinedTy = st.symEnv.get(sym).fold(ty)(_ && ty)
+          st.copy(symEnv = st.symEnv + (sym -> refinedTy))
+      case x: Local =>
+        for {
+          v <- get(_.get(x))
+          given AbsState <- get
+          refinedV = if (v.ty <= ty.toValue) v else v ⊓ AbsValue(ty)
+          _ <- modify(_.update(x, refinedV, refine = true))
+          _ <- refine(v, refinedV.ty) // propagate type guard
+        } yield ()
+
+    // =========================================================================
+    // instantiation of symbolic values
+    // =========================================================================
+    /** instantiation of return value */
+    def instantiate(
+      value: AbsValue,
+      callerNp: NodePoint[Call],
+    ): AbsValue =
+      given AbsState = callInfo(callerNp)
+      val vs = analyzer.argsInfo.getOrElse(callerNp, Nil)
+      val argsMap = vs.zipWithIndex.map { (v, i) => i -> v }.toMap
+      instantiate(value, argsMap).lift
+
+    /** instantiation of abstract values */
+    def instantiate(
+      value: AbsValue,
+      argsMap: Map[Sym, AbsValue],
+    )(using st: AbsState): AbsValue =
+      val AbsValue(symty, guard) = value
+      val newGuard = instantiate(guard, argsMap).normalized(symty.ty)
+      instantiate(symty, argsMap).addGuard(newGuard)
+
+    def instantiate(
+      guard: TypeGuard,
+      argsMap: Map[Sym, AbsValue],
+    )(using st: AbsState): TypeGuard = TypeGuard(
+      guard.map.map((dty, mayMust) => dty -> instantiate(mayMust, argsMap)),
+    )
+
+    def instantiate(
+      mayMust: MayMust,
+      argsMap: Map[Sym, AbsValue],
+    )(using st: AbsState): MayMust =
+      val MayMust(may, must) = mayMust
+      MayMust(
+        instantiate(may, argsMap, true),
+        instantiate(must, argsMap, false),
+      ).lift
+
+    /** instantiation of may/must type constraint */
+    def instantiate(
+      constr: TypeConstr,
+      argsMap: Map[Sym, AbsValue],
+      isMay: Boolean,
+    )(using st: AbsState): TypeConstr = {
+      import scala.util.boundary, boundary.break
+      def aux(x: Sym, ty: ValueTy): Option[(Base, ValueTy)] = for {
+        v <- argsMap.get(x)
+        y <- v.symty match
+          case x: SymRef => Some(x)
+          case _         => None
+        (z, zty) <- toBase(y, ty)
+      } yield z -> zty
+      boundary:
+        constr.map { map =>
+          for {
+            case (x: Sym, ty: ValueTy) <- map
+            pair <- aux(x, ty) match
+              case None if !isMay => break(TypeConstr.Bot)
+              case p    => p
+          } yield pair
+        }
+    }
+
+    /** instantiation of symbolic type */
+    def instantiate(
+      symty: SymTy,
+      argsMap: Map[Sym, AbsValue],
+    )(using st: AbsState): AbsValue = symty match
+      case STy(ty) => AbsValue(ty)
+      case SVar(x) => AbsValue.Bot
+      case SSym(s) => argsMap.getOrElse(s, AbsValue.Bot)
+      case SField(b, f) =>
+        st.get(instantiate(b, argsMap), instantiate(f, argsMap))
+      case SPropStr(b, p) =>
+        ???
+      case SPropSym(b, s) =>
+        ???
+      case SNormal(symty) =>
+        val ty = instantiate(symty, argsMap).symty match
+          case STy(ty) => STy(NormalT(ty))
+          case s       => SNormal(s)
+        AbsValue(ty)
+
+    def toBase(
+      ref: SymRef,
+      givenTy: ValueTy,
+    )(using st: AbsState): Option[(Base, ValueTy)] = ref match
+      case SVar(x) => Some(x -> givenTy)
+      case SSym(s) => Some(s -> givenTy)
+      case SField(base, STy(x)) =>
+        val field = x.str.getSingle match
+          case One(elem) => elem
+          case _         => return None
+        val bty = base.ty
+        val refined = ValueTy(
+          ast = bty.ast,
+          record = bty.record.update(field, givenTy, refine = true),
+        )
+        toBase(base, refined)
+      case _ => None
+
+    /** conversion to symbolic references */
+    def toSymRef(expr: Expr, value: AbsValue): Option[SymRef] =
+      value.symty match
+        case ref: SymRef => Some(ref)
+        case _ =>
+          expr match
+            case ERef(ref) => toSymRef(ref)
+            case _         => None
+
+    /** conversion to symbolic references */
+    def toSymRef(ref: Ref, value: AbsValue): Option[SymRef] =
+      value.symty match
+        case ref: SymRef => Some(ref)
+        case _           => toSymRef(ref)
+
+    /** conversion to symbolic references */
+    def toSymRef(ref: Ref): Option[SymRef] = ref match
+      case x: Local => Some(SVar(x))
+      case Field(base, EStr(field)) =>
+        for {
+          b <- toSymRef(base)
+        } yield SField(b, STy(StrT(field)))
+      case _ => None
+
+    def reduce(expr: Expr, value: AbsValue): AbsValue =
+      toSymRef(expr, value).map(AbsValue(_)).getOrElse(value)
 
     /** transfer function for normal instructions */
     def transfer(
@@ -799,13 +884,13 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             toSymRef(l, lv).map { ref =>
               aux(lty, rty, true, true).map { thenTy =>
                 if (lty != thenTy && !thenTy.isBottom)
-                  toBase(ref -> thenTy).map { pair =>
+                  toBase(ref, thenTy).map { pair =>
                     lmap += TargetType(TrueT) -> TypeConstr(pair).toMay.lift
                   }
               }
               aux(lty, rty, false, true).map { elseTy =>
                 if (lty != elseTy && !elseTy.isBottom)
-                  toBase(ref -> elseTy).map { pair =>
+                  toBase(ref, elseTy).map { pair =>
                     lmap += TargetType(FalseT) -> TypeConstr(pair).toMay.lift
                   }
               }
@@ -814,13 +899,13 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             toSymRef(r, rv).map { ref =>
               aux(rty, lty, true, false).map { thenTy =>
                 if (rty != thenTy && !thenTy.isBottom)
-                  toBase(ref -> thenTy).map { pair =>
+                  toBase(ref, thenTy).map { pair =>
                     rmap += TargetType(TrueT) -> TypeConstr(pair).toMay.lift
                   }
               }
               aux(rty, lty, false, false).map { elseTy =>
                 if (rty != elseTy && !elseTy.isBottom)
-                  toBase(ref -> elseTy).map { pair =>
+                  toBase(ref, elseTy).map { pair =>
                     rmap += TargetType(FalseT) -> TypeConstr(pair).toMay.lift
                   }
               }
@@ -860,12 +945,12 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             toSymRef(ref, lv).map { ref =>
               if (thenTy.isBottom) bools -= true
               else
-                toBase(ref -> thenTy).map { pair =>
+                toBase(ref, thenTy).map { pair =>
                   guard += TargetType(TrueT) -> TypeConstr(pair).toMay.lift
                 }
               if (elseTy.isBottom) bools -= false
               else
-                toBase(ref -> elseTy).map { pair =>
+                toBase(ref, elseTy).map { pair =>
                   guard += TargetType(FalseT) -> TypeConstr(pair).toMay.lift
                 }
             }
@@ -886,13 +971,13 @@ trait AbsTransferDecl { analyzer: TyChecker =>
               if (lty != thenTy)
                 if (thenTy.isBottom) bools -= true
                 else
-                  toBase(ref -> thenTy).map { p =>
+                  toBase(ref, thenTy).map { p =>
                     guard += TargetType(TrueT) -> TypeConstr(p).toMayMust.lift
                   }
               if (lty != elseTy)
                 if (elseTy.isBottom) bools -= false
                 else
-                  toBase(ref -> elseTy).map { p =>
+                  toBase(ref, elseTy).map { p =>
                     guard += TargetType(FalseT) -> TypeConstr(p).toMayMust.lift
                   }
             }
@@ -917,13 +1002,13 @@ trait AbsTransferDecl { analyzer: TyChecker =>
               if (lty != thenTy)
                 if (thenTy.isBottom) bools -= true
                 else
-                  toBase(ref -> thenTy).map { pair =>
+                  toBase(ref, thenTy).map { pair =>
                     guard += TargetType(TrueT) -> TypeConstr(pair).toMay.lift
                   }
               if (lty != elseTy)
                 if (elseTy.isBottom) bools -= false
                 else
-                  toBase(ref -> elseTy).map { pair =>
+                  toBase(ref, elseTy).map { pair =>
                     guard += TargetType(FalseT) -> TypeConstr(pair).toMay.lift
                   }
             }
@@ -952,13 +1037,13 @@ trait AbsTransferDecl { analyzer: TyChecker =>
               if (lty != thenTy)
                 if (thenTy.isBottom) bools -= true
                 else
-                  toBase(ref -> thenTy).map { p =>
+                  toBase(ref, thenTy).map { p =>
                     guard += TargetType(TrueT) -> TypeConstr(p).toMayMust.lift
                   }
               if (lty != elseTy)
                 if (elseTy.isBottom) bools -= false
                 else
-                  toBase(ref -> elseTy).map { p =>
+                  toBase(ref, elseTy).map { p =>
                     guard += TargetType(FalseT) -> TypeConstr(p).toMayMust.lift
                   }
             }
@@ -1218,104 +1303,6 @@ trait AbsTransferDecl { analyzer: TyChecker =>
     // Implementation for TyChecker
     // =========================================================================
 
-    // -------------------------------------------------------------------------
-    // Instantiation
-    // -------------------------------------------------------------------------
-    /** instantiation of return value */
-    def instantiate(
-      value: AbsValue,
-      callerNp: NodePoint[Call],
-    ): AbsValue =
-      import TargetType.*
-      given callerSt: AbsState = callInfo(callerNp)
-      val call = callerNp.node
-      val vs = analyzer.argsInfo.getOrElse(callerNp, Nil)
-      val map = vs.zipWithIndex.map {
-        case (v, i) => i -> v
-      }.toMap
-      instantiate(call, value, map).lift
-
-    /** instantiation of abstract values */
-    def instantiate(
-      call: Call,
-      value: AbsValue,
-      map: Map[Sym, AbsValue],
-    )(using st: AbsState): AbsValue =
-      val AbsValue(symty, guard) = value
-      val newGuard = TypeGuard((for {
-        (dty, mayMust) <- guard.map
-        newMayMust = instantiate(call, mayMust, map)
-        if !newMayMust.isTop
-      } yield dty -> newMayMust).toMap)
-      instantiate(symty, map).addGuard(newGuard)
-
-    def instantiate(
-      call: Call,
-      mayMust: MayMust,
-      map: Map[Sym, AbsValue],
-    )(using st: AbsState): MayMust = mayMust.map(instantiate(call, _, map)).lift
-
-    /** instantiation of may/must type constraint */
-    def instantiate(
-      call: Call,
-      constr: TypeConstr,
-      map: Map[Sym, AbsValue],
-    )(using st: AbsState): TypeConstr = constr.map { m =>
-      for {
-        case (x: Sym, ty: ValueTy) <- m
-        v <- map.get(x)
-        y <- v.symty match
-          case x: SymRef => Some(x)
-          case _         => None
-        (z, zty) <- toBase(y -> ty)
-        if !(st.getTy(z) <= zty)
-      } yield z -> zty
-    }
-
-    /** instantiation of symbolic expressions */
-    def instantiate(
-      sexpr: SymExpr,
-      map: Map[Sym, AbsValue],
-    )(using st: AbsState): Option[SymExpr] = sexpr match {
-      case SEBool(b) => Some(sexpr)
-      case SERef(ref) =>
-        instantiate(ref, map).symty match
-          case x: SymRef => Some(SERef(x))
-          case _         => None
-      case SEExists(ref) => None
-      case SETypeCheck(base, ty) =>
-        instantiate(base, map) match
-          case Some(e) => Some(SETypeCheck(e, ty))
-          case _       => None
-      case SETypeOf(base) =>
-        instantiate(base, map) match
-          case Some(e) => Some(SETypeOf(e))
-          case _       => None
-      case SEEq(left, right) =>
-        val l = instantiate(left, map)
-        val r = instantiate(right, map)
-        (l, r) match
-          case (Some(l), Some(r)) => Some(SEEq(l, r))
-          case _                  => None
-    }
-
-    /** instantiation of symbolic type */
-    def instantiate(
-      symty: SymTy,
-      map: Map[Sym, AbsValue],
-    )(using st: AbsState): AbsValue = symty match
-      case STy(ty)        => AbsValue(ty)
-      case SVar(x)        => AbsValue.Bot
-      case SSym(s)        => map.getOrElse(s, AbsValue.Bot)
-      case SField(b, f)   => st.get(instantiate(b, map), instantiate(f, map))
-      case SPropStr(b, p) => ???
-      case SPropSym(b, s) => ???
-      case SNormal(symty) =>
-        val ty = instantiate(symty, map).symty match
-          case STy(ty) => STy(NormalT(ty))
-          case s       => SNormal(s)
-        AbsValue(ty)
-
     /** check if the return type can be used */
     lazy val canUseReturnTy: Func => Boolean = cached { func =>
       manualRefiners.contains(func.name) || (
@@ -1327,166 +1314,163 @@ trait AbsTransferDecl { analyzer: TyChecker =>
     /** default type guards */
     type Refinements = Map[TargetType, Map[Local, ValueTy]]
     type Refinement = (Func, List[AbsValue], ValueTy, AbsState) => AbsValue
-    val manualRefiners: Map[String, Refinement] = {
-      import TargetType.*, SymExpr.*, SymTy.*, Property.*
-      Map(
-        "__APPEND_LIST__" -> { (func, vs, retTy, st) =>
-          given AbsState = st
-          AbsValue(vs(0).ty || vs(1).ty)
-        },
-        "__FLAT_LIST__" -> { (func, vs, retTy, st) =>
-          given AbsState = st
-          AbsValue(vs(0).ty.list.elem)
-        },
-        "__GET_ITEMS__" -> { (func, vs, retTy, st) =>
-          given AbsState = st
-          val ast = vs(1).ty.toValue.grammarSymbol match
-            case Fin(set) => AstT(set.map(_.name))
-            case Inf      => AstT
-          AbsValue(ListT(ast))
-        },
-        "__CLAMP__" -> { (func, vs, retTy, st) =>
-          given AbsState = st
-          val refined =
-            if (vs(0).ty.toValue <= (IntT || InfinityT))
-              if (vs(1).ty.toValue <= MathT(0)) NonNegIntT
-              else IntT
-            else retTy
-          AbsValue(refined)
-        },
-        "Completion" -> { (func, vs, retTy, st) =>
-          given AbsState = st
-          AbsValue(SSym(0))
-        },
-        "NormalCompletion" -> { (func, vs, retTy, st) =>
-          given AbsState = st
-          AbsValue(SNormal(SSym(0)))
-        },
-        "UpdateEmpty" -> { (func, vs, retTy, st) =>
-          given AbsState = st
-          val record = vs(0).ty.record
-          val valueField = record("Value").value
-          val updated = record.update(
-            "Value",
-            vs(1).ty || (valueField -- EnumT("empty")),
-            refine = false,
-          )
-          AbsValue(ValueTy(record = updated))
-        },
-        "IteratorClose" -> { (func, vs, retTy, st) =>
-          given AbsState = st
-          // Throw | #1
-          AbsValue(vs(1).ty || ThrowT)
-        },
-        "AsyncIteratorClose" -> { (func, vs, retTy, st) =>
-          given AbsState = st
-          // Throw | #1
-          AbsValue(vs(1).ty || ThrowT)
-        },
-        "Await" -> { (func, vs, retTy, st) =>
-          given AbsState = st
-          AbsValue(NormalT(ESValueT) || ThrowT)
-        },
-        "RequireInternalSlot" -> { (func, vs, retTy, st) =>
-          given AbsState = st
-          val mayMust = vs(1).ty.str.getSingle match
-            case One(f) =>
-              val ty = ValueTy(
-                record = ObjectT.record.update(f, Binding.Exist, refine = true),
-              )
-              TypeConstr(0 -> ty).toMay
-            case _ => TypeConstr(0 -> ObjectT).toMay
-          val guard = TypeGuard(TargetType(NormalT) -> mayMust)
-          AbsValue(STy(retTy), guard)
-        },
-        "NewPromiseCapability" -> { (func, vs, retTy, st) =>
-          given AbsState = st
-          val guard = TypeGuard(
-            TargetType(NormalT) -> TypeConstr(0 -> ConstructorT).toMay,
-          )
-          AbsValue(STy(retTy), guard)
-        },
-        "CreateListFromArrayLike" -> { (func, vs, retTy, st) =>
-          given AbsState = st
-          AbsValue(
-            (for {
-              v <- vs.lift(1)
-              str = v.ty.list.elem.str
-              ss <- str match
-                case Inf     => None
-                case Fin(ss) => Some(ss)
-              ty = ss.map(ValueTy.fromTypeOf).foldLeft(BotT)(_ || _)
-              refined = retTy.toValue && NormalT(ListT(ty))
-            } yield refined).getOrElse(retTy),
-          )
-        },
-        "TypedArrayElementType" -> { (func, vs, retTy, st) =>
-          AbsValue(
-            EnumT(
-              "int8",
-              "uint8",
-              "uint8clamped",
-              "int16",
-              "uint16",
-              "int32",
-              "uint32",
-              "bigint64",
-              "biguint64",
-              "float32",
-              "float64",
-            ),
-          )
-        },
-        "TypedArrayElementSize" -> { (func, vs, retTy, st) =>
-          AbsValue(PosIntT)
-        },
-        "Get" -> { (func, vs, retTy, st) =>
-          given AbsState = st
-          val ty = vs(1).ty
-          val prop = ty.getSingle match
-            case One(Str(p)) => Some(PStr(p))
-            case _ if ty <= SymbolT =>
-              ty.record("Description").value.getSingle match
-                case One(Str(p)) => Some(PSym(p))
-                case _           => None
-            case _ => None
-          val guard = prop match
-            case Some(p) =>
-              val normalT = ValueTy(
-                record = ObjectT.record.update(p, Desc(ty = ESValueT)),
-              )
-              val abruptT = ValueTy(
-                record = ObjectT.record.update(p, Desc(getThrow = true)),
-              )
-              TypeGuard(
-                TargetType(NormalT) -> TypeConstr(0 -> normalT).toMust,
-                TargetType(AbruptT) -> TypeConstr(0 -> abruptT).toMust,
-              )
-            case None => TypeGuard()
-          AbsValue(STy(retTy), guard)
-        },
-        "Set" -> { (func, vs, retTy, st) =>
-          given AbsState = st
-          val ty = vs(1).ty
-          val prop = ty.getSingle match
-            case One(Str(p)) => Some(PStr(p))
-            case _ if ty <= SymbolT =>
-              ty.record("Description").value.getSingle match
-                case One(Str(p)) => Some(PSym(p))
-                case _           => None
-            case _ => None
-          val guard = prop match
-            case Some(p) =>
-              val abruptT = ValueTy(
-                record = ObjectT.record.update(p, Desc(setThrow = true)),
-              )
-              TypeGuard(
-                TargetType(AbruptT) -> TypeConstr(0 -> abruptT).toMust,
-              )
-            case None => TypeGuard()
-          AbsValue(STy(retTy), guard)
-        },
-      )
-    }
+    val manualRefiners: Map[String, Refinement] = Map(
+      "__APPEND_LIST__" -> { (func, vs, retTy, st) =>
+        given AbsState = st
+        AbsValue(vs(0).ty || vs(1).ty)
+      },
+      "__FLAT_LIST__" -> { (func, vs, retTy, st) =>
+        given AbsState = st
+        AbsValue(vs(0).ty.list.elem)
+      },
+      "__GET_ITEMS__" -> { (func, vs, retTy, st) =>
+        given AbsState = st
+        val ast = vs(1).ty.toValue.grammarSymbol match
+          case Fin(set) => AstT(set.map(_.name))
+          case Inf      => AstT
+        AbsValue(ListT(ast))
+      },
+      "__CLAMP__" -> { (func, vs, retTy, st) =>
+        given AbsState = st
+        val refined =
+          if (vs(0).ty.toValue <= (IntT || InfinityT))
+            if (vs(1).ty.toValue <= MathT(0)) NonNegIntT
+            else IntT
+          else retTy
+        AbsValue(refined)
+      },
+      "Completion" -> { (func, vs, retTy, st) =>
+        given AbsState = st
+        AbsValue(SSym(0))
+      },
+      "NormalCompletion" -> { (func, vs, retTy, st) =>
+        given AbsState = st
+        AbsValue(SNormal(SSym(0)))
+      },
+      "UpdateEmpty" -> { (func, vs, retTy, st) =>
+        given AbsState = st
+        val record = vs(0).ty.record
+        val valueField = record("Value").value
+        val updated = record.update(
+          "Value",
+          vs(1).ty || (valueField -- EnumT("empty")),
+          refine = false,
+        )
+        AbsValue(ValueTy(record = updated))
+      },
+      "IteratorClose" -> { (func, vs, retTy, st) =>
+        given AbsState = st
+        // Throw | #1
+        AbsValue(vs(1).ty || ThrowT)
+      },
+      "AsyncIteratorClose" -> { (func, vs, retTy, st) =>
+        given AbsState = st
+        // Throw | #1
+        AbsValue(vs(1).ty || ThrowT)
+      },
+      "Await" -> { (func, vs, retTy, st) =>
+        given AbsState = st
+        AbsValue(NormalT(ESValueT) || ThrowT)
+      },
+      "RequireInternalSlot" -> { (func, vs, retTy, st) =>
+        given AbsState = st
+        val mayMust = vs(1).ty.str.getSingle match
+          case One(f) =>
+            val ty = ValueTy(
+              record = ObjectT.record.update(f, Binding.Exist, refine = true),
+            )
+            TypeConstr(0 -> ty).toMay
+          case _ => TypeConstr(0 -> ObjectT).toMay
+        val guard = TypeGuard(TargetType(NormalT) -> mayMust)
+        AbsValue(STy(retTy), guard)
+      },
+      "NewPromiseCapability" -> { (func, vs, retTy, st) =>
+        given AbsState = st
+        val guard = TypeGuard(
+          TargetType(NormalT) -> TypeConstr(0 -> ConstructorT).toMay,
+        )
+        AbsValue(STy(retTy), guard)
+      },
+      "CreateListFromArrayLike" -> { (func, vs, retTy, st) =>
+        given AbsState = st
+        AbsValue(
+          (for {
+            v <- vs.lift(1)
+            str = v.ty.list.elem.str
+            ss <- str match
+              case Inf     => None
+              case Fin(ss) => Some(ss)
+            ty = ss.map(ValueTy.fromTypeOf).foldLeft(BotT)(_ || _)
+            refined = retTy.toValue && NormalT(ListT(ty))
+          } yield refined).getOrElse(retTy),
+        )
+      },
+      "TypedArrayElementType" -> { (func, vs, retTy, st) =>
+        AbsValue(
+          EnumT(
+            "int8",
+            "uint8",
+            "uint8clamped",
+            "int16",
+            "uint16",
+            "int32",
+            "uint32",
+            "bigint64",
+            "biguint64",
+            "float32",
+            "float64",
+          ),
+        )
+      },
+      "TypedArrayElementSize" -> { (func, vs, retTy, st) =>
+        AbsValue(PosIntT)
+      },
+      "Get" -> { (func, vs, retTy, st) =>
+        given AbsState = st
+        val ty = vs(1).ty
+        val prop = ty.getSingle match
+          case One(Str(p)) => Some(PStr(p))
+          case _ if ty <= SymbolT =>
+            ty.record("Description").value.getSingle match
+              case One(Str(p)) => Some(PSym(p))
+              case _           => None
+          case _ => None
+        val guard = prop match
+          case Some(p) =>
+            val normalT = ValueTy(
+              record = ObjectT.record.update(p, Desc(ty = ESValueT)),
+            )
+            val abruptT = ValueTy(
+              record = ObjectT.record.update(p, Desc(getThrow = true)),
+            )
+            TypeGuard(
+              TargetType(NormalT) -> TypeConstr(0 -> normalT).toMust,
+              TargetType(AbruptT) -> TypeConstr(0 -> abruptT).toMust,
+            )
+          case None => TypeGuard()
+        AbsValue(STy(retTy), guard)
+      },
+      "Set" -> { (func, vs, retTy, st) =>
+        given AbsState = st
+        val ty = vs(1).ty
+        val prop = ty.getSingle match
+          case One(Str(p)) => Some(PStr(p))
+          case _ if ty <= SymbolT =>
+            ty.record("Description").value.getSingle match
+              case One(Str(p)) => Some(PSym(p))
+              case _           => None
+          case _ => None
+        val guard = prop match
+          case Some(p) =>
+            val abruptT = ValueTy(
+              record = ObjectT.record.update(p, Desc(setThrow = true)),
+            )
+            TypeGuard(
+              TargetType(AbruptT) -> TypeConstr(0 -> abruptT).toMust,
+            )
+          case None => TypeGuard()
+        AbsValue(STy(retTy), guard)
+      },
+    )
   }
 }

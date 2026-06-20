@@ -213,7 +213,7 @@ class TyChecker(
 
   /** inferred type guards */
   def getTypeGuards: List[(Func, AbsValue)] =
-    import SymTy.*, SymExpr.*
+    import SymTy.*
     for {
       func <- cfg.funcs
       entrySt = getResult(NodePoint(func, func.entry, emptyView))
@@ -265,7 +265,7 @@ class TyChecker(
     locals: List[(Local, AbsValue)],
     callee: Func,
   ): AbsState =
-    import SymExpr.*, SymTy.*
+    import SymTy.*
     given AbsState = callerSt
     val idxLocals = locals.zipWithIndex
     val (newLocals, symEnv) = (for {

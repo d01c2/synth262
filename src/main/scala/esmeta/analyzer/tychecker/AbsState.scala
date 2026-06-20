@@ -141,21 +141,9 @@ trait AbsStateDecl { self: TyChecker =>
 
     def dropMust: AbsState = copy(mayMust = mayMust.dropMust)
 
-    /** getter for symbolic expressions */
-    def getTy(expr: SymExpr): ValueTy = {
-      import SymExpr.*
-      expr match
-        case SEBool(b)             => BoolT(b)
-        case SERef(ref)            => getTy(ref)
-        case SEExists(ref)         => BoolT
-        case SETypeCheck(base, ty) => BoolT
-        case SETypeOf(base)        => BoolT
-        case SEEq(left, right)     => BoolT
-    }
-
     /** getter */
     def get(base: AbsValue, field: AbsValue)(using AbsState): AbsValue = {
-      import SymExpr.*, SymTy.*
+      import SymTy.*
       val guard = lookupGuard(base.guard, field)
       (base.symty, field.ty.getSingle) match
         case (ref: SymRef, One(Str(f))) =>

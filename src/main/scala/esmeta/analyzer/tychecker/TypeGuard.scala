@@ -252,93 +252,10 @@ trait TypeGuardDecl { self: TyChecker =>
     val Must: MayMust = MayMust(TypeConstr.Top, TypeConstr.Top)
     val May: MayMust = MayMust(TypeConstr.Top, TypeConstr.Bot)
   }
-
-  /** symbolic expressions */
-  enum SymExpr {
-    case SEBool(b: Boolean)
-    case SERef(ref: SymRef)
-    case SEExists(ref: SymRef)
-    case SETypeCheck(base: SymExpr, ty: ValueTy)
-    case SETypeOf(base: SymExpr)
-    case SEEq(left: SymExpr, right: SymExpr)
-    def ||(that: SymExpr): SymExpr = (this, that) match
-      case _ if this == that                     => this
-      case (SEBool(false), _)                    => that
-      case (_, SEBool(false))                    => this
-      case (SEBool(true), _) | (_, SEBool(true)) => SEBool(true)
-      case _                                     => SEBool(true)
-    def &&(that: SymExpr): SymExpr = (this, that) match
-      case _ if this == that                       => this
-      case (SEBool(true), _)                       => that
-      case (_, SEBool(true))                       => this
-      case (SEBool(false), _) | (_, SEBool(false)) => SEBool(false)
-      case _                                       => SEBool(true)
-    def has(x: Base): Boolean = this match
-      case SEBool(b)             => false
-      case SERef(ref)            => ref.has(x)
-      case SEExists(ref)         => ref.has(x)
-      case SETypeCheck(base, ty) => base.has(x)
-      case SETypeOf(base)        => base.has(x)
-      case SEEq(left, right)     => left.has(x) || right.has(x)
-    def bases: Set[Base] = this match
-      case SEBool(b)             => Set()
-      case SERef(ref)            => ref.bases
-      case SEExists(ref)         => ref.bases
-      case SETypeCheck(base, ty) => base.bases
-      case SETypeOf(base)        => base.bases
-      case SEEq(left, right)     => left.bases ++ right.bases
-    def kill(bases: Set[Base]): Option[SymExpr] = this match
-      case SEBool(b) => Some(this)
-      case SERef(ref) =>
-        ref.killRef(ref, bases, true).map(SERef(_)) // FIXME: check later
-      case SEExists(ref) => ref.killRef(ref, bases, true).map(SEExists(_))
-      case SETypeCheck(base, ty) => base.kill(bases).map(SETypeCheck(_, ty))
-      case SETypeOf(base)        => base.kill(bases).map(SETypeOf(_))
-      case SEEq(left, right) =>
-        for {
-          l <- left.kill(bases)
-          r <- right.kill(bases)
-        } yield SEEq(l, r)
-    override def toString: String = (new Appender >> this).toString
-  }
-  object SymExpr {
-    // val T: SymExpr = SEBool(true)
-    // val F: SymExpr = SEBool(false)
-    extension (l: Option[SymExpr])
-      def &&(
-        r: Option[SymExpr],
-      ): Option[SymExpr] = (l, r) match
-        case (Some(le), Some(re)) => Some(le && re)
-        case (Some(l), None)      => Some(l)
-        case (None, Some(r))      => Some(r)
-        case _                    => None
-      def ||(
-        r: Option[SymExpr],
-      ): Option[SymExpr] = (l, r) match
-        case (Some(le), Some(re)) => Some(le || re)
-        case _                    => None
-  }
   // -----------------------------------------------------------------------------
   // helpers
   // -----------------------------------------------------------------------------
   import tyStringifier.given
-
-  /** SymExpr */
-  private def symExprRule(app: Appender, expr: SymExpr): Appender =
-    import SymExpr.*
-    expr match
-      case SEBool(bool)  => app >> bool
-      case SERef(ref)    => app >> ref
-      case SEExists(ref) => app >> "(exists " >> ref >> ")"
-      case SETypeCheck(e, ty) =>
-        symExprRule(app >> "(? ", e) >> ": " >> ty >> ")"
-      case SETypeOf(base) => symExprRule(app >> "(typeof ", base) >> ")"
-      case SEEq(left, right) =>
-        val a = symExprRule(app >> "(= ", left)
-        symExprRule(a >> " ", right) >> ")"
-
-  // Expose the helper as the given instance, avoiding self-referential implicit search issues.
-  given Rule[SymExpr] = symExprRule
 
   /** TypeGuard */
   given Rule[TypeGuard] = (app, guard) =>
