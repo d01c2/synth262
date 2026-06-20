@@ -290,7 +290,6 @@ class CoverageMiddleTest extends SolverTest {
               for {
                 conf <- conf
                 syms <- syms
-                if status == "pass"
               } yield mustTypeScore(conf, syms),
               attempts,
               elapsedNanos,
@@ -302,6 +301,7 @@ class CoverageMiddleTest extends SolverTest {
           case class Rejected(
             status: String,
             js: Option[String],
+            syms: Option[List[Sym]],
             conf: interp.Config,
           )
           def rejectedResult(
@@ -309,7 +309,7 @@ class CoverageMiddleTest extends SolverTest {
             attempts: Int,
           ): BranchResult =
             rejected
-              .map(r => result(r.status, r.js, None, Some(r.conf), attempts))
+              .map(r => result(r.status, r.js, r.syms, Some(r.conf), attempts))
               .getOrElse(result("unsolved", None, None, None, attempts))
           Thread
             .currentThread()
@@ -350,9 +350,13 @@ class CoverageMiddleTest extends SolverTest {
                           attempts,
                         )
                       else // reified but not covering target
-                        retry(Some(Rejected("fail-verify", Some(js), conf)))
+                        retry(
+                          Some(
+                            Rejected("fail-verify", Some(js), Some(syms), conf),
+                          ),
+                        )
                     case None if rejected.isEmpty =>
-                      retry(Some(Rejected("fail-reify", None, conf)))
+                      retry(Some(Rejected("fail-reify", None, None, conf)))
                     case None => retry(rejected)
                   }
                 case None =>
@@ -418,6 +422,8 @@ class CoverageMiddleTest extends SolverTest {
       val solved = verifiedResults.size + missedResults.size
       val verified = verifiedResults.size
       val verifiedMustTypeScores = verifiedResults.flatMap(_.mustTypeScore)
+      val missedMustOverApproxResults =
+        missedResults.filter(_.mustTypeScore.contains(1.0))
       val timings =
         (verifiedResults ++ missedResults)
           .map(r => (r.fname, r.bid, r.side, r.elapsed, r.attempts))
@@ -459,6 +465,10 @@ class CoverageMiddleTest extends SolverTest {
           out("\n  Must-type reify score:")
           out(f"    pass cases: ${verifiedMustTypeScores.size}%d/$verified%d")
           out(f"    sum:        $scoreSum%.4f")
+          out(
+            f"    fail-verify must-over-approx cases: " +
+            f"${missedMustOverApproxResults.size}%d/${missedResults.size}%d",
+          )
         }
         // timing summary
         if (timings.nonEmpty) {
@@ -536,6 +546,18 @@ class CoverageMiddleTest extends SolverTest {
           }
       finally dumpFile.close()
       // -------------------------------------------------------------------------
+
+      val mustOverApproxDump =
+        getPrintWriter(s"$SOLVER_LOG_DIR/fail-verify-must-over-approx")
+      try
+        missedMustOverApproxResults
+          .sortBy(r => (r.conds.map(_.size).getOrElse(0), r.bid))
+          .foreach { r =>
+            dumpCase(s => mustOverApproxDump.println(s), r)
+            mustOverApproxDump.println()
+          }
+      finally mustOverApproxDump.close()
+
       println(s"dumped to $SOLVER_LOG_DIR/")
 
       assert(solved > 0)
