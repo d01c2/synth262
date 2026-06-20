@@ -28,6 +28,8 @@ class Stringifier(
       case elem: Ty             => tyRule(app, elem)
       case elem: CloTy          => cloTyRule(app, elem)
       case elem: RecordTy       => recordTyRule(app, elem)
+      case elem: Property       => propertyRule(app, elem)
+      case elem: Desc           => descRule(app, elem)
       case elem: ListTy         => listTyRule(app, elem)
       case elem: AstTy          => astTyRule(app, elem)
       case elem: MapTy          => mapTyRule(app, elem)
@@ -246,14 +248,14 @@ class Stringifier(
         else app
 
   /** properties */
-  given Rule[Property] = (app, prop) =>
+  given propertyRule: Rule[Property] = (app, prop) =>
     import Property.*
     prop match
-      case PStr(s) => app >> s
-      case PSym(s) => app >> "[@@" >> s >> "]"
+      case PStr(s) => app >> "\"" >> s >> "\""
+      case PSym(s) => app >> "@@" >> s
 
   /** property descriptors */
-  given Rule[Desc] = (app, desc) =>
+  given descRule: Rule[Desc] = (app, desc) =>
     val Desc(getThrow, setThrow, ty) = desc
     var strs = Vector[String]()
     if (getThrow) strs :+= "<GET>"

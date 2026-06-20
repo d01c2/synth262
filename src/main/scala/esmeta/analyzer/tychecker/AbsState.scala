@@ -46,20 +46,10 @@ trait AbsStateDecl { self: TyChecker =>
     def ⊔(that: AbsState): AbsState = (this, that) match
       case _ if this.isBottom => that
       case _ if that.isBottom => this
-      case _ =>
-        val (l, r) =
-          if (this.mayMust != that.mayMust)
-            val lxs = this.getImprecBases(that)
-            val rxs = that.getImprecBases(this)
-            (this.kill(lxs, update = false), that.kill(rxs, update = false))
-          else (this, that)
+      case (l, r) =>
         val newLocals = (for {
-          x <- (this.locals.keySet ++ that.locals.keySet).toList
-          v = {
-            val lv = this.get(x)
-            val rv = that.get(x)
-            if (lv == rv) lv else (l.get(x), l) ⊔ (r.get(x), r)
-          }
+          x <- (l.locals.keySet ++ r.locals.keySet).toList
+          v = (l.get(x), l) ⊔ (r.get(x), r)
         } yield x -> v).toMap
         val newSymEnv = (for {
           sym <- (l.symEnv.keySet ++ r.symEnv.keySet).toList
@@ -98,11 +88,11 @@ trait AbsStateDecl { self: TyChecker =>
       case (l, r) =>
         val newLocals = (for {
           x <- (l.locals.keySet intersect r.locals.keySet).toList
-          v = (this.get(x), this) ⊓ (that.get(x), that)
+          v = (l.get(x), l) ⊓ (r.get(x), r)
         } yield x -> v).toMap
         val newSymEnv = (for {
           sym <- (l.symEnv.keySet intersect r.symEnv.keySet).toList
-          ty = l.get(sym) ⊓ r.get(sym)
+          ty = l.get(sym) && r.get(sym)
         } yield sym -> ty).toMap
         val newmayMust = l.mayMust && r.mayMust
         AbsState(true, newLocals, newSymEnv, newmayMust)
@@ -159,6 +149,17 @@ trait AbsStateDecl { self: TyChecker =>
       lookupList(baseTy.list, fieldTy) ||
       lookupRecord(baseTy.record, fieldTy) ||
       lookupMap(baseTy.map, fieldTy)
+
+    /** property getter */
+    def getProp(base: AbsValue, prop: Property)(using AbsState): AbsValue = {
+      import SymTy.*
+      base.symty match
+        case ref: SymRef => AbsValue(SProp(ref, prop), TypeGuard.Empty)
+        case _ => AbsValue(STy(getProp(base.ty, prop)), TypeGuard.Empty)
+    }
+    def getProp(baseTy: ValueTy, prop: Property)(using AbsState): ValueTy =
+      baseTy.record(prop).getTy
+
     // AST lookup
     private def lookupAst(ast: AstTy, field: ValueTy): ValueTy =
       import AstTy.*

@@ -664,8 +664,9 @@ trait AbsTransferDecl { analyzer: TyChecker =>
       argsMap: Map[Sym, AbsValue],
     )(using st: AbsState): AbsValue =
       val AbsValue(symty, guard) = value
-      val newGuard = instantiate(guard, argsMap).normalized(symty.ty)
-      instantiate(symty, argsMap).addGuard(newGuard)
+      val newV = instantiate(symty, argsMap)
+      val newGuard = instantiate(guard, argsMap).normalized(newV.ty)
+      newV.addGuard(newGuard)
 
     def instantiate(
       guard: TypeGuard,
@@ -721,7 +722,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
       case SField(b, f) =>
         st.get(instantiate(b, argsMap), instantiate(f, argsMap))
       case SProp(b, p) =>
-        ???
+        st.getProp(instantiate(b, argsMap), p)
       case SNormal(symty) =>
         val ty = instantiate(symty, argsMap).symty match
           case STy(ty) => STy(NormalT(ty))
@@ -749,8 +750,14 @@ trait AbsTransferDecl { analyzer: TyChecker =>
           record = bty.record.update(field, givenTy, refine = true),
         )
         toBase(base, refined)
-      case SProp(b, p) =>
-        ???
+      case SProp(base, prop) =>
+        val desc = Desc(
+          getThrow = givenTy overlap ThrowT,
+          ty =
+            if (givenTy overlap NormalT) st.get(givenTy, StrT("Value"))
+            else BotT,
+        )
+        toBase(base, ValueTy(record = ObjectT.record.update(prop, desc)))
       case _ => None
 
     // =========================================================================
@@ -1435,7 +1442,9 @@ trait AbsTransferDecl { analyzer: TyChecker =>
               TargetType(AbruptT) -> TypeConstr(0 -> abruptT).toMust,
             )
           case None => TypeGuard()
-        AbsValue(STy(retTy), guard)
+        // AbsValue(STy(retTy), guard)
+        val symTy = prop.fold(STy(retTy))(p => SProp(SSym(0), p))
+        AbsValue(symTy, guard)
       },
       "Set" -> { (func, vs, retTy, st) =>
         given AbsState = st

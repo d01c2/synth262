@@ -134,6 +134,11 @@ enum RecordTy extends TyElem with Lattice[RecordTy] {
     case Top            => Desc.Top
     case Elem(_, props) => props.getOrElse(p, Desc.Top)
 
+  /** property update */
+  def update(p: Property, desc: Desc): RecordTy = this match
+    case Top              => Top
+    case Elem(map, props) => Elem(map, props + (p -> desc))
+
   /** field update */
   def update(field: String, ty: ValueTy, refine: Boolean): RecordTy =
     update(field, Binding(ty), refine)
@@ -176,11 +181,6 @@ enum RecordTy extends TyElem with Lattice[RecordTy] {
         },
         props,
       )
-
-  /** property update */
-  def update(prop: Property, desc: Desc): RecordTy = this match
-    case Top              => Top
-    case Elem(map, props) => Elem(map, props + (prop -> desc))
 
   /** record containment check (ignoring properties) */
   def contains(record: RecordObj, heap: Heap): Boolean = this match
@@ -307,7 +307,7 @@ object RecordTy extends Parser.From(Parser.recordTy) {
     })
 }
 
-enum Property:
+enum Property extends TyElem:
   case PStr(str: String)
   case PSym(sym: String)
 
@@ -315,7 +315,7 @@ case class Desc(
   getThrow: Boolean = false,
   setThrow: Boolean = false,
   ty: ValueTy = BotT,
-) {
+) extends TyElem {
   def isBottom: Boolean = !getThrow && !setThrow && ty.isBottom
   def isTop: Boolean = getThrow && setThrow && ty.isTop
   def <=(that: Desc): Boolean =
@@ -332,10 +332,11 @@ case class Desc(
     this.setThrow || that.setThrow,
     this.ty || that.ty,
   )
+  def getTy: ValueTy = NormalT(ty) || (if (getThrow) ThrowT else BotT)
 }
 object Desc {
   val Bot: Desc = Desc()
-  val Top: Desc = Desc(getThrow = true, setThrow = true, AnyT)
+  val Top: Desc = Desc(getThrow = true, setThrow = true, ESValueT)
 }
 
 given Ordering[Property] = Ordering.by {

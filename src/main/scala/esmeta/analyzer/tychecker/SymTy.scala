@@ -46,7 +46,7 @@ trait SymTyDecl { self: TyChecker =>
       case SVar(x)             => st.get(x).ty
       case SSym(sym)           => st.get(sym)
       case SField(base, field) => st.get(base.ty, field.ty)
-      case SProp(base, prop)   => base.ty.record(prop).ty
+      case SProp(base, prop)   => base.ty.record(prop).getTy
       case SNormal(symty)      => NormalT(symty.ty)
 
     def has(base: Base): Boolean = this match
@@ -127,11 +127,10 @@ trait SymTyDecl { self: TyChecker =>
       (this ⊔ that)(st, st)
 
     /** join operator in different state */
-    def ⊔(that: SymTy)(lst: AbsState, rst: AbsState): SymTy =
-      (this, that) match
-        case (l, r) if l.isBottom || l == r => r
-        case (l, r) if r.isBottom           => l
-        case (l, r) => STy(l.ty(using lst) || r.ty(using rst))
+    def ⊔(that: SymTy)(lst: AbsState, rst: AbsState): SymTy = (this, that) match
+      case (l, r) if l.isBottom || l == r => r
+      case (l, r) if r.isBottom           => l
+      case (l, r) => STy(l.ty(using lst) || r.ty(using rst))
 
     /** meet operator in same state */
     def ⊓(that: SymTy)(using st: AbsState): SymTy =
@@ -154,7 +153,7 @@ trait SymTyDecl { self: TyChecker =>
         case (l, r) if r.isBottom => l
         case (l, r)               => STy(l.ty(using lst) -- r.ty(using rst))
 
-    def getString = s"${this}"
+    override def toString: String = stringify(this)
   }
   object SymTy extends DomainLike[SymTy] {
     override def Top: SymTy = STy(ValueTy.Top)
@@ -170,7 +169,7 @@ trait SymTyDecl { self: TyChecker =>
             case One(f: String) => app >> base >> "." >> f
             case _              => app >> base >> "[" >> x >> "]"
         case SField(base, field) => app >> base >> "[" >> field >> "]"
-        case SProp(base, prop)   => app >> base >> prop
+        case SProp(base, prop)   => app >> base >> "[[" >> prop >> "]]"
         case SNormal(symty)      => app >> "Normal[" >> symty >> "]"
       }
     given Ordering[SymTy] = Ordering.by(_.toString)
