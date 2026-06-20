@@ -31,7 +31,6 @@ trait AbsTransferDecl { analyzer: TyChecker =>
       // record current control point for alarm
       val st = getResult(np)
       given NodePoint[?] = np
-      given AbsState = st
       val NodePoint(func, node, view) = np
       node match
         case Block(_, insts, next) =>
@@ -46,56 +45,18 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             analyzer += getNextNp(np, to) -> newSt.define(call.lhs, v)
         case br @ Branch(_, kind, cond, _, thenNode, elseNode, _) =>
           val (v, newSt) = transfer(cond)(st)
-          for (node <- thenNode if v.ty.contains(true))
+          for (node <- thenNode if v.ty(using st).contains(true))
             analyzer += getNextNp(np, node) -> refine(v, TrueT)(newSt)
-          for (node <- elseNode if v.ty.contains(false))
+          for (node <- elseNode if v.ty(using st).contains(false))
             analyzer += getNextNp(np, node) -> refine(v, FalseT)(newSt)
-
-    def refine(v: AbsValue, ty: ValueTy)(using
-      np: NodePoint[?],
-    ): Updater = st =>
-      import TargetType.*
-      given AbsState = st
-      val dty = TargetType(ty)
-      val vty = v.ty
-      val mayMust = v.guard.derive(vty, dty.ty)
-      if (vty distinct ty) AbsState.Bot
-      else refine(mayMust)(st)
 
     /** get next node point */
     def getNextNp(fromCp: NodePoint[Node], to: Node): NodePoint[Node] =
       fromCp.copy(node = to)
 
-    /** transfer function for return points */
-    def apply(rp: ReturnPoint): Unit = if (!canUseReturnTy(rp.func)) {
-      val ReturnPoint(func, view) = rp
-      val entryView = getEntryView(view)
-      val entryNp = NodePoint(func, func.entry, entryView)
-      val entrySt = getResult(entryNp)
-      given AbsState = entrySt
-      val value = getResult(rp).value
-      for {
-        callerNps <- retEdges.get(rp)
-        callerNp <- callerNps
-        nextNp <- getAfterCallNp(callerNp)
-      } {
-        given callerSt: AbsState = callInfo(callerNp)
-        val retTy = rp.func.retTy.ty.toValue
-        val newV = instantiate(value, callerNp) ⊓ AbsValue(retTy)
-        val nextSt = callerSt.update(callerNp.node.lhs, newV, refine = false)
-        analyzer += nextNp -> nextSt
-      }
-    }
-
-    /** get after call node point */
-    def getAfterCallNp(callerNp: NodePoint[Call]): Option[NodePoint[Node]] =
-      callerNp.node.next.map(nextNode => callerNp.copy(node = nextNode))
-
     /** transfer function for call instructions */
-    def transfer(
-      call: Call,
-    )(using np: NodePoint[?]): Result[AbsValue] = {
-      val callerNp = NodePoint(np.func, call, np.view)
+    def transfer(call: Call)(using np: NodePoint[?]): Result[AbsValue] = {
+      val callerNp = np.copy(node = call)
       call.callInst match {
         case ICall(_, fexpr, args) =>
           for {
@@ -173,10 +134,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
           refiner <- manualRefiners.get(callee.name)
           v = refiner(callee, vs, retTy, callerSt)
           newV = instantiate(v, callerNp)
-        } yield newV).getOrElse {
-          val v = AbsValue(retTy)
-          v.lift
-        }
+        } yield newV).getOrElse(AbsValue(retTy).lift)
         for {
           nextNp <- getAfterCallNp(callerNp)
           newSt = callerSt.define(call.lhs, newRetV)
@@ -206,6 +164,86 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             // propagate callee analysis result
             propagate(rp, callerNp)
           }
+    }
+
+    /** transfer function for return points */
+    def apply(rp: ReturnPoint): Unit = if (!canUseReturnTy(rp.func)) {
+      val ReturnPoint(func, view) = rp
+      val entryNp = NodePoint(func, func.entry, emptyView)
+      val entrySt = getResult(entryNp)
+      val value = getResult(rp).value
+      for {
+        callerNps <- retEdges.get(rp)
+        callerNp <- callerNps
+        nextNp <- getAfterCallNp(callerNp)
+      } {
+        val callerSt: AbsState = callInfo(callerNp)
+        val retV = AbsValue(rp.func.retTy.ty.toValue)
+        val newV = (instantiate(value, callerNp) ⊓ retV)(using callerSt)
+        val nextSt = callerSt.update(callerNp.node.lhs, newV, refine = false)
+        analyzer += nextNp -> nextSt
+      }
+    }
+
+    /** get after call node point */
+    def getAfterCallNp(callerNp: NodePoint[Call]): Option[NodePoint[Node]] =
+      callerNp.node.next.map(nextNode => callerNp.copy(node = nextNode))
+
+    def refine(v: AbsValue, ty: ValueTy)(using
+      np: NodePoint[?],
+    ): Updater = st =>
+      import TargetType.*
+      val dty = TargetType(ty)
+      val vty = v.ty(using st)
+      val mayMust = v.guard.derive(vty, dty.ty)
+      if (vty distinct ty) AbsState.Bot
+      else refine(mayMust)(st)
+
+    /** refine types using may type constraints */
+    def refine(mayMust: MayMust)(using np: NodePoint[?]): Updater =
+      mayMust.may.fold[Updater](_ => AbsState.Bot) { map =>
+        for {
+          _ <- join(map.map { (x, ty) => modify(refine(x, ty)) })
+          _ <- modify(st => st.copy(mayMust = st.mayMust && mayMust))
+        } yield ()
+      }
+
+    /** refine references using types */
+    def refine(
+      ref: Base,
+      ty: ValueTy,
+    )(using np: NodePoint[?]): Updater = ref match
+      case sym: Sym =>
+        st =>
+          val refinedTy = st.symEnv.get(sym).fold(ty)(_ && ty)
+          st.copy(symEnv = st.symEnv + (sym -> refinedTy))
+      case x: Local =>
+        for {
+          v <- get(_.get(x))
+          given AbsState <- get
+          refinedV = if (v.ty <= ty.toValue) v else v ⊓ AbsValue(ty)
+          _ <- modify(_.update(x, refinedV, refine = true))
+          _ <- refine(v, refinedV.ty) // propagate type guard
+        } yield ()
+
+    def toBase(
+      pair: (SymRef, ValueTy),
+    )(using st: AbsState): Option[(Base, ValueTy)] = {
+      val (ref, givenTy) = pair
+      ref match
+        case v @ SVar(x) => Some(x -> givenTy)
+        case v @ SSym(s) => Some(s -> givenTy)
+        case SField(base, STy(x)) if x <= StrT && x.isSingle =>
+          val bty = base.ty
+          val field = x.str.getSingle match
+            case One(elem) => elem
+            case _         => return None
+          val refined = ValueTy(
+            ast = bty.ast,
+            record = bty.record.update(field, givenTy, refine = true),
+          )
+          toBase(base -> refined)
+        case _ => None
     }
 
     /** conversion to symbolic references */
@@ -1277,262 +1315,6 @@ trait AbsTransferDecl { analyzer: TyChecker =>
           case STy(ty) => STy(NormalT(ty))
           case s       => SNormal(s)
         AbsValue(ty)
-
-    // -------------------------------------------------------------------------
-    // Syntactic Type Refinement
-    // -------------------------------------------------------------------------
-    /** refine condition */
-    def syntacticRefine(
-      cond: Expr,
-      positive: Boolean,
-    )(using np: NodePoint[?]): Updater = cond match {
-      // refine inequality
-      case EBinary(BOp.Lt, l, r) =>
-        def toLocal(e: Expr): Option[Local] = e match
-          case ERef(x: Local) => Some(x)
-          case _              => None
-        for {
-          lv <- transfer(l)
-          rv <- transfer(r)
-          given AbsState <- get
-          lmath = lv.ty.math
-          rmath = rv.ty.math
-          _ <- modify { st =>
-            val lst = toLocal(l).fold(st) { x =>
-              var math = lmath
-              var infinity = lv.ty.infinity --
-                (if (positive) InfinityTy.Pos else InfinityTy.Neg)
-              val refined = (r, rmath) match
-                case (EMath(0), _) =>
-                  math = if (positive) MathTy.NegInt else MathTy.NonNegInt
-                case l =>
-              st.update(
-                x,
-                AbsValue(
-                  ValueTy(
-                    math = math,
-                    infinity = infinity,
-                    number = lv.ty.number,
-                    bigInt = lv.ty.bigInt,
-                  ),
-                ),
-                refine = true,
-              )
-            }
-            toLocal(r).fold(lst) { x =>
-              var math = rmath
-              var infinity = rv.ty.infinity --
-                (if (positive) InfinityTy.Neg else InfinityTy.Pos)
-              val refined = (l, lmath) match
-                case (EMath(0), _) =>
-                  math = if (positive) MathTy.PosInt else MathTy.NonPosInt
-                case _ => rmath
-              lst.update(
-                x,
-                AbsValue(
-                  ValueTy(
-                    math = math,
-                    infinity = infinity,
-                    number = rv.ty.number,
-                    bigInt = rv.ty.bigInt,
-                  ),
-                ),
-                refine = true,
-              )
-            }
-          }
-        } yield ()
-      // refine local variables
-      case EBinary(BOp.Eq, ERef(x: Local), expr) =>
-        refineLocal(x, expr, positive)
-      // refine field equality
-      case EBinary(BOp.Eq, ERef(Field(x: Local, EStr(field))), expr) =>
-        refineField(x, field, expr, positive)
-      // refine field existence
-      case EExists(Field(x: Local, EStr(field))) =>
-        refineExistField(x, field, positive)
-      // refine types
-      case EBinary(BOp.Eq, ETypeOf(ERef(x: Local)), expr) =>
-        refineType(x, expr, positive)
-      // refine type checks
-      case ETypeCheck(ERef(ref), ty) =>
-        refineTypeCheck(ref, ty.ty.toValue, positive)
-      // refine logical negation
-      case EUnary(UOp.Not, e) =>
-        syntacticRefine(e, !positive)
-      // refine logical disjunction
-      case EBinary(BOp.Or, l, r) =>
-        st =>
-          if (positive)
-            syntacticRefine(l, true)(st) ⊔ syntacticRefine(r, true)(st)
-          else syntacticRefine(r, false)(syntacticRefine(l, false)(st))
-      // refine logical conjunction
-      case EBinary(BOp.And, l, r) =>
-        st =>
-          if (positive) syntacticRefine(r, true)(syntacticRefine(l, true)(st))
-          else syntacticRefine(l, false)(st) ⊔ syntacticRefine(r, false)(st)
-      // no pruning
-      case _ => st => st
-    }
-
-    /** refine types */
-    def notice(
-      value: AbsValue,
-      refinedValue: AbsValue,
-    )(using np: NodePoint[?]): Updater =
-      import TargetType.*
-      given AbsState = getResult(np)
-      val refined = refinedValue.ty
-      join(
-        for {
-          (dty, mayMust) <- value.guard.map
-          if refined <= dty.ty
-        } yield refine(mayMust),
-      )
-
-    /** refine types using may type constraints */
-    def refine(mayMust: MayMust)(using np: NodePoint[?]): Updater =
-      mayMust.may.fold[Updater](_ => AbsState.Bot) { map =>
-        for {
-          _ <- join(map.map { (x, ty) => modify(refine(x, ty)) })
-          _ <- modify(st => st.copy(mayMust = mayMust.lift(using st)))
-        } yield ()
-      }
-
-    /** refine references using types */
-    def refine(
-      ref: Base,
-      ty: ValueTy,
-    )(using np: NodePoint[?]): Updater = ref match
-      case sym: Sym =>
-        st =>
-          val refinedTy = st.symEnv.get(sym).fold(ty)(_ && ty)
-          st.copy(symEnv = st.symEnv + (sym -> refinedTy))
-      case x: Local =>
-        for {
-          v <- get(_.get(x))
-          given AbsState <- get
-          refinedV = if (v.ty <= ty.toValue) v else v ⊓ AbsValue(ty)
-          _ <- modify(_.update(x, refinedV, refine = true))
-          _ <- notice(v, refinedV) // propagate type guard
-        } yield ()
-
-    def toBase(
-      pair: (SymRef, ValueTy),
-    )(using st: AbsState): Option[(Base, ValueTy)] = {
-      val (ref, givenTy) = pair
-      ref match
-        case v @ SVar(x) => Some(x -> givenTy)
-        case v @ SSym(s) => Some(s -> givenTy)
-        case SField(base, STy(x)) if x <= StrT && x.isSingle =>
-          val bty = base.ty
-          val field = x.str.getSingle match
-            case One(elem) => elem
-            case _         => return None
-          val refined = ValueTy(
-            ast = bty.ast,
-            record = bty.record.update(field, givenTy, refine = true),
-          )
-          toBase(base -> refined)
-        case _ => None
-    }
-
-    /** refine types of local variables with equality */
-    def refineLocal(
-      x: Local,
-      expr: Expr,
-      positive: Boolean,
-    )(using np: NodePoint[?]): Updater = for {
-      rv <- transfer(expr)
-      lv <- transfer(x)
-      given AbsState <- get
-      refinedV =
-        if (positive) lv ⊓ rv
-        else if (rv.isSingle) lv -- rv
-        else lv
-      _ <- modify(_.update(x, refinedV, refine = true))
-      _ <- notice(lv, refinedV)
-    } yield ()
-
-    /** TODO refine types with field equality */
-    def refineField(
-      x: Local,
-      field: String,
-      expr: Expr,
-      positive: Boolean,
-    )(using np: NodePoint[?]): Updater = for {
-      rv <- transfer(expr)
-      given AbsState <- get
-      _ <- refineField(x, field, Binding(rv.ty), positive)
-    } yield ()
-
-    def refineField(
-      x: Local,
-      field: String,
-      rbinding: Binding,
-      positive: Boolean,
-    )(using np: NodePoint[?]): Updater = for {
-      lv <- transfer(x)
-      given AbsState <- get
-      lty = lv.ty
-      binding = if (positive) rbinding else lty.record(field) -- rbinding
-      refinedTy = ValueTy(
-        ast = lty.ast,
-        record = lty.record.update(field, binding, refine = true),
-      )
-      refinedV = AbsValue(refinedTy)
-      _ <- modify(_.update(x, refinedV, refine = true))
-      _ <- notice(lv, refinedV)
-    } yield ()
-
-    /** refine types with field existence */
-    def refineExistField(
-      x: Local,
-      field: String,
-      positive: Boolean,
-    )(using np: NodePoint[?]): Updater =
-      refineField(x, field, Binding.Exist, positive)
-
-    /** refine types with `typeof` constraints */
-    def refineType(
-      x: Local,
-      expr: Expr,
-      positive: Boolean,
-    )(using np: NodePoint[?]): Updater = for {
-      lv <- transfer(x)
-      rv <- transfer(expr)
-      given AbsState <- get
-      lty = lv.ty
-      rty = rv.ty
-      refinedV = rty.str.getSingle match
-        case One(tname) =>
-          val value = AbsValue(ValueTy.fromTypeOf(tname))
-          if (positive) lv ⊓ value else lv -- value
-        case _ => lv
-      _ <- modify(_.update(x, refinedV, refine = true))
-    } yield ()
-
-    /** refine types with type checks */
-    def refineTypeCheck(
-      ref: Ref,
-      ty: ValueTy,
-      positive: Boolean,
-    )(using np: NodePoint[?]): Updater = for {
-      v <- transfer(ref)
-      given AbsState <- get
-      refinedV =
-        if (positive)
-          if (v.ty <= ty.toValue) v
-          else v ⊓ AbsValue(ty)
-        else v -- AbsValue(ty)
-      _ <- modify(ref match
-        case x: Local => _.update(x, refinedV, refine = true)
-        case Field(x: Local, EStr(field)) =>
-          refineField(x, field, Binding(ty), positive)
-        case _ => identity,
-      )
-      _ <- notice(v, refinedV)
-    } yield ()
 
     /** check if the return type can be used */
     lazy val canUseReturnTy: Func => Boolean = cached { func =>

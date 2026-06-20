@@ -94,7 +94,7 @@ trait TypeGuardDecl { self: TyChecker =>
         } yield dty -> mayMust).toMap,
       )
     }
-    def lift(mayMust: MayMust): TypeGuard =
+    def add(mayMust: MayMust): TypeGuard =
       val (uty, guard) = lpair
       TypeGuard(
         TargetType.from(uty).map(dty => dty -> (guard(dty) && mayMust)).toMap,
