@@ -17,7 +17,10 @@ trait Solver { self: SymInterp =>
     symEnv.forall { case (sym, ty) => !ty.isBottom }
 
   /** reify a satisfiable path into an ECMAScript program */
-  def reify: Option[String] =
+  def reify: Option[String] = reifyWithSyms.map(_._1)
+
+  /** reify to ECMAScript program with the used Syms */
+  def reifyWithSyms: Option[(String, List[Sym])] =
     given AbsState = st
     val thisValue = st.getMayMust(SThis.sym)
     val rest = st.getMayMust(SArgs.sym) // TODO : handle variadic parameters
@@ -30,8 +33,10 @@ trait Solver { self: SymInterp =>
     for {
       path <- getPath(entryFunc)
       thisV <- getJSExpr(thisValue)
-      vs <- args.map(getJSExpr).sequence
-      code <- reify(path, thisV, vs, getNewTargetExpr(newTarget))
+      vs <- args.zipWithIndex.map {
+        case (arg, idx) => getJSExpr(arg).map(idx -> _)
+      }.sequence
+      code <- reifyWithSyms(path, thisV, vs, getNewTargetExpr(newTarget))
     } yield code
 
   // get a JavaScript expression representing the may/must value type
@@ -57,22 +62,42 @@ trait Solver { self: SymInterp =>
     thisValue: String,
     args: List[String],
     newTarget: Option[String],
-  ): Option[String] = newTarget match
+  ): Option[String] =
+    reifyWithSyms(
+      path,
+      thisValue,
+      args.zipWithIndex.map(_.swap),
+      newTarget,
+    ).map(_._1)
+
+  def reifyWithSyms(
+    path: BuiltinPath,
+    thisValue: String,
+    args: List[(Sym, String)],
+    newTarget: Option[String],
+  ): Option[(String, List[Sym])] = newTarget match
     case Some(nt) =>
       Solver.access(path).map { target =>
-        s"Reflect.construct($target, [${args.mkString(", ")}], $nt);"
+        s"Reflect.construct($target, [${args.map(_._2).mkString(", ")}], $nt);" ->
+        (args.map(_._1) :+ SNewTarget.sym)
       }
     case None =>
       path match
         case BuiltinPath.YetPath(_) => None
         case BuiltinPath.Getter(base) =>
-          Solver.descriptor(base).map(d => s"$d.get.call($thisValue);")
+          Solver
+            .descriptor(base)
+            .map(d => s"$d.get.call($thisValue);" -> List(SThis.sym))
         case BuiltinPath.Setter(base) =>
-          val value = args.headOption.getOrElse("undefined")
-          Solver.descriptor(base).map(d => s"$d.set.call($thisValue, $value);")
+          val value = args.headOption.map(_._2).getOrElse("undefined")
+          val syms = SThis.sym :: args.headOption.map(_._1).toList
+          Solver
+            .descriptor(base)
+            .map(d => s"$d.set.call($thisValue, $value);" -> syms)
         case _ =>
           Solver.access(path).map { fn =>
-            s"$fn.call(${(thisValue :: args).mkString(", ")});"
+            s"$fn.call(${(thisValue :: args.map(_._2)).mkString(", ")});" ->
+            (SThis.sym :: args.map(_._1))
           }
 }
 object Solver {
