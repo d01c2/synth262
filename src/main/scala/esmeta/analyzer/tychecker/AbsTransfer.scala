@@ -24,7 +24,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
     import SymTy.*, Property.*
 
     // =========================================================================
-    // Implementation for General AbsTransfer
+    // abstract trasnfer function
     // =========================================================================
     /** transfer function for node points */
     def apply(np: NodePoint[?]): Unit =
@@ -34,9 +34,9 @@ trait AbsTransferDecl { analyzer: TyChecker =>
       val NodePoint(func, node, view) = np
       node match
         case Block(_, insts, next) =>
-          val newSt = insts.zipWithIndex.foldLeft(st) {
+          val newSt = insts.foldLeft(st) {
             case (nextSt, _) if nextSt.isBottom => AbsState.Bot
-            case (nextSt, (inst, idx))          => transfer(inst, idx)(nextSt)
+            case (nextSt, inst)                 => transfer(inst)(nextSt)
           }
           for (to <- next) analyzer += getNextNp(np, to) -> newSt
         case call @ Call(_, _, next) =>
@@ -53,6 +53,351 @@ trait AbsTransferDecl { analyzer: TyChecker =>
     /** get next node point */
     def getNextNp(fromCp: NodePoint[Node], to: Node): NodePoint[Node] =
       fromCp.copy(node = to)
+
+    /** transfer function for normal instructions */
+    def transfer(
+      inst: NormalInst,
+    )(using np: NodePoint[?]): Updater = inst match {
+      case IExpr(expr) =>
+        for {
+          v <- transfer(expr)
+          _ <- if (v.isBottom) put(AbsState.Bot) else pure(())
+        } yield ()
+      case ILet(id, expr) =>
+        for {
+          v <- transfer(expr)
+          _ <- modify(_.define(id, v))
+          st <- get
+        } yield ()
+      case IAssign(x: Local, expr) =>
+        for {
+          given AbsState <- get
+          v <- transfer(expr)
+          _ <- modify(_.update(x, v, refine = false))
+        } yield ()
+      case IAssign(Field(x: Var, EStr(f)), expr) =>
+        for {
+          v <- transfer(expr)
+          given AbsState <- get
+          ty <- get(_.get(x).ty)
+          record = ty.record.update(f, v.ty, refine = false)
+          _ <- modify(
+            _.update(x, AbsValue(ty.copied(record = record)), refine = false),
+          )
+        } yield ()
+      case IAssign(ref, expr)  => st => st /* TODO */
+      case IExpand(base, expr) => st => st /* TODO */
+      case IDelete(base, expr) => st => st /* TODO */
+      case IPush(expr, ERef(list: Local), _) =>
+        for {
+          given AbsState <- get
+          l <- transfer(list)
+          v <- transfer(expr)
+          elem = l.ty.list.elem || v.ty
+          newV = AbsValue(ListT(elem))
+          _ <- modify(_.update(list, newV, refine = false))
+        } yield ()
+      case IPush(expr, list, _) => st => st /* TODO */
+      case IPop(lhs, list, front) =>
+        for {
+          v <- transfer(list)
+          pv <- id(_.pop(v, front))
+          _ <- modify(_.define(lhs, pv))
+        } yield ()
+      case inst @ IReturn(expr) =>
+        for {
+          v <- transfer(expr)
+          st <- get
+          _ <- doReturn(inst, st, v)
+          _ <- put(AbsState.Bot)
+        } yield ()
+      case IAssert(expr: EYet) =>
+        st => st /* skip not yet compiled assertions */
+      case IAssert(expr) =>
+        for {
+          v <- transfer(expr)
+          st <- get
+          block = np.node match
+            case block: Block => Some(block)
+            case _            => None
+          _ <- modify(refine(v, TrueT))
+          refinedSt <- get
+          given AbsState = refinedSt
+          _ <- if (v ⊑ False) put(AbsState.Bot) else pure(())
+        } yield ()
+      case IPrint(expr) => st => st /* skip */
+      case INop(_)      => st => st /* skip */
+    }
+
+    /** update return points */
+    def doReturn(
+      irReturn: Return,
+      givenSt: AbsState,
+      v: AbsValue,
+    )(using np: NodePoint[Node]): Unit = {
+      given AbsState = givenSt
+      val NodePoint(func, node, view) = np
+      val irp = InternalReturnPoint(func, node, irReturn)
+      val entryView = getEntryView(view)
+      val entryNp = NodePoint(func, func.entry, entryView)
+      val entrySt = getResult(entryNp)
+      val givenV = v.forReturn(givenSt, func, entrySt)
+      val rp = ReturnPoint(func, entryView)
+      val newV = func.retTy.ty match
+        case _: UnknownTy        => givenV
+        case expectedTy: ValueTy =>
+          // return type check when it is a known type
+          val givenTy = givenV.ty(using entrySt)
+          if (givenTy <= expectedTy) givenV
+          else
+            if (config.checkReturnType)
+              addError(ReturnTypeMismatch(irp, givenTy))
+            AbsValue(STy(givenTy && expectedTy), givenV.guard)
+      // no propagation if the return value is bottom
+      if (!newV.isBottom)
+        val AbsRet(oldV, noSym @ (noSymV, noSymMayMust), syms) = getResult(rp)
+        if (!oldV.isBottom && useRepl) Repl.merged = true
+        if ((newV !⊑ oldV)(using entrySt)) {
+          val mayMust = givenSt.mayMust.onlySym
+          val hasSym = v.symty.hasSym
+          val newRet = AbsRet(
+            oldV ⊔ newV,
+            if (hasSym) noSym else (noSymV ⊔ newV, noSymMayMust || mayMust),
+            if (hasSym) syms + (np -> (v.onlySym(using givenSt), mayMust))
+            else syms - np,
+          )
+          rpMap += rp -> newRet
+          worklist += rp
+        }
+    }
+
+    /** transfer function for expressions */
+    def transfer(
+      expr: Expr,
+    )(using np: NodePoint[Node]): Result[AbsValue] = st => {
+      val (v, newSt) = (for {
+        v <- basicTransfer(expr)
+        given AbsState <- get
+        guard <- getTypeGuard(expr)
+        newV = v.addGuard(guard)
+      } yield newV)(st)
+      // No propagation if the result of the expression is bottom
+      if (v.isBottom) (v, AbsState.Bot) else (v, newSt)
+    }
+
+    /** transfer function for expressions */
+    def basicTransfer(
+      expr: Expr,
+    )(using np: NodePoint[Node]): Result[AbsValue] = expr match {
+      case EParse(code, rule) =>
+        for {
+          c <- transfer(code)
+          r <- transfer(rule)
+          given AbsState <- get
+        } yield c.parse(r)
+      case EGrammarSymbol(name, params) =>
+        val s = GrammarSymbol(name, params)
+        AbsValue(GrammarSymbolT(s))
+      case ESourceText(expr) =>
+        for {
+          v <- transfer(expr)
+        } yield StrTop
+      case EYet(msg) =>
+        if (yetThrow) notSupported(msg)
+        else AbsValue.Bot
+      case EContains(list, elem) =>
+        for {
+          l <- transfer(list)
+          v <- transfer(elem)
+          given AbsState <- get
+        } yield
+          if (l.ty.list.isBottom) AbsValue.Bot
+          else BoolTop
+      case ESubstring(expr, from, None) =>
+        for {
+          v <- transfer(expr)
+          f <- transfer(from)
+        } yield v.substring(f)
+      case ESubstring(expr, from, Some(to)) =>
+        for {
+          v <- transfer(expr)
+          f <- transfer(from)
+          t <- transfer(to)
+        } yield v.substring(f, t)
+      case ETrim(expr, isStarting) =>
+        for {
+          v <- transfer(expr)
+        } yield v.trim(isStarting)
+      case ERef(ref) =>
+        for {
+          v <- transfer(ref)
+        } yield v
+      case unary @ EUnary(_, expr) =>
+        for {
+          v <- transfer(expr)
+          st <- get
+          v0 <- transfer(st, unary, v)
+        } yield v0
+      case binary @ EBinary(BOp.And | BOp.Or, left, right) =>
+        shortCircuit(binary, left, right)
+      case binary @ EBinary(_, left, right) =>
+        for {
+          lv <- transfer(left)
+          rv <- transfer(right)
+          st <- get
+          v <- transfer(st, binary, lv, rv)
+        } yield v
+      case EVariadic(vop, exprs) =>
+        for {
+          vs <- join(exprs.map(transfer))
+          st <- get
+        } yield transfer(st, vop, vs)
+      case EMathOp(mop, exprs) =>
+        for {
+          vs <- join(exprs.map(transfer))
+          st <- get
+        } yield transfer(st, mop, vs)
+      case EConvert(cop, expr) =>
+        import COp.*
+        for {
+          v <- transfer(expr)
+          r <- cop match
+            case ToStr(Some(radix)) => transfer(radix)
+            case ToStr(None)        => pure(AbsValue(MathT(10)))
+            case _                  => pure(AbsValue.Bot)
+          given AbsState <- get
+        } yield v.convertTo(cop, r)
+      case EExists(ref) =>
+        for {
+          v <- get(_.exists(ref))
+        } yield v
+      case ETypeOf(base) =>
+        for {
+          v <- transfer(base)
+          given AbsState <- get
+        } yield v.typeOf
+      case EInstanceOf(expr, target) =>
+        for {
+          v <- transfer(expr)
+          t <- transfer(target)
+        } yield v.instanceOf(t)
+      case ETypeCheck(expr, ty) =>
+        for {
+          v <- transfer(expr)
+          b <- get(_.typeCheck(v, ty.toValue))
+        } yield AbsValue(b)
+      case ESizeOf(expr) =>
+        for {
+          v <- transfer(expr)
+          given AbsState <- get
+        } yield v.sizeOf
+      case EClo(fname, captured) => AbsValue(CloT(fname))
+      case ECont(fname)          => AbsValue(ContT(cfg.fnameMap(fname).id))
+      case EDebug(expr) =>
+        for {
+          v <- transfer(expr)
+          st <- get
+          _ = debug(s"[[ $expr @ $np ]]($st) = $v")
+        } yield v
+      case ERandom() => pure(NumberTop)
+      case ESyntactic(name, _, rhsIdx, _) =>
+        pure(AbsValue(AstT(name, rhsIdx)))
+      case ELexical(name, expr) => pure(AbsValue(AstT))
+      case ERecord(
+            tname @ "CompletionRecord",
+            List(
+              ("Type", EEnum("normal")),
+              ("Value", expr),
+              ("Target", EEnum("empty")),
+            ),
+          ) =>
+        for {
+          v <- transfer(expr)
+          given AbsState <- get
+          newV = v.symty match
+            case STy(sty) => AbsValue(NormalT(sty))
+            case s        => AbsValue(SNormal(s))
+        } yield newV
+      case ERecord(tname, fields) =>
+        for {
+          pairs <- join(fields.map {
+            case (f, expr) =>
+              for {
+                v <- transfer(expr)
+              } yield (f, v)
+          })
+          lv <- id(_.allocRecord(tname, pairs))
+        } yield lv
+      case EMap((kty, vty), _) => AbsValue(MapT(kty.toValue, vty.toValue))
+      case EList(exprs) =>
+        for {
+          vs <- join(exprs.map(transfer))
+          lv <- id(_.allocList(vs))
+        } yield lv
+      case ECopy(obj) =>
+        for {
+          v <- transfer(obj)
+          lv <- id(_.copy(v))
+        } yield lv
+      case EKeys(map, intSorted) =>
+        for {
+          v <- transfer(map)
+          lv <- id(_.keys(v, intSorted))
+        } yield lv
+      case EMath(n)              => AbsValue(MathT(n))
+      case EInfinity(pos)        => AbsValue(InfinityT(pos))
+      case ENumber(n) if n.isNaN => AbsValue(NumberT(Double.NaN))
+      case ENumber(n)            => AbsValue(NumberT(n))
+      case EBigInt(n)            => AbsValue(BigIntT)
+      case EStr(str)             => AbsValue(StrT(str))
+      case EBool(b)              => AbsValue(BoolT(b))
+      case EUndef()              => AbsValue(UndefT)
+      case ENull()               => AbsValue(NullT)
+      case EEnum(name)           => AbsValue(EnumT(name))
+      case ECodeUnit(c)          => AbsValue(CodeUnitT)
+    }
+
+    // short circuit evaluation
+    def shortCircuit(
+      binary: EBinary,
+      left: Expr,
+      right: Expr,
+    )(using np: NodePoint[Node]): Result[AbsValue] = for {
+      l <- transfer(left)
+      given AbsState <- get
+      v <- binary.bop match {
+        case BOp.And =>
+          val r: Result[AbsValue] = (st: AbsState) =>
+            var bools = Set[Boolean]()
+            val lbools = l.ty.bool.set
+            if (lbools.contains(false)) bools += false
+            if (lbools.contains(true)) {
+              val block = np.node match
+                case block: Block => Some(block)
+                case _            => None
+              val (r, _) = transfer(right)(refine(l, TrueT)(st))
+              bools ++= r.ty.bool.set
+            }
+            (AbsValue(BoolT(bools)), st)
+          r
+        case BOp.Or =>
+          val r: Result[AbsValue] = (st: AbsState) =>
+            var bools = Set[Boolean]()
+            val lbools = l.ty.bool.set
+            if (lbools.contains(true)) bools += true
+            if (lbools.contains(false))
+              val (r, _) = transfer(right)(refine(l, FalseT)(st))
+              bools ++= r.ty.bool.set
+            (AbsValue(BoolT(bools)), st)
+          r
+        case _ =>
+          for {
+            r <- transfer(right)
+            st <- get
+            v = transfer(st, binary, l, r)
+          } yield v
+      }
+    } yield v
 
     /** transfer function for call instructions */
     def transfer(call: Call)(using np: NodePoint[?]): Result[AbsValue] = {
@@ -103,7 +448,6 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             var newV: AbsValue = AbsValue.Bot
             // lexical sdo
             newV ⊔= bv.getLexical(method)
-
             // syntactic sdo
             for ((sdo, ast) <- bv.getSdo(method))
               doCall(callerNp, sdo, st, base :: args, ast :: vs, method = true)
@@ -354,15 +698,16 @@ trait AbsTransferDecl { analyzer: TyChecker =>
           case _         => None
         (z, zty) <- toBase(y, ty)
       } yield z -> zty
-      boundary:
+      boundary {
         constr.map { map =>
           for {
             case (x: Sym, ty: ValueTy) <- map
             pair <- aux(x, ty) match
               case None if !isMay => break(TypeConstr.Bot)
-              case p    => p
+              case p              => p
           } yield pair
         }
+      }
     }
 
     /** instantiation of symbolic type */
@@ -375,9 +720,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
       case SSym(s) => argsMap.getOrElse(s, AbsValue.Bot)
       case SField(b, f) =>
         st.get(instantiate(b, argsMap), instantiate(f, argsMap))
-      case SPropStr(b, p) =>
-        ???
-      case SPropSym(b, s) =>
+      case SProp(b, p) =>
         ???
       case SNormal(symty) =>
         val ty = instantiate(symty, argsMap).symty match
@@ -385,6 +728,11 @@ trait AbsTransferDecl { analyzer: TyChecker =>
           case s       => SNormal(s)
         AbsValue(ty)
 
+    // =========================================================================
+    // SymRef <: ValueTy --> (Base <: ValueTy)
+    // =========================================================================
+    // e.g. #0.f.g ({ f: { g: Number | String } }) <: Number
+    // -->  #0 <: { f: { g: Number } }
     def toBase(
       ref: SymRef,
       givenTy: ValueTy,
@@ -401,8 +749,13 @@ trait AbsTransferDecl { analyzer: TyChecker =>
           record = bty.record.update(field, givenTy, refine = true),
         )
         toBase(base, refined)
+      case SProp(b, p) =>
+        ???
       case _ => None
 
+    // =========================================================================
+    // conversion an expression with its abstract value to symbolic references
+    // =========================================================================
     /** conversion to symbolic references */
     def toSymRef(expr: Expr, value: AbsValue): Option[SymRef] =
       value.symty match
@@ -427,373 +780,9 @@ trait AbsTransferDecl { analyzer: TyChecker =>
         } yield SField(b, STy(StrT(field)))
       case _ => None
 
-    def reduce(expr: Expr, value: AbsValue): AbsValue =
-      toSymRef(expr, value).map(AbsValue(_)).getOrElse(value)
-
-    /** transfer function for normal instructions */
-    def transfer(
-      inst: NormalInst,
-    )(using np: NodePoint[?]): Updater = transfer(inst, -1)
-
-    /** transfer function for normal instructions */
-    def transfer(
-      inst: NormalInst,
-      idx: Int,
-    )(using np: NodePoint[?]): Updater = inst match {
-      case IExpr(expr) =>
-        for {
-          v <- transfer(expr)
-          _ <- if (v.isBottom) put(AbsState.Bot) else pure(())
-        } yield ()
-      case ILet(id, expr) =>
-        for {
-          v <- transfer(expr)
-          _ <- modify(_.define(id, v))
-          st <- get
-        } yield ()
-      case IAssign(x: Local, expr) =>
-        for {
-          given AbsState <- get
-          v <- transfer(expr)
-          _ <- modify(_.update(x, v, refine = false))
-        } yield ()
-      case IAssign(Field(x: Var, EStr(f)), expr) =>
-        for {
-          v <- transfer(expr)
-          given AbsState <- get
-          ty <- get(_.get(x).ty)
-          record = ty.record.update(f, v.ty, refine = false)
-          _ <- modify(
-            _.update(x, AbsValue(ty.copied(record = record)), refine = false),
-          )
-        } yield ()
-      case IAssign(ref, expr)  => st => st /* TODO */
-      case IExpand(base, expr) => st => st /* TODO */
-      case IDelete(base, expr) => st => st /* TODO */
-      case IPush(expr, ERef(list: Local), _) =>
-        for {
-          given AbsState <- get
-          l <- transfer(list)
-          v <- transfer(expr)
-          elem = l.ty.list.elem || v.ty
-          newV = AbsValue(ListT(elem))
-          _ <- modify(_.update(list, newV, refine = false))
-        } yield ()
-      case IPush(expr, list, _) => st => st /* TODO */
-      case IPop(lhs, list, front) =>
-        for {
-          v <- transfer(list)
-          pv <- id(_.pop(v, front))
-          _ <- modify(_.define(lhs, pv))
-        } yield ()
-      case inst @ IReturn(expr) =>
-        for {
-          v <- transfer(expr)
-          st <- get
-          _ <- doReturn(inst, st, v)
-          _ <- put(AbsState.Bot)
-        } yield ()
-      case IAssert(expr: EYet) =>
-        st => st /* skip not yet compiled assertions */
-      case IAssert(expr) =>
-        for {
-          v <- transfer(expr)
-          st <- get
-          block = np.node match
-            case block: Block => Some(block)
-            case _            => None
-          _ <- modify(refine(v, TrueT))
-          refinedSt <- get
-          given AbsState = refinedSt
-          _ <- if (v ⊑ False) put(AbsState.Bot) else pure(())
-        } yield ()
-      case IPrint(expr) => st => st /* skip */
-      case INop(_)      => st => st /* skip */
-    }
-
-    /** update return points */
-    def doReturn(
-      irReturn: Return,
-      givenSt: AbsState,
-      v: AbsValue,
-    )(using np: NodePoint[Node]): Unit =
-      given AbsState = givenSt
-      val NodePoint(func, node, view) = np
-      val irp = InternalReturnPoint(func, node, irReturn)
-      val entryView = getEntryView(view)
-      val entryNp = NodePoint(func, func.entry, entryView)
-      val entrySt = getResult(entryNp)
-      val givenV = v.forReturn(givenSt, func, entrySt)
-      val rp = ReturnPoint(func, entryView)
-      val newV = func.retTy.ty match
-        case _: UnknownTy        => givenV
-        case expectedTy: ValueTy =>
-          // return type check when it is a known type
-          val givenTy = givenV.ty(using entrySt)
-          if (givenTy <= expectedTy) givenV
-          else
-            if (config.checkReturnType)
-              addError(ReturnTypeMismatch(irp, givenTy))
-            AbsValue(STy(givenTy && expectedTy), givenV.guard)
-      // no propagation if the return value is bottom
-      if (!newV.isBottom)
-        val AbsRet(oldV, noSym @ (noSymV, noSymMayMust), syms) = getResult(rp)
-        if (!oldV.isBottom && useRepl) Repl.merged = true
-        if ((newV !⊑ oldV)(using entrySt)) {
-          val mayMust = givenSt.mayMust.onlySym
-          val hasSym = v.symty.hasSym
-          val newRet = AbsRet(
-            oldV ⊔ newV,
-            if (hasSym) noSym else (noSymV ⊔ newV, noSymMayMust || mayMust),
-            if (hasSym) syms + (np -> (v.onlySym(using givenSt), mayMust))
-            else syms - np,
-          )
-          rpMap += rp -> newRet
-          worklist += rp
-        }
-
-    /** transfer function for expressions */
-    def transfer(
-      expr: Expr,
-    )(using np: NodePoint[Node]): Result[AbsValue] = st => {
-      val (v, newSt) = (for {
-        v <- basicTransfer(expr)
-        given AbsState <- get
-        guard <- getTypeGuard(expr)
-        newV = v.addGuard(guard)
-      } yield newV)(st)
-      // No propagation if the result of the expression is bottom
-      if (v.isBottom) (v, AbsState.Bot) else (v, newSt)
-    }
-
-    /** transfer function for expressions */
-    def basicTransfer(
-      expr: Expr,
-    )(using np: NodePoint[Node]): Result[AbsValue] = expr match {
-      case EParse(code, rule) =>
-        for {
-          c <- transfer(code)
-          r <- transfer(rule)
-          given AbsState <- get
-        } yield c.parse(r)
-      case EGrammarSymbol(name, params) =>
-        val s = GrammarSymbol(name, params)
-        AbsValue(GrammarSymbolT(s))
-      case ESourceText(expr) =>
-        for {
-          v <- transfer(expr)
-        } yield StrTop
-      case EYet(msg) =>
-        if (yetThrow) notSupported(msg)
-        else AbsValue.Bot
-      case EContains(list, elem) =>
-        for {
-          l <- transfer(list)
-          v <- transfer(elem)
-          given AbsState <- get
-        } yield
-          if (l.ty.list.isBottom) AbsValue.Bot
-          else BoolTop
-      case ESubstring(expr, from, None) =>
-        for {
-          v <- transfer(expr)
-          f <- transfer(from)
-        } yield v.substring(f)
-      case ESubstring(expr, from, Some(to)) =>
-        for {
-          v <- transfer(expr)
-          f <- transfer(from)
-          t <- transfer(to)
-        } yield v.substring(f, t)
-      case ETrim(expr, isStarting) =>
-        for {
-          v <- transfer(expr)
-        } yield v.trim(isStarting)
-      case ERef(ref) =>
-        for {
-          v <- transfer(ref)
-        } yield v
-      case unary @ EUnary(_, expr) =>
-        for {
-          v <- transfer(expr)
-          st <- get
-          v0 <- transfer(st, unary, v)
-        } yield v0
-      case binary @ EBinary(BOp.And | BOp.Or, left, right) =>
-        shortCircuit(binary, left, right)
-      case binary @ EBinary(_, left, right) =>
-        for {
-          lv <- transfer(left)
-          rv <- transfer(right)
-          st <- get
-          v <- transfer(st, binary, lv, rv)
-        } yield v
-      case EVariadic(vop, exprs) =>
-        for {
-          vs <- join(exprs.map(transfer))
-          st <- get
-        } yield transfer(st, vop, vs)
-      case EMathOp(mop, exprs) =>
-        for {
-          vs <- join(exprs.map(transfer))
-          st <- get
-        } yield transfer(st, mop, vs)
-      case EConvert(cop, expr) =>
-        import COp.*
-        for {
-          v <- transfer(expr)
-          r <- cop match
-            case ToStr(Some(radix)) => transfer(radix)
-            case ToStr(None)        => pure(AbsValue(MathT(10)))
-            case _                  => pure(AbsValue.Bot)
-          given AbsState <- get
-        } yield v.convertTo(cop, r)
-      case EExists(ref) =>
-        for {
-          v <- get(_.exists(ref))
-        } yield v
-      case ETypeOf(base) =>
-        for {
-          v <- transfer(base)
-          given AbsState <- get
-        } yield v.typeOf
-      case EInstanceOf(expr, target) =>
-        for {
-          v <- transfer(expr)
-          t <- transfer(target)
-        } yield v.instanceOf(t)
-      case ETypeCheck(expr, ty) =>
-        for {
-          v <- transfer(expr)
-          b <- get(_.typeCheck(v, ty.toValue))
-        } yield AbsValue(b)
-      case ESizeOf(expr) =>
-        for {
-          v <- transfer(expr)
-          given AbsState <- get
-        } yield v.sizeOf
-      case EClo(fname, captured) => AbsValue(CloT(fname))
-      // TODO for {
-      //   given AbsState <- get
-      //   vs <- join(captured.map(transfer))
-      //   pairs = captured zip vs
-      //   _ <- join(pairs.map { (x, v) =>
-      //     val record = v.ty.record match
-      //       case RecordTy.Top => RecordTy.Top
-      //       case RecordTy.Elem(map) =>
-      //         RecordTy.Elem(map.map { (x, fm) => x -> FieldMap.Top })
-      //     val newV = AbsValue(ValueTy(record = record))
-      //     modify(_.update(x, newV, refine = true))
-      //   })
-      // } yield AbsValue(CloT(fname))
-      case ECont(fname) => AbsValue(ContT(cfg.fnameMap(fname).id))
-      case EDebug(expr) =>
-        for {
-          v <- transfer(expr)
-          st <- get
-          _ = debug(s"[[ $expr @ $np ]]($st) = $v")
-        } yield v
-      case ERandom() => pure(NumberTop)
-      case ESyntactic(name, _, rhsIdx, _) =>
-        pure(AbsValue(AstT(name, rhsIdx)))
-      case ELexical(name, expr) => pure(AbsValue(AstT))
-      case ERecord(
-            tname @ "CompletionRecord",
-            List(
-              ("Type", EEnum("normal")),
-              ("Value", expr),
-              ("Target", EEnum("empty")),
-            ),
-          ) =>
-        for {
-          v <- transfer(expr)
-          given AbsState <- get
-          newV = v.symty match
-            case STy(sty) => AbsValue(NormalT(sty))
-            case s        => AbsValue(SNormal(s))
-        } yield newV
-      case ERecord(tname, fields) =>
-        for {
-          pairs <- join(fields.map {
-            case (f, expr) =>
-              for {
-                v <- transfer(expr)
-              } yield (f, v)
-          })
-          lv <- id(_.allocRecord(tname, pairs))
-        } yield lv
-      case EMap((kty, vty), _) => AbsValue(MapT(kty.toValue, vty.toValue))
-      case EList(exprs) =>
-        for {
-          vs <- join(exprs.map(transfer))
-          lv <- id(_.allocList(vs))
-        } yield lv
-      case ECopy(obj) =>
-        for {
-          v <- transfer(obj)
-          lv <- id(_.copy(v))
-        } yield lv
-      case EKeys(map, intSorted) =>
-        for {
-          v <- transfer(map)
-          lv <- id(_.keys(v, intSorted))
-        } yield lv
-      case EMath(n)              => AbsValue(MathT(n))
-      case EInfinity(pos)        => AbsValue(InfinityT(pos))
-      case ENumber(n) if n.isNaN => AbsValue(NumberT(Double.NaN))
-      case ENumber(n)            => AbsValue(NumberT(n))
-      case EBigInt(n)            => AbsValue(BigIntT)
-      case EStr(str)             => AbsValue(StrT(str))
-      case EBool(b)              => AbsValue(BoolT(b))
-      case EUndef()              => AbsValue(UndefT)
-      case ENull()               => AbsValue(NullT)
-      case EEnum(name)           => AbsValue(EnumT(name))
-      case ECodeUnit(c)          => AbsValue(CodeUnitT)
-    }
-
-    // short circuit evaluation
-    def shortCircuit(
-      binary: EBinary,
-      left: Expr,
-      right: Expr,
-    )(using np: NodePoint[Node]): Result[AbsValue] = for {
-      l <- transfer(left)
-      given AbsState <- get
-      v <- binary.bop match {
-        case BOp.And =>
-          val r: Result[AbsValue] = (st: AbsState) =>
-            var bools = Set[Boolean]()
-            val lbools = l.ty.bool.set
-            if (lbools.contains(false)) bools += false
-            if (lbools.contains(true)) {
-              val block = np.node match
-                case block: Block => Some(block)
-                case _            => None
-              val (r, _) = transfer(right)(refine(l, TrueT)(st))
-              bools ++= r.ty.bool.set
-            }
-            (AbsValue(BoolT(bools)), st)
-          r
-        case BOp.Or =>
-          val r: Result[AbsValue] = (st: AbsState) =>
-            var bools = Set[Boolean]()
-            val lbools = l.ty.bool.set
-            if (lbools.contains(true)) bools += true
-            if (lbools.contains(false))
-              val (r, _) = transfer(right)(refine(l, FalseT)(st))
-              bools ++= r.ty.bool.set
-            (AbsValue(BoolT(bools)), st)
-          r
-        case _ =>
-          for {
-            r <- transfer(right)
-            st <- get
-            v = transfer(st, binary, l, r)
-          } yield v
-      }
-    } yield v
-
-    /** get a type guard */
+    // =========================================================================
+    // type guard for expressions
+    // =========================================================================
     def getTypeGuard(expr: Expr)(using np: NodePoint[?]): Result[TypeGuard] = {
       import TargetType.*
       given Node = np.node
@@ -1302,7 +1291,6 @@ trait AbsTransferDecl { analyzer: TyChecker =>
     // =========================================================================
     // Implementation for TyChecker
     // =========================================================================
-
     /** check if the return type can be used */
     lazy val canUseReturnTy: Func => Boolean = cached { func =>
       manualRefiners.contains(func.name) || (
@@ -1312,9 +1300,8 @@ trait AbsTransferDecl { analyzer: TyChecker =>
     }
 
     /** default type guards */
-    type Refinements = Map[TargetType, Map[Local, ValueTy]]
-    type Refinement = (Func, List[AbsValue], ValueTy, AbsState) => AbsValue
-    val manualRefiners: Map[String, Refinement] = Map(
+    type Refiner = (Func, List[AbsValue], ValueTy, AbsState) => AbsValue
+    val manualRefiners: Map[String, Refiner] = Map(
       "__APPEND_LIST__" -> { (func, vs, retTy, st) =>
         given AbsState = st
         AbsValue(vs(0).ty || vs(1).ty)

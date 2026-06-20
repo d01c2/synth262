@@ -101,9 +101,9 @@ class SymInterp(
     if (!isCandidate(node) || st.isBottom) return unwrap(pop)
     node match
       case Block(_, insts, next) =>
-        st = insts.zipWithIndex.foldLeft(st) {
+        st = insts.foldLeft(st) {
           case (nextSt, _) if nextSt.isBottom => nextSt
-          case (nextSt, (inst, idx)) => transfer.transfer(inst, idx)(nextSt)
+          case (nextSt, inst)                 => transfer.transfer(inst)(nextSt)
         }
         next match
           case Some(next) => node = next

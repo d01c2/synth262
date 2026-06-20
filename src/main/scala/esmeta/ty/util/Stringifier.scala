@@ -182,18 +182,6 @@ class Stringifier(
     given Rule[(Property, Desc)] = (app, pair) =>
       val (prop, desc) = pair
       app >> prop >> ": " >> desc
-    given Rule[Property] = (app, prop) =>
-      import Property.*
-      prop match
-        case PStr(s) => app >> s
-        case PSym(s) => app >> "[@@" >> s >> "]"
-    given Rule[Desc] = (app, desc) =>
-      val Desc(getThrow, setThrow, ty) = desc
-      var strs = Vector[String]()
-      if (getThrow) strs :+= "<GET>"
-      if (setThrow) strs :+= "<SET>"
-      if (!ty.isBottom) strs :+= ty.toString
-      app >> strs.mkString("|")
     ty match
       case Top => app >> "Record"
       case Elem(map, props) =>
@@ -256,6 +244,22 @@ class Stringifier(
           app >> "Record[" >> (m.toList ++ preds).sortBy(_._1) >> "]"
         if (props.nonEmpty) app >> " {{ " >> props.toList.sortBy(_._1) >> " }}"
         else app
+
+  /** properties */
+  given Rule[Property] = (app, prop) =>
+    import Property.*
+    prop match
+      case PStr(s) => app >> s
+      case PSym(s) => app >> "[@@" >> s >> "]"
+
+  /** property descriptors */
+  given Rule[Desc] = (app, desc) =>
+    val Desc(getThrow, setThrow, ty) = desc
+    var strs = Vector[String]()
+    if (getThrow) strs :+= "<GET>"
+    if (setThrow) strs :+= "<SET>"
+    if (!ty.isBottom) strs :+= ty.toString
+    app >> strs.mkString("|")
 
   /** AST value types */
   given astTyRule: Rule[AstTy] = (app, ty) =>
