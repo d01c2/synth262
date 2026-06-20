@@ -16,7 +16,6 @@ trait TypeGuardDecl { self: TyChecker =>
     def isEmpty: Boolean = map.isEmpty
     def nonEmpty: Boolean = !isEmpty
     def dtys: Set[TargetType] = map.keySet
-    def get(dty: TargetType): Option[MayMust] = map.get(dty)
 
     def apply(dty: TargetType): MayMust = map.getOrElse(dty, MayMust.Must)
 
@@ -31,69 +30,25 @@ trait TypeGuardDecl { self: TyChecker =>
     def filter(ty: ValueTy): TypeGuard =
       TypeGuard(map.filter { (dty, _) => dty.ty overlap ty })
 
-    def lift(ty: ValueTy = ValueTy.Top)(using st: AbsState): TypeGuard =
-      this && TypeGuard((for {
-        kind <- TargetType.from(ty).toList
-        mayMust = st.mayMust
-        if !mayMust.isTop
-      } yield kind -> mayMust).toMap)
-
     def has(x: Base): Boolean = map.values.exists(_.has(x))
 
-    def <=(that: TypeGuard): Boolean = that.map.forall { (dty, r) =>
-      this.map.get(dty) match
-        case Some(l) => l <= r
-        case None    => false
-    }
-
-    def ||(that: TypeGuard)(lty: ValueTy, rty: ValueTy): TypeGuard =
-      val (ldtys, rdtys) = (this.dtys, that.dtys)
-      val dtys =
-        ldtys.filter(k => (k.ty distinct rty) || rdtys.contains(k)) ++
-        rdtys.filter(k => (k.ty distinct lty) || ldtys.contains(k))
-      TypeGuard((for {
-        dty <- dtys.toList
-        ty = lty || rty
-        mayMust = (this.evaluate(ty, dty.ty), that.evaluate(ty, dty.ty)) match
-          case (l, r) if (lty distinct dty.ty) => r
-          case (l, r) if (rty distinct dty.ty) => l
-          case (l, r)                          => l || r
-        if !mayMust.isTop
-      } yield dty -> mayMust).toMap)
-
-    def &&(that: TypeGuard): TypeGuard = TypeGuard((for {
-      dty <- (this.dtys ++ that.dtys).toList
-      mayMust = this(dty) && that(dty)
-      if !mayMust.isTop
-    } yield dty -> mayMust).toMap)
-
-    def evaluate(lty: ValueTy, rty: ValueTy): MayMust =
-      if (lty distinct rty) MayMust.Must
-      else {
-        val mayMusts = for {
-          (dty, mayMust) <- map
-          if rty <= dty.ty
-        } yield mayMust
-        if (mayMusts.isEmpty) MayMust.Must
-        else mayMusts.reduce(_ && _)
-      }
-
-    def simple: TypeGuard =
-      TypeGuard(map.filterNot { (dty, mayMust) =>
-        map.exists { (tdty, tMayMust) =>
-          (dty.ty != tdty.ty && dty.ty <= tdty.ty && tMayMust <= mayMust)
-        }
-      })
+    def derive(fromTy: ValueTy, toTy: ValueTy): MayMust =
+      val ty = fromTy && toTy
+      map
+        .collect { case (dty, mayMust) if ty <= dty.ty => mayMust }
+        .foldLeft(MayMust.Must)(_ && _)
 
     def hasLocal: Boolean = map.values.exists(_.hasLocal)
 
     def hasSym: Boolean = map.values.exists(_.hasSym)
 
-    def onlySym: TypeGuard =
-      TypeGuard(map.map { (dty, mayMust) => dty -> mayMust.onlySym })
+    def onlySym: TypeGuard = TypeGuard(
+      map.map { (dty, mayMust) => dty -> mayMust.onlySym },
+    )
 
-    def normalize: TypeGuard =
-      TypeGuard(map.filterNot { (_, mayMust) => mayMust.isTop })
+    def normalized(upper: ValueTy): TypeGuard = TypeGuard(
+      map.filter((dty, mayMust) => (dty.ty overlap upper) && !mayMust.isTop),
+    )
 
     override def toString: String = (new Appender >> this).toString
   }
@@ -103,11 +58,53 @@ trait TypeGuardDecl { self: TyChecker =>
       ps.toMap,
     )
   }
+  extension (lpair: (ValueTy, TypeGuard)) {
+    def <=(rpair: (ValueTy, TypeGuard)): Boolean = {
+      val (luty, lguard) = lpair
+      val (ruty, rguard) = rpair
+      luty <= ruty &&
+      rguard.map.forall { (dty, mayMust) =>
+        (luty distinct dty.ty) || lguard(dty) <= mayMust
+      }
+    }
+    def ||(rpair: (ValueTy, TypeGuard)): TypeGuard = {
+      val (luty, lguard) = lpair
+      val (ruty, rguard) = rpair
+      val ty = luty || ruty
+      TypeGuard(
+        (for {
+          dty <- (lguard.dtys ++ rguard.dtys).toList
+          mayMust = {
+            (if (dty.ty overlap luty) lguard(dty) else MayMust.Bot) ||
+            (if (dty.ty overlap ruty) rguard(dty) else MayMust.Bot)
+          }
+          if !mayMust.isTop
+        } yield dty -> mayMust).toMap,
+      )
+    }
+    def &&(rpair: (ValueTy, TypeGuard)): TypeGuard = {
+      val (luty, lguard) = lpair
+      val (ruty, rguard) = rpair
+      val ty = luty && ruty
+      TypeGuard(
+        (for {
+          dty <- (lguard.dtys ++ rguard.dtys).toList
+          if dty.ty overlap ty
+          mayMust = lguard(dty) && rguard(dty)
+        } yield dty -> mayMust).toMap,
+      )
+    }
+    def lift(mayMust: MayMust): TypeGuard =
+      val (uty, guard) = lpair
+      TypeGuard(
+        TargetType.from(uty).map(dty => dty -> (guard(dty) && mayMust)).toMap,
+      )
+  }
 
   case class TargetType(ty: ValueTy)
 
   object TargetType {
-    val set: Set[ValueTy] = Set(
+    val all: List[ValueTy] = List(
       TrueT,
       FalseT,
       NormalT,
@@ -117,17 +114,10 @@ trait TypeGuardDecl { self: TyChecker =>
       ENUMT_SYNC,
       ENUMT_ASYNC,
     )
+    val set: Set[ValueTy] = all.toSet
 
-    def apply(ty: ValueTy): TargetType =
-      if (TargetType.set.contains(ty)) new TargetType(ty)
-      else {
-        throw notSupported(s"Unsupported TargetType: $ty")
-      }
-
-    def from(givenTy: ValueTy): Set[TargetType] =
-      TargetType.set
-        .filter(givenTy overlap _)
-        .map(TargetType(_))
+    def from(givenTy: ValueTy): List[TargetType] =
+      TargetType.all.filter(givenTy overlap _).map(TargetType(_))
   }
 
   /** type constraints */
@@ -342,8 +332,7 @@ trait TypeGuardDecl { self: TyChecker =>
       case SEExists(ref) => app >> "(exists " >> ref >> ")"
       case SETypeCheck(e, ty) =>
         symExprRule(app >> "(? ", e) >> ": " >> ty >> ")"
-      case SETypeOf(base) =>
-        symExprRule(app >> "(typeof ", base) >> ")"
+      case SETypeOf(base) => symExprRule(app >> "(typeof ", base) >> ")"
       case SEEq(left, right) =>
         val a = symExprRule(app >> "(= ", left)
         symExprRule(a >> " ", right) >> ")"
@@ -355,9 +344,8 @@ trait TypeGuardDecl { self: TyChecker =>
   given Rule[TypeGuard] = (app, guard) =>
     given Ordering[TargetType] = Ordering.by(_.toString)
     given Rule[TargetType] = (app, dty) => app >> dty.ty
-    given Rule[Map[TargetType, TypeConstr]] =
-      sortedMapRule("{", "}", " => ")
-    app >> guard.simple.map
+    given Rule[Map[TargetType, TypeConstr]] = sortedMapRule("{", "}", " => ")
+    app >> guard.map
 
   /** TypeConstr */
   given Rule[TypeConstr] = (app, constr) =>

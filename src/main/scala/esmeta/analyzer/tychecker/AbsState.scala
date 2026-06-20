@@ -34,9 +34,7 @@ trait AbsStateDecl { self: TyChecker =>
             AbsState(_, rlocals, rsymEnv, rmayMust),
           ) =>
         llocals.forall { (x, lv) =>
-          rlocals.get(x).fold(false) { rv =>
-            AbsValue.orderHelper(lv, this, rv, that)
-          }
+          rlocals.get(x).fold(false) { rv => (lv, this) ⊑ (rv, that) }
         } &&
         lsymEnv.forall { (sym, ty) => rsymEnv.get(sym).fold(false)(ty <= _) } &&
         lmayMust <= rmayMust
@@ -60,8 +58,7 @@ trait AbsStateDecl { self: TyChecker =>
           v = {
             val lv = this.get(x)
             val rv = that.get(x)
-            if (lv == rv) lv
-            else AbsValue.joinHelper(l.get(x), l, r.get(x), r)
+            if (lv == rv) lv else (l.get(x), l) ⊔ (r.get(x), r)
           }
         } yield x -> v).toMap
         val newSymEnv = (for {
@@ -101,7 +98,7 @@ trait AbsStateDecl { self: TyChecker =>
       case (l, r) =>
         val newLocals = (for {
           x <- (l.locals.keySet intersect r.locals.keySet).toList
-          v = this.get(x) ⊓ that.get(x)
+          v = (this.get(x), this) ⊓ (that.get(x), that)
         } yield x -> v).toMap
         val newSymEnv = (for {
           sym <- (l.symEnv.keySet intersect r.symEnv.keySet).toList
@@ -253,9 +250,9 @@ trait AbsStateDecl { self: TyChecker =>
       field.ty.str.getSingle match
         case One("Value") =>
           TypeGuard(guard.map.collect {
-            case (TargetType(ty), map) if ty == NormalT(TrueT) =>
+            case (dty, map) if dty.ty == NormalT(TrueT) =>
               TargetType(TrueT) -> map
-            case (TargetType(ty), map) if ty == NormalT(FalseT) =>
+            case (dty, map) if dty.ty == NormalT(FalseT) =>
               TargetType(FalseT) -> map
           })
         case _ => TypeGuard.Empty

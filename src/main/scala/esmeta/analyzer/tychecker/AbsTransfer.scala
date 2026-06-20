@@ -51,15 +51,15 @@ trait AbsTransferDecl { analyzer: TyChecker =>
           for (node <- elseNode if v.ty.contains(false))
             analyzer += getNextNp(np, node) -> refine(v, FalseT)(newSt)
 
-    def refine(
-      v: AbsValue,
-      ty: ValueTy,
-    )(using np: NodePoint[?]): Updater = st =>
+    def refine(v: AbsValue, ty: ValueTy)(using
+      np: NodePoint[?],
+    ): Updater = st =>
       import TargetType.*
       given AbsState = st
       val dty = TargetType(ty)
-      val mayMust = v.guard.evaluate(v.ty, dty.ty)
-      if ((v.ty ⊓ ty).isBottom) AbsState.Bot
+      val vty = v.ty
+      val mayMust = v.guard.derive(vty, dty.ty)
+      if (vty distinct ty) AbsState.Bot
       else refine(mayMust)(st)
 
     /** get next node point */
@@ -376,7 +376,6 @@ trait AbsTransferDecl { analyzer: TyChecker =>
         for {
           v <- transfer(expr)
           st <- get
-          constr = v.guard.get(TargetType(TrueT))
           block = np.node match
             case block: Block => Some(block)
             case _            => None
@@ -1210,8 +1209,7 @@ trait AbsTransferDecl { analyzer: TyChecker =>
         newMayMust = instantiate(call, mayMust, map)
         if !newMayMust.isTop
       } yield dty -> newMayMust).toMap)
-      val ivalue @ AbsValue(isymty, iguard) = instantiate(symty, map)
-      AbsValue(isymty, newGuard && iguard)
+      instantiate(symty, map).addGuard(newGuard)
 
     def instantiate(
       call: Call,

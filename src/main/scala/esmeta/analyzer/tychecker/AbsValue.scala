@@ -31,19 +31,18 @@ trait AbsValueDecl { self: TyChecker =>
     def isSingle(using st: AbsState): Boolean = symty.isSingle && guard.isEmpty
 
     /** partial order */
-    def ⊑(that: AbsValue)(using st: AbsState): Boolean =
-      orderHelper(this, st, that, st)
+    def ⊑(that: AbsValue)(using st: AbsState): Boolean = (this, st) ⊑ (that, st)
 
     /** not partial order */
     def !⊑(that: AbsValue)(using AbsState): Boolean = !(this ⊑ that)
 
     /** join operator */
     def ⊔(that: AbsValue)(using st: AbsState): AbsValue =
-      joinHelper(this, st, that, st)
+      (this, st) ⊔ (that, st)
 
     /** meet operator */
     def ⊓(that: AbsValue)(using st: AbsState): AbsValue =
-      meetHelper(this, st, that, st)
+      (this, st) ⊓ (that, st)
 
     /** prune operator */
     def --(that: AbsValue)(using AbsState): AbsValue =
@@ -51,7 +50,8 @@ trait AbsValueDecl { self: TyChecker =>
 
     /** add type guard */
     def addGuard(guard: TypeGuard)(using AbsState): AbsValue =
-      this.copy(guard = (this.guard && guard).filter(this.ty))
+      val ty = this.ty
+      this.copy(guard = (ty, this.guard) && (ty, guard))
 
     /** kill bases */
     def kill(bases: Set[Base], update: Boolean)(using AbsState): AbsValue =
@@ -80,7 +80,7 @@ trait AbsValueDecl { self: TyChecker =>
       inSymty ++ inGuard
 
     def lift(using st: AbsState): AbsValue =
-      AbsValue(symty, guard.lift(this.ty))
+      AbsValue(symty, (this.ty, guard).lift(st.mayMust))
 
     /** check whether it has a local variable as a base */
     def hasLocalBase(x: Local): Boolean = bases.exists(_ == x)
@@ -441,38 +441,26 @@ trait AbsValueDecl { self: TyChecker =>
       "HexEscapeSequence",
     ) ++ posIntMVTyNames
 
-    def orderHelper(
-      l: AbsValue,
-      lst: AbsState,
-      r: AbsValue,
-      rst: AbsState,
-    ): Boolean =
-      val AbsValue(lsymty, lguard) = l
-      val AbsValue(rsymty, rguard) = r
-      (lsymty ⊑ rsymty)(lst, rst) && lguard <= rguard
-
-    def joinHelper(
-      l: AbsValue,
-      lst: AbsState,
-      r: AbsValue,
-      rst: AbsState,
-    ): AbsValue =
-      val AbsValue(lsymty, lguard) = l
-      val AbsValue(rsymty, rguard) = r
-      val luty = l.ty(using lst)
-      val ruty = r.ty(using rst)
-      val guard = (lguard || rguard)(luty, ruty)
-      AbsValue((lsymty ⊔ rsymty)(lst, rst), guard)
-
-    def meetHelper(
-      l: AbsValue,
-      lst: AbsState,
-      r: AbsValue,
-      rst: AbsState,
-    ): AbsValue =
-      val AbsValue(lsymty, lguard) = l
-      val AbsValue(rsymty, rguard) = r
-      AbsValue((lsymty ⊓ rsymty)(lst, rst), lguard && rguard)
+    extension (lpair: (AbsValue, AbsState)) {
+      def ⊑(rpair: (AbsValue, AbsState)): Boolean =
+        val (l @ AbsValue(lsymty, lguard), lst) = lpair
+        val (r @ AbsValue(rsymty, rguard), rst) = rpair
+        val luty = l.ty(using lst)
+        val ruty = r.ty(using rst)
+        (lsymty ⊑ rsymty)(lst, rst) && ((luty, lguard) <= (ruty, rguard))
+      def ⊔(rpair: (AbsValue, AbsState)): AbsValue =
+        val (l @ AbsValue(lsymty, lguard), lst) = lpair
+        val (r @ AbsValue(rsymty, rguard), rst) = rpair
+        val luty = l.ty(using lst)
+        val ruty = r.ty(using rst)
+        AbsValue((lsymty ⊔ rsymty)(lst, rst), (luty, lguard) || (ruty, rguard))
+      def ⊓(rpair: (AbsValue, AbsState)): AbsValue =
+        val (l @ AbsValue(lsymty, lguard), lst) = lpair
+        val (r @ AbsValue(rsymty, rguard), rst) = rpair
+        val luty = l.ty(using lst)
+        val ruty = r.ty(using rst)
+        AbsValue((lsymty ⊓ rsymty)(lst, rst), (luty, lguard) && (ruty, rguard))
+    }
 
     /** appender */
     given rule: Rule[AbsValue] = (app, elem) =>
