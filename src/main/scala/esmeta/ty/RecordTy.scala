@@ -83,7 +83,7 @@ enum RecordTy extends TyElem with Lattice[RecordTy] {
         .groupBy(_._1)
         .map { case (t, pairs) => t -> pairs.map(_._2).reduce(_ && _) }
         .toMap
-      Elem(map, lobj && robj)
+      Elem(map, lobj && robj).normalized
 
   /** prune type */
   def --(that: => RecordTy): RecordTy = (this, that) match
@@ -203,11 +203,8 @@ enum RecordTy extends TyElem with Lattice[RecordTy] {
     case Top => Top
     case Elem(map, obj) =>
       val m = map.map(normalize)
-      if (
-        obj.isBottom ||
-        (Elem(m) && Object).isBottom
-      ) Elem(m)
-      else Elem(m, obj)
+      if (m.exists((x, _) => isSubTy(x, "Object"))) Elem(m, obj)
+      else Elem(m)
 
   /** to list of atomic record types */
   def toAtomicTys: List[RecordTy] = this match

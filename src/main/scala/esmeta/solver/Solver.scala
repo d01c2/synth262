@@ -8,7 +8,7 @@ import esmeta.util.BaseUtils.*
 
 trait Solver { self: SymInterp =>
 
-  import tychecker.*, SymTy.*
+  import tychecker.*, SymTy.*, Solver.*
 
   /** check the satisfiability of the given abstract state */
   def check: Boolean =
@@ -39,24 +39,6 @@ trait Solver { self: SymInterp =>
       code <- reifyWithSyms(path, thisV, vs, getNewTargetExpr(newTarget))
     } yield code
 
-  // get a JavaScript expression representing the may/must value type
-  def getJSExpr(mayMustTy: (ValueTy, ValueTy)): Option[String] =
-    val (mayTy, mustTy) = mayMustTy
-    getJSExpr(mustTy).orElse(getJSExpr(mayTy))
-
-  // get a JavaScript expression representing the value type
-  def getJSExpr(ty: ValueTy): Option[String] = Solver.exprFor(ty)
-
-  // get a JavaScript expression representing the newTarget value type
-  def getNewTargetExpr(mayMustTy: (ValueTy, ValueTy)): Option[String] =
-    val (mayTy, mustTy) = mayMustTy
-    if (UndefT ⊑ mayTy) None else getJSExpr(mayTy)
-
-  def getPath(func: Func): Option[BuiltinPath] = func.head match {
-    case Some(h: BuiltinHead) => Some(h.path)
-    case _                    => None
-  }
-
   def reify(
     path: BuiltinPath,
     thisValue: String,
@@ -77,7 +59,7 @@ trait Solver { self: SymInterp =>
     newTarget: Option[String],
   ): Option[(String, List[Sym])] = newTarget match
     case Some(nt) =>
-      Solver.access(path).map { target =>
+      access(path).map { target =>
         s"Reflect.construct($target, [${args.map(_._2).mkString(", ")}], $nt);" ->
         (args.map(_._1) :+ SNewTarget.sym)
       }
@@ -85,22 +67,39 @@ trait Solver { self: SymInterp =>
       path match
         case BuiltinPath.YetPath(_) => None
         case BuiltinPath.Getter(base) =>
-          Solver
-            .descriptor(base)
+          descriptor(base)
             .map(d => s"$d.get.call($thisValue);" -> List(SThis.sym))
         case BuiltinPath.Setter(base) =>
           val value = args.headOption.map(_._2).getOrElse("undefined")
           val syms = SThis.sym :: args.headOption.map(_._1).toList
-          Solver
-            .descriptor(base)
+          descriptor(base)
             .map(d => s"$d.set.call($thisValue, $value);" -> syms)
         case _ =>
-          Solver.access(path).map { fn =>
+          access(path).map { fn =>
             s"$fn.call(${(thisValue :: args.map(_._2)).mkString(", ")});" ->
             (SThis.sym :: args.map(_._1))
           }
 }
 object Solver {
+
+  // get a JavaScript expression representing the may/must value type
+  def getJSExpr(mayMustTy: (ValueTy, ValueTy)): Option[String] =
+    val (mayTy, mustTy) = mayMustTy
+    getJSExpr(mustTy).orElse(getJSExpr(mayTy))
+
+  // get a JavaScript expression representing the value type
+  def getJSExpr(ty: ValueTy): Option[String] = exprFor(ty)
+
+  // get a JavaScript expression representing the newTarget value type
+  def getNewTargetExpr(mayMustTy: (ValueTy, ValueTy)): Option[String] =
+    val (mayTy, mustTy) = mayMustTy
+    if (UndefT ⊑ mayTy) None else getJSExpr(mayTy)
+
+  def getPath(func: Func): Option[BuiltinPath] = func.head match {
+    case Some(h: BuiltinHead) => Some(h.path)
+    case _                    => None
+  }
+
   // JS expression to access a builtin function (None if unreachable)
   def funcAccessExpr(f: Func): Option[String] =
     f.head.collectFirst { case h: BuiltinHead => h.path }.flatMap(access)
