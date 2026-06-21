@@ -192,10 +192,47 @@ trait Parsers extends BasicParsers {
       opt(word) ~ opt(fieldMap) ^^ {
         case k ~ v => (k.getOrElse(""), v.getOrElse(FieldMap.Top))
       }
-    "Record[" ~> repsep(pair, "|") <~ "]" ^^ {
-      case fs => Elem(fs.toMap)
+    ("Record[" ~> repsep(pair, "|") <~ "]") ~ objShape ^^ {
+      case fs ~ o => Elem(fs.toMap, o)
     } | "Record" ^^^ Top
   }.named("ty.RecordTy (single)")
+
+  private lazy val objShape: Parser[ObjShape] = {
+    import ObjShape.*
+    lazy val pair = (prop <~ ":") ~ desc ^^ { case p ~ d => (p, d) }
+    val props = opt("{{" ~> repsep(pair, ",") <~ "}}") ^^ {
+      case None     => Map.empty[Property, Desc]
+      case Some(ps) => ps.toMap
+    }
+    props ~ callDesc ^^ {
+      case ps ~ c => ObjShape(ps, c)
+    }
+  }
+
+  given prop: Parser[Property] = {
+    import Property.*
+    stringLiteral ^^ { PStr(_) } |
+    "@@" ~> word ^^ { PSym(_) }
+  }
+
+  given desc: Parser[Desc] = {
+    import Desc.*
+    val single =
+      "<GET-EXC>" ^^^ GetExc |
+      "<SET-EXC>" ^^^ SetExc |
+      valueTy ^^ { Desc(_) }
+    "⊥" ^^^ Bot |
+    rep1sep(single, "|") ^^ { ds => ds.foldLeft(Bot)(_ || _) }
+  }
+
+  given callDesc: Parser[CallDesc] = "[call:" ~> {
+    import CallDesc.*
+    val single =
+      "<EXC>" ^^^ Exc |
+      valueTy ^^ { CallDesc(_) }
+    "⊥ " ^^^ Bot |
+    rep1sep(single, "|") ^^ { ds => ds.foldLeft(Bot)(_ || _) }
+  } <~ "]" | "" ^^^ CallDesc.Top
 
   given sign: Parser[Sign] = {
     val neg = "-" ^^^ Sign.Neg | "" ^^^ Sign.Bot

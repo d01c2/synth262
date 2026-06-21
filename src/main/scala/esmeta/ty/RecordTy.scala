@@ -369,11 +369,14 @@ case class Desc(
 object Desc {
   val Bot: Desc = Desc()
   val Top: Desc = Desc(getExc = true, setExc = true, ESValueT)
+  val GetExc: Desc = Desc(getExc = true)
+  val SetExc: Desc = Desc(setExc = true)
+  def apply(ty: ValueTy): Desc = Desc(ty = ty)
 }
 
 enum CallDesc extends TyElem {
   case Top
-  case Elem(exc: Boolean, ret: ValueTy)
+  case Elem(exc: Boolean = false, ret: ValueTy = BotT)
   def isBottom: Boolean = this match
     case Top            => false
     case Elem(exc, ret) => !exc && ret.isBottom
@@ -394,8 +397,10 @@ enum CallDesc extends TyElem {
     case Elem(exc, ret) => NormalT(ret) || (if (exc) ThrowT else BotT)
 }
 object CallDesc {
-  lazy val Bot: CallDesc = Elem(exc = false, ret = BotT)
+  lazy val Bot: CallDesc = Elem()
   lazy val Exist: CallDesc = Elem(exc = true, ret = ESValueT)
+  lazy val Exc: CallDesc = Elem(exc = true)
+  def apply(ret: ValueTy): CallDesc = Elem(ret = ret)
 }
 
 given Ordering[Property] = Ordering.by {

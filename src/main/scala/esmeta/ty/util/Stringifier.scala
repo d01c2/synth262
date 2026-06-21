@@ -252,7 +252,7 @@ class Stringifier(
       val (prop, desc) = pair
       app >> prop >> ": " >> desc
     if (props.nonEmpty)
-      app >> " {{ " >> props.toList.sortBy(_._1) >> " }}"
+      app >> "{{ " >> props.toList.sortBy(_._1) >> " }}"
     app >> call
 
   /** properties */
@@ -269,7 +269,8 @@ class Stringifier(
     if (getExc) strs :+= "<GET-EXC>"
     if (setExc) strs :+= "<SET-EXC>"
     if (!ty.isBottom) strs :+= ty.toString
-    app >> strs.mkString("|")
+    if (strs.isEmpty) app >> "⊥"
+    else app >> strs.mkString("|")
 
   /** call descriptors */
   given callDescRule: Rule[CallDesc] = (app, call) =>
