@@ -17,7 +17,7 @@ trait SymTyDecl { self: TyChecker =>
   type Sym = Int
   type Base = Sym | Local
   type SymBase = SSym | SVar
-  type SymRef = SSym | SVar | SField | SProp | SCall
+  type SymRef = SSym | SVar | SField | SProp | SCall | SConstruct
 
   lazy val SThis: SSym = SSym(-1)
   lazy val SArgs: SSym = SSym(-2)
@@ -30,6 +30,7 @@ trait SymTyDecl { self: TyChecker =>
     case SField(base: SymRef, field: SymTy)
     case SProp(base: SymRef, prop: Property)
     case SCall(base: SymRef)
+    case SConstruct(base: SymRef)
     case SNormal(symty: SymTy)
 
     def isBottom: Boolean = this match
@@ -49,6 +50,7 @@ trait SymTyDecl { self: TyChecker =>
       case SField(base, field) => st.get(base.ty, field.ty)
       case SProp(base, prop)   => base.ty.record(prop).getTy
       case SCall(base)         => base.ty.record.call.getTy
+      case SConstruct(base)    => base.ty.record.construct.getTy
       case SNormal(symty)      => NormalT(symty.ty)
 
     def has(base: Base): Boolean = this match
@@ -58,6 +60,7 @@ trait SymTyDecl { self: TyChecker =>
       case SField(b, f)   => b.has(base) || f.has(base)
       case SProp(b, _)    => b.has(base)
       case SCall(b)       => b.has(base)
+      case SConstruct(b)  => b.has(base)
       case SNormal(symty) => symty.has(base)
 
     def hasLocal: Boolean = this match
@@ -67,6 +70,7 @@ trait SymTyDecl { self: TyChecker =>
       case SField(b, f)   => b.hasLocal || f.hasLocal
       case SProp(b, _)    => b.hasLocal
       case SCall(b)       => b.hasLocal
+      case SConstruct(b)  => b.hasLocal
       case SNormal(symty) => symty.hasLocal
 
     def hasSym: Boolean = this match
@@ -76,6 +80,7 @@ trait SymTyDecl { self: TyChecker =>
       case SField(b, f)   => b.hasSym || f.hasSym
       case SProp(b, _)    => b.hasSym
       case SCall(b)       => b.hasSym
+      case SConstruct(b)  => b.hasSym
       case SNormal(symty) => symty.hasSym
 
     def bases: Set[Base] = this match
@@ -85,6 +90,7 @@ trait SymTyDecl { self: TyChecker =>
       case SField(base, field) => base.bases ++ field.bases
       case SProp(base, _)      => base.bases
       case SCall(base)         => base.bases
+      case SConstruct(base)    => base.bases
       case SNormal(symty)      => symty.bases
 
     def kill(bases: Set[Base], update: Boolean): Option[SymTy] = this match
@@ -112,6 +118,10 @@ trait SymTyDecl { self: TyChecker =>
         for {
           b <- killRef(base, bases, update)
         } yield SCall(b)
+      case SConstruct(base) =>
+        for {
+          b <- killRef(base, bases, update)
+        } yield SConstruct(b)
 
     def isSymbolic: Boolean = this match
       case STy(_) => false
@@ -181,6 +191,7 @@ trait SymTyDecl { self: TyChecker =>
         case SField(base, field) => app >> base >> "[" >> field >> "]"
         case SProp(base, prop)   => app >> base >> "[[" >> prop >> "]]"
         case SCall(base)         => app >> base >> ".call(...)"
+        case SConstruct(base)    => app >> base >> ".construct(...)"
         case SNormal(symty)      => app >> "Normal[" >> symty >> "]"
       }
     given Ordering[SymTy] = Ordering.by(_.toString)

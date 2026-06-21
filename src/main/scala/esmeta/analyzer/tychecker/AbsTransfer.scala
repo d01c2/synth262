@@ -725,6 +725,8 @@ trait AbsTransferDecl { analyzer: TyChecker =>
         st.getProp(instantiate(b, argsMap), p)
       case SCall(b) =>
         st.getCall(instantiate(b, argsMap))
+      case SConstruct(b) =>
+        st.getConstruct(instantiate(b, argsMap))
       case SNormal(symty) =>
         val ty = instantiate(symty, argsMap).symty match
           case STy(ty) => STy(NormalT(ty))
@@ -768,6 +770,14 @@ trait AbsTransferDecl { analyzer: TyChecker =>
             else BotT,
         )
         toBase(base, ValueTy(record = ObjectT.record.update(call)))
+      case SConstruct(base) =>
+        val construct = ConstructDesc.Elem(
+          exc = givenTy overlap ThrowT,
+          ret =
+            if (givenTy overlap NormalT) st.get(givenTy, StrT("Value"))
+            else BotT,
+        )
+        toBase(base, ValueTy(record = ObjectT.record.update(construct)))
       case _ => None
 
     // =========================================================================
@@ -1441,6 +1451,10 @@ trait AbsTransferDecl { analyzer: TyChecker =>
         given AbsState = st
         val ty = vs(1).ty
         AbsValue(SCall(SSym(0)))
+      },
+      "Construct" -> { (func, vs, retTy, st) =>
+        given AbsState = st
+        AbsValue(SConstruct(SSym(0)))
       },
     )
   }

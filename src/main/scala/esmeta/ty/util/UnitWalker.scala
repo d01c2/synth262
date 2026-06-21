@@ -9,24 +9,25 @@ trait UnitWalker extends BasicUnitWalker {
 
   /** type elements */
   def walk(ty: TyElem): Unit = ty match
-    case elem: TyModel     => walk(elem)
-    case elem: TyDecl      => walk(elem)
-    case elem: TyDecl.Elem => walk(elem)
-    case elem: FieldMap    => walk(elem)
-    case elem: Binding     => walk(elem)
-    case elem: Ty          => walk(elem)
-    case elem: RecordTy    => walk(elem)
-    case elem: ObjShape    => walk(elem)
-    case elem: Property    => walk(elem)
-    case elem: Desc        => walk(elem)
-    case elem: CallDesc    => walk(elem)
-    case elem: ListTy      => walk(elem)
-    case elem: AstTy       => walk(elem)
-    case elem: MapTy       => walk(elem)
-    case elem: MathTy      => walk(elem)
-    case elem: InfinityTy  => walk(elem)
-    case elem: NumberTy    => walk(elem)
-    case elem: BoolTy      => walk(elem)
+    case elem: TyModel       => walk(elem)
+    case elem: TyDecl        => walk(elem)
+    case elem: TyDecl.Elem   => walk(elem)
+    case elem: FieldMap      => walk(elem)
+    case elem: Binding       => walk(elem)
+    case elem: Ty            => walk(elem)
+    case elem: RecordTy      => walk(elem)
+    case elem: ObjShape      => walk(elem)
+    case elem: Property      => walk(elem)
+    case elem: Desc          => walk(elem)
+    case elem: CallDesc      => walk(elem)
+    case elem: ConstructDesc => walk(elem)
+    case elem: ListTy        => walk(elem)
+    case elem: AstTy         => walk(elem)
+    case elem: MapTy         => walk(elem)
+    case elem: MathTy        => walk(elem)
+    case elem: InfinityTy    => walk(elem)
+    case elem: NumberTy      => walk(elem)
+    case elem: BoolTy        => walk(elem)
 
   /** type models */
   def walk(ty: TyModel): Unit = walkList(ty.decls, walk)
@@ -166,9 +167,10 @@ trait UnitWalker extends BasicUnitWalker {
 
   /** object shapes */
   def walk(obj: ObjShape): Unit =
-    val ObjShape(props, call) = obj
+    val ObjShape(props, call, construct) = obj
     walkMap(props, walk, walk)
     walk(call)
+    walk(construct)
 
   /** properties */
   def walk(prop: Property): Unit =
@@ -188,6 +190,13 @@ trait UnitWalker extends BasicUnitWalker {
   def walk(call: CallDesc): Unit =
     import CallDesc.*
     call match
+      case Top            =>
+      case Elem(exc, ret) => walk(exc); walk(ret)
+
+  /** construct descriptors */
+  def walk(construct: ConstructDesc): Unit =
+    import ConstructDesc.*
+    construct match
       case Top            =>
       case Elem(exc, ret) => walk(exc); walk(ret)
 

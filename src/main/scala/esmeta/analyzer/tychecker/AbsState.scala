@@ -170,6 +170,14 @@ trait AbsStateDecl { self: TyChecker =>
         case _           => AbsValue(STy(base.ty.record.call.getTy))
     }
 
+    /** construct return getter */
+    def getConstruct(base: AbsValue)(using AbsState): AbsValue = {
+      import SymTy.*
+      base.symty match
+        case ref: SymRef => AbsValue(SConstruct(ref))
+        case _           => AbsValue(STy(base.ty.record.construct.getTy))
+    }
+
     // AST lookup
     private def lookupAst(ast: AstTy, field: ValueTy): ValueTy =
       import AstTy.*

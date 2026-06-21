@@ -171,13 +171,33 @@ object Solver {
 
   def defaultFor(ty: ValueTy): Option[String] =
     if (ty.isBottom) None
-    else objectWithProps(ty).orElse(funWithCall(ty)).orElse(baseDefaultFor(ty))
+    else
+      objectWithProps(ty)
+        .orElse(constructDescExpr(ty))
+        .orElse(callDescExpr(ty))
+        .orElse(baseDefaultFor(ty))
 
-  private def funWithCall(ty: ValueTy): Option[String] =
+  private def constructDescExpr(ty: ValueTy): Option[String] =
+    ty.record.construct match
+      case ConstructDesc.Elem(exc, ret) =>
+        if (exc) Some("function() { throw 0; }")
+        else exprFor(ret).map(v => s"function() { return $v; }")
+      case ConstructDesc.Top => None
+
+  private def callDescExpr(ty: ValueTy): Option[String] =
     ty.record.call match
       case CallDesc.Elem(exc, ret) =>
-        if (exc) Some("() => { throw 0; }")
-        else exprFor(ret).map(v => s"() => ($v)")
+        val isConstructor = ty <= ConstructorT
+        if (exc)
+          Some(
+            if (isConstructor) "function() { throw 0; }"
+            else "() => { throw 0; }",
+          )
+        else
+          exprFor(ret).map { v =>
+            if (isConstructor) s"function() { return $v; }"
+            else s"() => ($v)"
+          }
       case CallDesc.Top => None
 
   private def baseDefaultFor(ty: ValueTy): Option[String] =
@@ -205,8 +225,8 @@ object Solver {
 
   private def properties(ty: ValueTy): List[Option[String]] =
     ty.record match
-      case RecordTy.Elem(_, ObjShape(props, _)) =>
-        // TODO call descriptors
+      case RecordTy.Elem(_, ObjShape(props, _, _)) =>
+        // TODO call/construct descriptors
         props.toList.map { (prop, desc) =>
           val k = propKey(prop)
           if (desc.getExc) Some(s"get $k() { throw 0; }")

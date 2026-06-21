@@ -32,6 +32,7 @@ class Stringifier(
       case elem: Property       => propertyRule(app, elem)
       case elem: Desc           => descRule(app, elem)
       case elem: CallDesc       => callDescRule(app, elem)
+      case elem: ConstructDesc  => constructDescRule(app, elem)
       case elem: ListTy         => listTyRule(app, elem)
       case elem: AstTy          => astTyRule(app, elem)
       case elem: MapTy          => mapTyRule(app, elem)
@@ -246,7 +247,7 @@ class Stringifier(
 
   /** object shapes */
   given objShapeRule: Rule[ObjShape] = (app, obj) =>
-    val ObjShape(props, call) = obj
+    val ObjShape(props, call, construct) = obj
     given propsRule: Rule[List[(Property, Desc)]] = iterableRule(sep = ", ")
     given Rule[(Property, Desc)] = (app, pair) =>
       val (prop, desc) = pair
@@ -254,6 +255,7 @@ class Stringifier(
     if (props.nonEmpty)
       app >> "{{ " >> props.toList.sortBy(_._1) >> " }}"
     app >> call
+    app >> construct
 
   /** properties */
   given propertyRule: Rule[Property] = (app, prop) =>
@@ -282,6 +284,19 @@ class Stringifier(
         if (exc) strs :+= "<EXC>"
         if (!ret.isBottom) strs :+= ret.toString
         app >> "[call: "
+        app >> (if (strs.isEmpty) "⊥" else strs.mkString("|"))
+        app >> "]"
+
+  /** construct descriptors */
+  given constructDescRule: Rule[ConstructDesc] = (app, construct) =>
+    import ConstructDesc.*
+    construct match
+      case Top => app
+      case Elem(exc, ret) =>
+        var strs = Vector[String]()
+        if (exc) strs :+= "<EXC>"
+        if (!ret.isBottom) strs :+= ret.toString
+        app >> "[construct: "
         app >> (if (strs.isEmpty) "⊥" else strs.mkString("|"))
         app >> "]"
 

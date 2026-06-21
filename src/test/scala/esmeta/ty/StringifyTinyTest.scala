@@ -103,6 +103,12 @@ class StringifyTinyTest extends TyTest {
       ) -> "Record[{ P, Q: Number, R: Boolean, S }]",
       FunctionT -> "Record[FunctionObject]",
       ConstructorT -> "Record[Constructor]",
+      FunctionT.copied(record =
+        FunctionT.record.update(CallDesc.Exc),
+      ) -> "Record[FunctionObject][call: <EXC>]",
+      ConstructorT.copied(record =
+        ConstructorT.record.update(ConstructDesc.Exc),
+      ) -> "Record[Constructor][construct: <EXC>]",
       NilT -> "Nil",
       ListT(NumberT) -> "List[Number]",
       SymbolT -> "Record[Symbol]",

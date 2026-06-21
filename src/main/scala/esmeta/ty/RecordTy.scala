@@ -131,6 +131,11 @@ enum RecordTy extends TyElem with Lattice[RecordTy] {
     case Top          => CallDesc.Top
     case Elem(_, obj) => obj.call
 
+  /** construct accessor */
+  def construct: ConstructDesc = this match
+    case Top          => ConstructDesc.Top
+    case Elem(_, obj) => obj.construct
+
   /** property update */
   def update(p: Property, desc: Desc): RecordTy = this match
     case Top            => Top
@@ -140,6 +145,11 @@ enum RecordTy extends TyElem with Lattice[RecordTy] {
   def update(call: CallDesc): RecordTy = this match
     case Top            => Top
     case Elem(map, obj) => Elem(map, obj.copy(call = call))
+
+  /** construct return update */
+  def update(construct: ConstructDesc): RecordTy = this match
+    case Top            => Top
+    case Elem(map, obj) => Elem(map, obj.copy(construct = construct))
 
   /** field update */
   def update(field: String, ty: ValueTy, refine: Boolean): RecordTy =
@@ -309,26 +319,31 @@ object RecordTy extends Parser.From(Parser.recordTy) {
 case class ObjShape(
   props: Map[Property, Desc] = Map.empty,
   call: CallDesc = CallDesc.Top,
+  construct: ConstructDesc = ConstructDesc.Top,
 ) extends TyElem {
   import ObjShape.*
   def isBottom: Boolean =
-    props.exists((_, desc) => desc.isBottom) || call.isBottom
+    props.exists((_, desc) => desc.isBottom) ||
+    call.isBottom || construct.isBottom
   def <=(that: ObjShape): Boolean =
     that.props.forall { (p, d) => this.props.get(p).fold(false)(_ <= d) } &&
-    this.call <= that.call
+    this.call <= that.call && this.construct <= that.construct
   def ||(that: ObjShape): ObjShape = ObjShape(
     props = (for {
       p <- (this.props.keySet intersect that.props.keySet).toList
     } yield p -> (this(p) || that(p))).toMap,
     call = this.call || that.call,
+    construct = this.construct || that.construct,
   )
   def &&(that: ObjShape): ObjShape = ObjShape(
     props = (for {
       p <- (this.props.keySet ++ that.props.keySet).toList
     } yield p -> (this(p) && that(p))).toMap,
     call = this.call && that.call,
+    construct = this.construct && that.construct,
   )
-  def +(pair: (Property, Desc)): ObjShape = ObjShape(props + pair, call)
+  def +(pair: (Property, Desc)): ObjShape =
+    ObjShape(props + pair, call, construct)
 
   def apply(p: Property): Desc = props.getOrElse(p, Desc.Top)
 }
@@ -398,6 +413,35 @@ object CallDesc {
   lazy val Exist: CallDesc = Elem(exc = true, ret = ESValueT)
   lazy val Exc: CallDesc = Elem(exc = true)
   def apply(ret: ValueTy): CallDesc = Elem(ret = ret)
+}
+
+enum ConstructDesc extends TyElem {
+  case Top
+  case Elem(exc: Boolean = false, ret: ValueTy = BotT)
+  def isBottom: Boolean = this match
+    case Top            => false
+    case Elem(exc, ret) => !exc && ret.isBottom
+  def exists: Boolean = this != Top
+  def <=(that: ConstructDesc): Boolean = (this, that) match
+    case (_, Top)                     => true
+    case (Top, _)                     => false
+    case (Elem(le, lr), Elem(re, rr)) => (le <= re) && (lr <= rr)
+  def ||(that: ConstructDesc): ConstructDesc = (this, that) match
+    case (Top, _) | (_, Top)          => Top
+    case (Elem(le, lr), Elem(re, rr)) => Elem(le || re, lr || rr)
+  def &&(that: ConstructDesc): ConstructDesc = (this, that) match
+    case (_, Top)                     => this
+    case (Top, _)                     => that
+    case (Elem(le, lr), Elem(re, rr)) => Elem(le && re, lr && rr)
+  def getTy: ValueTy = this match
+    case Top            => NormalT(ObjectT) || ThrowT
+    case Elem(exc, ret) => NormalT(ret) || (if (exc) ThrowT else BotT)
+}
+object ConstructDesc {
+  lazy val Bot: ConstructDesc = Elem()
+  lazy val Exist: ConstructDesc = Elem(exc = true, ret = ObjectT)
+  lazy val Exc: ConstructDesc = Elem(exc = true)
+  def apply(ret: ValueTy): ConstructDesc = Elem(ret = ret)
 }
 
 given Ordering[Property] = Ordering.by {

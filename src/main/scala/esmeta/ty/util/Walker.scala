@@ -9,24 +9,25 @@ trait Walker extends BasicWalker {
 
   /** type elements */
   def walk(ty: TyElem): TyElem = ty match
-    case elem: TyModel     => walk(elem)
-    case elem: TyDecl      => walk(elem)
-    case elem: TyDecl.Elem => walk(elem)
-    case elem: FieldMap    => walk(elem)
-    case elem: Binding     => walk(elem)
-    case elem: Ty          => walk(elem)
-    case elem: RecordTy    => walk(elem)
-    case elem: ObjShape    => walk(elem)
-    case elem: Property    => walk(elem)
-    case elem: Desc        => walk(elem)
-    case elem: CallDesc    => walk(elem)
-    case elem: ListTy      => walk(elem)
-    case elem: AstTy       => walk(elem)
-    case elem: MapTy       => walk(elem)
-    case elem: MathTy      => walk(elem)
-    case elem: InfinityTy  => walk(elem)
-    case elem: NumberTy    => walk(elem)
-    case elem: BoolTy      => walk(elem)
+    case elem: TyModel       => walk(elem)
+    case elem: TyDecl        => walk(elem)
+    case elem: TyDecl.Elem   => walk(elem)
+    case elem: FieldMap      => walk(elem)
+    case elem: Binding       => walk(elem)
+    case elem: Ty            => walk(elem)
+    case elem: RecordTy      => walk(elem)
+    case elem: ObjShape      => walk(elem)
+    case elem: Property      => walk(elem)
+    case elem: Desc          => walk(elem)
+    case elem: CallDesc      => walk(elem)
+    case elem: ConstructDesc => walk(elem)
+    case elem: ListTy        => walk(elem)
+    case elem: AstTy         => walk(elem)
+    case elem: MapTy         => walk(elem)
+    case elem: MathTy        => walk(elem)
+    case elem: InfinityTy    => walk(elem)
+    case elem: NumberTy      => walk(elem)
+    case elem: BoolTy        => walk(elem)
 
   /** type models */
   def walk(ty: TyModel): TyModel = TyModel(walkList(ty.decls, walk))
@@ -174,8 +175,8 @@ trait Walker extends BasicWalker {
 
   /** object shapes */
   def walk(obj: ObjShape): ObjShape =
-    val ObjShape(props, call) = obj
-    ObjShape(walkMap(props, walk, walk), walk(call))
+    val ObjShape(props, call, construct) = obj
+    ObjShape(walkMap(props, walk, walk), walk(call), walk(construct))
 
   /** properties */
   def walk(prop: Property): Property =
@@ -193,6 +194,13 @@ trait Walker extends BasicWalker {
   def walk(call: CallDesc): CallDesc =
     import CallDesc.*
     call match
+      case Top            => Top
+      case Elem(exc, ret) => Elem(walk(exc), walk(ret))
+
+  /** construct descriptors */
+  def walk(construct: ConstructDesc): ConstructDesc =
+    import ConstructDesc.*
+    construct match
       case Top            => Top
       case Elem(exc, ret) => Elem(walk(exc), walk(ret))
 

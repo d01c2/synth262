@@ -204,8 +204,8 @@ trait Parsers extends BasicParsers {
       case None     => Map.empty[Property, Desc]
       case Some(ps) => ps.toMap
     }
-    props ~ callDesc ^^ {
-      case ps ~ c => ObjShape(ps, c)
+    props ~ callDesc ~ constructDesc ^^ {
+      case ps ~ c ~ n => ObjShape(ps, c, n)
     }
   }
 
@@ -230,9 +230,18 @@ trait Parsers extends BasicParsers {
     val single =
       "<EXC>" ^^^ Exc |
       valueTy ^^ { CallDesc(_) }
-    "⊥ " ^^^ Bot |
+    "⊥" ^^^ Bot |
     rep1sep(single, "|") ^^ { ds => ds.foldLeft(Bot)(_ || _) }
   } <~ "]" | "" ^^^ CallDesc.Top
+
+  given constructDesc: Parser[ConstructDesc] = "[construct:" ~> {
+    import ConstructDesc.*
+    val single =
+      "<EXC>" ^^^ Exc |
+      valueTy ^^ { ConstructDesc(_) }
+    "⊥" ^^^ Bot |
+    rep1sep(single, "|") ^^ { ds => ds.foldLeft(Bot)(_ || _) }
+  } <~ "]" | "" ^^^ ConstructDesc.Top
 
   given sign: Parser[Sign] = {
     val neg = "-" ^^^ Sign.Neg | "" ^^^ Sign.Bot
