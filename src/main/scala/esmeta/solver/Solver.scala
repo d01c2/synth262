@@ -171,7 +171,14 @@ object Solver {
 
   def defaultFor(ty: ValueTy): Option[String] =
     if (ty.isBottom) None
-    else objectWithProps(ty).orElse(baseDefaultFor(ty))
+    else objectWithProps(ty).orElse(funWithCall(ty)).orElse(baseDefaultFor(ty))
+
+  private def funWithCall(ty: ValueTy): Option[String] =
+    ty.record.call match
+      case CallDesc.Elem(exc, ret) =>
+        if (exc) Some("() => { throw 0; }")
+        else exprFor(ret).map(v => s"() => ($v)")
+      case CallDesc.Top => None
 
   private def baseDefaultFor(ty: ValueTy): Option[String] =
     if (ty.isBottom) None
