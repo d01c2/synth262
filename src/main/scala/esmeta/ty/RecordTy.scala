@@ -12,7 +12,7 @@ enum RecordTy extends TyElem with Lattice[RecordTy] {
   /** a record type with a named record types and refined fields */
   case Elem(
     map: Map[String, FieldMap] = Map.empty,
-    props: Map[Property, Desc] = Map.empty,
+    obj: ObjShape = ObjShape.Top,
   )
 
   import ManualInfo.tyModel
@@ -30,10 +30,8 @@ enum RecordTy extends TyElem with Lattice[RecordTy] {
     (this, that) match
       case (Bot, _) | (_, Top) => true
       case (Top, _) | (_, Bot) => false
-      case (Elem(lmap, lprops), Elem(rmap, rprops)) =>
-        isSubTy(lmap, rmap) && rprops.forall { (prop, rdesc) =>
-          lprops.get(prop).fold(false)(_ <= rdesc)
-        }
+      case (Elem(lmap, lobj), Elem(rmap, robj)) =>
+        isSubTy(lmap, rmap) && lobj <= robj
   }
 
   /** union type */
@@ -41,7 +39,7 @@ enum RecordTy extends TyElem with Lattice[RecordTy] {
     case _ if this == that   => this
     case (Bot, _) | (_, Top) => that
     case (Top, _) | (_, Bot) => this
-    case (Elem(lmap, lprops), Elem(rmap, rprops)) =>
+    case (Elem(lmap, lobj), Elem(rmap, robj)) =>
       def aux(
         lmap: Map[String, FieldMap],
         rmap: Map[String, FieldMap],
@@ -56,17 +54,14 @@ enum RecordTy extends TyElem with Lattice[RecordTy] {
       val map = (lpairs ++ rpairs).foldLeft(Map[String, FieldMap]()) {
         case (map, (t, fm)) => map + (t -> map.get(t).fold(fm)(_ || fm))
       }
-      val props = (for {
-        p <- (lprops.keySet intersect rprops.keySet).toList
-      } yield p -> (this(p) || that(p))).toMap
-      Elem(map, props).normalized
+      Elem(map, lobj || robj).normalized
 
   /** intersection type */
   def &&(that: => RecordTy): RecordTy = (this, that) match
     case _ if this == that   => this
     case (Bot, _) | (_, Top) => this
     case (Top, _) | (_, Bot) => that
-    case (Elem(lm, lprops), Elem(rm, rprops)) =>
+    case (Elem(lm, lobj), Elem(rm, robj)) =>
       val ls = lm.keySet
       val rs = rm.keySet
       val lmap = for { (t, fm) <- lm } yield {
@@ -88,10 +83,7 @@ enum RecordTy extends TyElem with Lattice[RecordTy] {
         .groupBy(_._1)
         .map { case (t, pairs) => t -> pairs.map(_._2).reduce(_ && _) }
         .toMap
-      val props = (for {
-        p <- (lprops.keySet ++ rprops.keySet).toList
-      } yield p -> (this(p) && that(p))).toMap
-      Elem(map, props)
+      Elem(map, lobj && robj)
 
   /** prune type */
   def --(that: => RecordTy): RecordTy = (this, that) match
@@ -131,13 +123,23 @@ enum RecordTy extends TyElem with Lattice[RecordTy] {
 
   /** property accessor */
   def apply(p: Property): Desc = this match
-    case Top            => Desc.Top
-    case Elem(_, props) => props.getOrElse(p, Desc.Top)
+    case Top          => Desc.Top
+    case Elem(_, obj) => obj(p)
+
+  /** call accessor */
+  def call: CallDesc = this match
+    case Top          => CallDesc.Top
+    case Elem(_, obj) => obj.call
 
   /** property update */
   def update(p: Property, desc: Desc): RecordTy = this match
-    case Top              => Top
-    case Elem(map, props) => Elem(map, props + (p -> desc))
+    case Top            => Top
+    case Elem(map, obj) => Elem(map, obj + (p -> desc))
+
+  /** function call return update */
+  def update(call: CallDesc): RecordTy = this match
+    case Top            => Top
+    case Elem(map, obj) => Elem(map, obj.copy(call = call))
 
   /** field update */
   def update(field: String, ty: ValueTy, refine: Boolean): RecordTy =
@@ -150,7 +152,7 @@ enum RecordTy extends TyElem with Lattice[RecordTy] {
     refine: Boolean,
   ): RecordTy = this match
     case Top => Top
-    case Elem(map, props) =>
+    case Elem(map, obj) =>
       Elem(
         map.foldLeft(Map[String, FieldMap]()) {
           case (map, pair) =>
@@ -158,13 +160,13 @@ enum RecordTy extends TyElem with Lattice[RecordTy] {
               (t, fm) <- RecordTy.update(pair, field, elem, refine)
             } yield t -> map.get(t).fold(fm)(_ || fm))
         },
-        props,
+        obj,
       ).boundFields(maxFieldDepth)
 
   /** bound fields */
   def boundFields(depth: Int): RecordTy = this match
     case Top => Top
-    case Elem(map, props) =>
+    case Elem(map, obj) =>
       Elem(
         map.map { (t, fm) =>
           t -> {
@@ -179,7 +181,7 @@ enum RecordTy extends TyElem with Lattice[RecordTy] {
               })
           }
         },
-        props,
+        obj,
       )
 
   /** record containment check (ignoring properties) */
@@ -199,13 +201,13 @@ enum RecordTy extends TyElem with Lattice[RecordTy] {
   /** normalize record type */
   def normalized: RecordTy = this match
     case Top => Top
-    case Elem(map, props) =>
+    case Elem(map, obj) =>
       val m = map.map(normalize)
       if (
-        props.exists { (_, desc) => desc.isBottom } ||
+        obj.isBottom ||
         (Elem(m) && Object).isBottom
       ) Elem(m)
-      else Elem(m, props)
+      else Elem(m, obj)
 
   /** to list of atomic record types */
   def toAtomicTys: List[RecordTy] = this match
@@ -241,8 +243,8 @@ object RecordTy extends Parser.From(Parser.recordTy) {
   def apply(name: String, fieldMap: FieldMap): RecordTy =
     apply(Map(name -> fieldMap))
   def apply(map: Map[String, FieldMap]): RecordTy = Elem(map)
-  def apply(map: Map[String, FieldMap], props: Map[Property, Desc]): RecordTy =
-    Elem(map, props)
+  def apply(map: Map[String, FieldMap], obj: ObjShape): RecordTy =
+    Elem(map, obj)
 
   /** field accessor for specific record type */
   private def get(pair: (String, FieldMap), f: String): Binding =
@@ -307,36 +309,93 @@ object RecordTy extends Parser.From(Parser.recordTy) {
     })
 }
 
+case class ObjShape(
+  props: Map[Property, Desc] = Map.empty,
+  call: CallDesc = CallDesc.Top,
+) extends TyElem {
+  import ObjShape.*
+  def isBottom: Boolean =
+    props.exists((_, desc) => desc.isBottom) || call.isBottom
+  def <=(that: ObjShape): Boolean =
+    that.props.forall { (p, d) => this.props.get(p).fold(false)(_ <= d) } &&
+    this.call <= that.call
+  def ||(that: ObjShape): ObjShape = ObjShape(
+    props = (for {
+      p <- (this.props.keySet intersect that.props.keySet).toList
+    } yield p -> (this(p) || that(p))).toMap,
+    call = this.call || that.call,
+  )
+  def &&(that: ObjShape): ObjShape = ObjShape(
+    props = (for {
+      p <- (this.props.keySet ++ that.props.keySet).toList
+    } yield p -> (this(p) && that(p))).toMap,
+    call = this.call && that.call,
+  )
+  def +(pair: (Property, Desc)): ObjShape = ObjShape(props + pair, call)
+
+  def apply(p: Property): Desc = props.getOrElse(p, Desc.Top)
+}
+object ObjShape {
+  lazy val Top: ObjShape = ObjShape()
+}
+
 enum Property extends TyElem:
   case PStr(str: String)
   case PSym(sym: String)
 
 case class Desc(
-  getThrow: Boolean = false,
-  setThrow: Boolean = false,
+  getExc: Boolean = false,
+  setExc: Boolean = false,
   ty: ValueTy = BotT,
 ) extends TyElem {
-  def isBottom: Boolean = !getThrow && !setThrow && ty.isBottom
-  def isTop: Boolean = getThrow && setThrow && ty.isTop
+  def isBottom: Boolean = !getExc && !setExc && ty.isBottom
+  def isTop: Boolean = getExc && setExc && ty.isTop
   def <=(that: Desc): Boolean =
-    (this.getThrow <= that.getThrow) &&
-    (this.setThrow <= that.setThrow) &&
+    (this.getExc <= that.getExc) &&
+    (this.setExc <= that.setExc) &&
     (this.ty <= that.ty)
   def &&(that: Desc): Desc = Desc(
-    this.getThrow && that.getThrow,
-    this.setThrow && that.setThrow,
+    this.getExc && that.getExc,
+    this.setExc && that.setExc,
     this.ty && that.ty,
   )
   def ||(that: Desc): Desc = Desc(
-    this.getThrow || that.getThrow,
-    this.setThrow || that.setThrow,
+    this.getExc || that.getExc,
+    this.setExc || that.setExc,
     this.ty || that.ty,
   )
-  def getTy: ValueTy = NormalT(ty) || (if (getThrow) ThrowT else BotT)
+  def getTy: ValueTy = NormalT(ty) || (if (getExc) ThrowT else BotT)
 }
 object Desc {
   val Bot: Desc = Desc()
-  val Top: Desc = Desc(getThrow = true, setThrow = true, ESValueT)
+  val Top: Desc = Desc(getExc = true, setExc = true, ESValueT)
+}
+
+enum CallDesc extends TyElem {
+  case Top
+  case Elem(exc: Boolean, ret: ValueTy)
+  def isBottom: Boolean = this match
+    case Top            => false
+    case Elem(exc, ret) => !exc && ret.isBottom
+  def exists: Boolean = this != Top
+  def <=(that: CallDesc): Boolean = (this, that) match
+    case (_, Top)                     => true
+    case (Top, _)                     => false
+    case (Elem(le, lr), Elem(re, rr)) => (le <= re) && (lr <= rr)
+  def ||(that: CallDesc): CallDesc = (this, that) match
+    case (Top, _) | (_, Top)          => Top
+    case (Elem(le, lr), Elem(re, rr)) => Elem(le || re, lr || rr)
+  def &&(that: CallDesc): CallDesc = (this, that) match
+    case (_, Top)                     => this
+    case (Top, _)                     => that
+    case (Elem(le, lr), Elem(re, rr)) => Elem(le && re, lr && rr)
+  def getTy: ValueTy = this match
+    case Top            => NormalT(ESValueT) || ThrowT
+    case Elem(exc, ret) => NormalT(ret) || (if (exc) ThrowT else BotT)
+}
+object CallDesc {
+  lazy val Bot: CallDesc = Elem(exc = false, ret = BotT)
+  lazy val Exist: CallDesc = Elem(exc = true, ret = ESValueT)
 }
 
 given Ordering[Property] = Ordering.by {

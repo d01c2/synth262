@@ -723,6 +723,8 @@ trait AbsTransferDecl { analyzer: TyChecker =>
         st.get(instantiate(b, argsMap), instantiate(f, argsMap))
       case SProp(b, p) =>
         st.getProp(instantiate(b, argsMap), p)
+      case SCall(b) =>
+        st.getCall(instantiate(b, argsMap))
       case SNormal(symty) =>
         val ty = instantiate(symty, argsMap).symty match
           case STy(ty) => STy(NormalT(ty))
@@ -752,12 +754,20 @@ trait AbsTransferDecl { analyzer: TyChecker =>
         toBase(base, refined)
       case SProp(base, prop) =>
         val desc = Desc(
-          getThrow = givenTy overlap ThrowT,
+          getExc = givenTy overlap ThrowT,
           ty =
             if (givenTy overlap NormalT) st.get(givenTy, StrT("Value"))
             else BotT,
         )
         toBase(base, ValueTy(record = ObjectT.record.update(prop, desc)))
+      case SCall(base) =>
+        val call = CallDesc.Elem(
+          exc = givenTy overlap ThrowT,
+          ret =
+            if (givenTy overlap NormalT) st.get(givenTy, StrT("Value"))
+            else BotT,
+        )
+        toBase(base, ValueTy(record = ObjectT.record.update(call)))
       case _ => None
 
     // =========================================================================
@@ -1405,53 +1415,32 @@ trait AbsTransferDecl { analyzer: TyChecker =>
       "TypedArrayElementSize" -> { (func, vs, retTy, st) =>
         AbsValue(PosIntT)
       },
+      // -----------------------------------------------------------------------
+      // constratins for object properties and return values of functions
+      // -----------------------------------------------------------------------
       "Get" -> { (func, vs, retTy, st) =>
         given AbsState = st
         val ty = vs(1).ty
-        val prop = ty.getSingle match
-          case One(Str(p)) => Some(PStr(p))
-          case _ if ty <= SymbolT =>
-            ty.record("Description").value.getSingle match
-              case One(Str(p)) => Some(PSym(p))
-              case _           => None
-          case _ => None
-        val guard = prop match
-          case Some(p) =>
-            val normalT = ValueTy(
-              record = ObjectT.record.update(p, Desc(ty = ESValueT)),
-            )
-            val abruptT = ValueTy(
-              record = ObjectT.record.update(p, Desc(getThrow = true)),
-            )
-            TypeGuard(
-              TargetType(NormalT) -> TypeConstr(0 -> normalT).toMust,
-              TargetType(AbruptT) -> TypeConstr(0 -> abruptT).toMust,
-            )
-          case None => TypeGuard()
-        // AbsValue(STy(retTy), guard)
-        val symTy = prop.fold(STy(retTy))(p => SProp(SSym(0), p))
-        AbsValue(symTy, guard)
+        AbsValue(ty.getProperty.fold(STy(retTy))(p => SProp(SSym(0), p)))
       },
       "Set" -> { (func, vs, retTy, st) =>
         given AbsState = st
         val ty = vs(1).ty
-        val prop = ty.getSingle match
-          case One(Str(p)) => Some(PStr(p))
-          case _ if ty <= SymbolT =>
-            ty.record("Description").value.getSingle match
-              case One(Str(p)) => Some(PSym(p))
-              case _           => None
-          case _ => None
-        val guard = prop match
+        val guard = ty.getProperty match
           case Some(p) =>
             val abruptT = ValueTy(
-              record = ObjectT.record.update(p, Desc(setThrow = true)),
+              record = ObjectT.record.update(p, Desc(setExc = true)),
             )
             TypeGuard(
               TargetType(AbruptT) -> TypeConstr(0 -> abruptT).toMust,
             )
           case None => TypeGuard()
         AbsValue(STy(retTy), guard)
+      },
+      "Call" -> { (func, vs, retTy, st) =>
+        given AbsState = st
+        val ty = vs(1).ty
+        AbsValue(SCall(SSym(0)))
       },
     )
   }

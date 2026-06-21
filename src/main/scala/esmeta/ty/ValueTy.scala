@@ -375,6 +375,15 @@ sealed trait ValueTy extends Ty with Lattice[ValueTy] {
       if (nullv) tys :+= ValueElemTy(nullv = true)
       tys.toList
   }
+
+  import Property.*
+  def getProperty: Option[Property] = getSingle match
+    case One(Str(p)) => Some(PStr(p))
+    case _ if this <= SymbolT =>
+      record("Description").value.getSingle match
+        case One(Str(p)) => Some(PSym(p))
+        case _           => None
+    case _ => None
 }
 
 case object ValueTopTy extends ValueTy {

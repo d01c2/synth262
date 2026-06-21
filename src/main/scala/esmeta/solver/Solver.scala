@@ -199,11 +199,12 @@ object Solver {
 
   private def properties(ty: ValueTy): List[Option[String]] =
     ty.record match
-      case RecordTy.Elem(_, props) =>
+      case RecordTy.Elem(_, ObjShape(props, _)) =>
+        // TODO call descriptors
         props.toList.map { (prop, desc) =>
           val k = propKey(prop)
-          if (desc.getThrow) Some(s"get $k() { throw 0; }")
-          else if (desc.setThrow) Some(s"set $k(_) { throw 0; }")
+          if (desc.getExc) Some(s"get $k() { throw 0; }")
+          else if (desc.setExc) Some(s"set $k(_) { throw 0; }")
           else if (!desc.ty.isBottom) exprFor(desc.ty).map(v => s"$k: $v")
           else None
         }

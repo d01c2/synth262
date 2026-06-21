@@ -129,6 +129,10 @@ trait AbsStateDecl { self: TyChecker =>
     def mayMustForSyms: Map[Sym, (ValueTy, ValueTy)] =
       (for (sym <- symEnv.keySet.toList) yield sym -> getMayMust(sym)).toMap
 
+    def allMust: Boolean = mayMustForSyms.forall {
+      case (_, (_, must)) => !must.isBottom
+    }
+
     def dropMust: AbsState = copy(mayMust = mayMust.dropMust)
 
     /** getter */
@@ -154,11 +158,17 @@ trait AbsStateDecl { self: TyChecker =>
     def getProp(base: AbsValue, prop: Property)(using AbsState): AbsValue = {
       import SymTy.*
       base.symty match
-        case ref: SymRef => AbsValue(SProp(ref, prop), TypeGuard.Empty)
-        case _ => AbsValue(STy(getProp(base.ty, prop)), TypeGuard.Empty)
+        case ref: SymRef => AbsValue(SProp(ref, prop))
+        case _           => AbsValue(STy(base.ty.record(prop).getTy))
     }
-    def getProp(baseTy: ValueTy, prop: Property)(using AbsState): ValueTy =
-      baseTy.record(prop).getTy
+
+    /** function call return getter */
+    def getCall(base: AbsValue)(using AbsState): AbsValue = {
+      import SymTy.*
+      base.symty match
+        case ref: SymRef => AbsValue(SCall(ref))
+        case _           => AbsValue(STy(base.ty.record.call.getTy))
+    }
 
     // AST lookup
     private def lookupAst(ast: AstTy, field: ValueTy): ValueTy =

@@ -28,8 +28,10 @@ class Stringifier(
       case elem: Ty             => tyRule(app, elem)
       case elem: CloTy          => cloTyRule(app, elem)
       case elem: RecordTy       => recordTyRule(app, elem)
+      case elem: ObjShape       => objShapeRule(app, elem)
       case elem: Property       => propertyRule(app, elem)
       case elem: Desc           => descRule(app, elem)
+      case elem: CallDesc       => callDescRule(app, elem)
       case elem: ListTy         => listTyRule(app, elem)
       case elem: AstTy          => astTyRule(app, elem)
       case elem: MapTy          => mapTyRule(app, elem)
@@ -180,13 +182,9 @@ class Stringifier(
     }
     given Rule[Iterable[String]] = iterableRule(sep = OR)
     given mapRule: Rule[List[(String, FieldMap)]] = iterableRule(sep = OR)
-    given propsRule: Rule[List[(Property, Desc)]] = iterableRule(sep = ", ")
-    given Rule[(Property, Desc)] = (app, pair) =>
-      val (prop, desc) = pair
-      app >> prop >> ": " >> desc
     ty match
       case Top => app >> "Record"
-      case Elem(map, props) =>
+      case Elem(map, obj) =>
         var m = map
         var prevExists = false
         def mayOR =
@@ -244,8 +242,18 @@ class Stringifier(
         if (m.nonEmpty || preds.nonEmpty)
           if (prevExists) app >> OR
           app >> "Record[" >> (m.toList ++ preds).sortBy(_._1) >> "]"
-        if (props.nonEmpty) app >> " {{ " >> props.toList.sortBy(_._1) >> " }}"
-        else app
+        app >> obj
+
+  /** object shapes */
+  given objShapeRule: Rule[ObjShape] = (app, obj) =>
+    val ObjShape(props, call) = obj
+    given propsRule: Rule[List[(Property, Desc)]] = iterableRule(sep = ", ")
+    given Rule[(Property, Desc)] = (app, pair) =>
+      val (prop, desc) = pair
+      app >> prop >> ": " >> desc
+    if (props.nonEmpty)
+      app >> " {{ " >> props.toList.sortBy(_._1) >> " }}"
+    app >> call
 
   /** properties */
   given propertyRule: Rule[Property] = (app, prop) =>
@@ -256,12 +264,25 @@ class Stringifier(
 
   /** property descriptors */
   given descRule: Rule[Desc] = (app, desc) =>
-    val Desc(getThrow, setThrow, ty) = desc
+    val Desc(getExc, setExc, ty) = desc
     var strs = Vector[String]()
-    if (getThrow) strs :+= "<GET>"
-    if (setThrow) strs :+= "<SET>"
+    if (getExc) strs :+= "<GET-EXC>"
+    if (setExc) strs :+= "<SET-EXC>"
     if (!ty.isBottom) strs :+= ty.toString
     app >> strs.mkString("|")
+
+  /** call descriptors */
+  given callDescRule: Rule[CallDesc] = (app, call) =>
+    import CallDesc.*
+    call match
+      case Top => app
+      case Elem(exc, ret) =>
+        var strs = Vector[String]()
+        if (exc) strs :+= "<EXC>"
+        if (!ret.isBottom) strs :+= ret.toString
+        app >> "[call: "
+        app >> (if (strs.isEmpty) "⊥" else strs.mkString("|"))
+        app >> "]"
 
   /** AST value types */
   given astTyRule: Rule[AstTy] = (app, ty) =>

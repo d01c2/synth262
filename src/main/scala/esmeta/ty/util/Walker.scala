@@ -16,6 +16,10 @@ trait Walker extends BasicWalker {
     case elem: Binding     => walk(elem)
     case elem: Ty          => walk(elem)
     case elem: RecordTy    => walk(elem)
+    case elem: ObjShape    => walk(elem)
+    case elem: Property    => walk(elem)
+    case elem: Desc        => walk(elem)
+    case elem: CallDesc    => walk(elem)
     case elem: ListTy      => walk(elem)
     case elem: AstTy       => walk(elem)
     case elem: MapTy       => walk(elem)
@@ -165,9 +169,13 @@ trait Walker extends BasicWalker {
   def walk(ty: RecordTy): RecordTy =
     import RecordTy.*
     ty match
-      case Top => Top
-      case Elem(map, props) =>
-        Elem(walkMap(map, walk, walk), walkMap(props, walk, walk))
+      case Top            => Top
+      case Elem(map, obj) => Elem(walkMap(map, walk, walk), walk(obj))
+
+  /** object shapes */
+  def walk(obj: ObjShape): ObjShape =
+    val ObjShape(props, call) = obj
+    ObjShape(walkMap(props, walk, walk), walk(call))
 
   /** properties */
   def walk(prop: Property): Property =
@@ -178,8 +186,15 @@ trait Walker extends BasicWalker {
 
   /** property descriptors */
   def walk(desc: Desc): Desc =
-    val Desc(getThrow, setThrow, ty) = desc
-    Desc(walk(getThrow), walk(setThrow), walk(ty))
+    val Desc(getExc, setExc, ty) = desc
+    Desc(walk(getExc), walk(setExc), walk(ty))
+
+  /** call descriptors */
+  def walk(call: CallDesc): CallDesc =
+    import CallDesc.*
+    call match
+      case Top            => Top
+      case Elem(exc, ret) => Elem(walk(exc), walk(ret))
 
   /** list types */
   def walk(ty: ListTy): ListTy = ty match

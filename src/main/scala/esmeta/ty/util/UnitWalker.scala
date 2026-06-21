@@ -16,6 +16,10 @@ trait UnitWalker extends BasicUnitWalker {
     case elem: Binding     => walk(elem)
     case elem: Ty          => walk(elem)
     case elem: RecordTy    => walk(elem)
+    case elem: ObjShape    => walk(elem)
+    case elem: Property    => walk(elem)
+    case elem: Desc        => walk(elem)
+    case elem: CallDesc    => walk(elem)
     case elem: ListTy      => walk(elem)
     case elem: AstTy       => walk(elem)
     case elem: MapTy       => walk(elem)
@@ -156,9 +160,15 @@ trait UnitWalker extends BasicUnitWalker {
     import RecordTy.*
     ty match
       case Top =>
-      case Elem(map, props) =>
+      case Elem(map, obj) =>
         walkMap(map, walk, walk)
-        walkMap(props, walk, walk)
+        walk(obj)
+
+  /** object shapes */
+  def walk(obj: ObjShape): Unit =
+    val ObjShape(props, call) = obj
+    walkMap(props, walk, walk)
+    walk(call)
 
   /** properties */
   def walk(prop: Property): Unit =
@@ -169,10 +179,17 @@ trait UnitWalker extends BasicUnitWalker {
 
   /** property descriptors */
   def walk(desc: Desc): Unit =
-    val Desc(getThrow, setThrow, ty) = desc
-    walk(getThrow)
-    walk(setThrow)
+    val Desc(getExc, setExc, ty) = desc
+    walk(getExc)
+    walk(setExc)
     walk(ty)
+
+  /** call descriptors */
+  def walk(call: CallDesc): Unit =
+    import CallDesc.*
+    call match
+      case Top            =>
+      case Elem(exc, ret) => walk(exc); walk(ret)
 
   /** list types */
   def walk(ty: ListTy): Unit = ty match

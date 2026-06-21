@@ -28,7 +28,12 @@ class SymInterp(
   lazy val targetFunc: Func = cfg.funcOf(target.branch)
 
   // main entry point of symbolic execution
-  lazy val result: Option[Config] = nextCandidate
+  lazy val result: Option[Config] = findAllMustCandidate
+  def findAllMustCandidate: Option[Config] = nextCandidate match
+    case Some(config) =>
+      if (config.state.allMust) Some(config)
+      else findAllMustCandidate
+    case None => None
   def nextCandidate: Option[Config] = results.nextOption
 
   private lazy val results: Iterator[Config] =
