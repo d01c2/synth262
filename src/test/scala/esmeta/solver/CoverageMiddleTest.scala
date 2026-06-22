@@ -168,6 +168,7 @@ class CoverageMiddleTest extends SolverTest {
         side: Boolean,
         status: String,
         js: Option[String],
+        tried: List[String],
         mustTypeScore: Option[Double],
         attempts: Int,
         elapsed: Long,
@@ -201,6 +202,12 @@ class CoverageMiddleTest extends SolverTest {
         app.wrap("", "") {
           app :> s"cfg: ${r.targetCfg}"
           for (js <- r.js) app :> s"js:  $js"
+          if (r.tried.nonEmpty) {
+            app :> "tried:"
+            r.tried.zipWithIndex.foreach { (js, idx) =>
+              app :> s"  [${idx + 1}] $js"
+            }
+          }
           for (score <- r.mustTypeScore) app :> f"must-type score: $score%.4f"
           // -------------------------------------------------------------------
           // XXX: remove later
@@ -251,6 +258,7 @@ class CoverageMiddleTest extends SolverTest {
             cond.cond,
             "timeout",
             None,
+            Nil,
             None,
             attempts,
             solveTimeout.toNanos,
@@ -278,6 +286,7 @@ class CoverageMiddleTest extends SolverTest {
             syms: Option[List[Sym]],
             conf: Option[interp.Config],
             attempts: Int,
+            tried: List[String] = List(),
           ): BranchResult = {
             BranchResult(
               f.name,
@@ -287,6 +296,7 @@ class CoverageMiddleTest extends SolverTest {
               cond.cond,
               status,
               js,
+              tried,
               for {
                 conf <- conf
                 syms <- syms
@@ -303,13 +313,16 @@ class CoverageMiddleTest extends SolverTest {
             js: Option[String],
             syms: Option[List[Sym]],
             conf: interp.Config,
+            tried: List[String] = List(),
           )
           def rejectedResult(
             rejected: Option[Rejected],
             attempts: Int,
           ): BranchResult =
             rejected
-              .map(r => result(r.status, r.js, r.syms, Some(r.conf), attempts))
+              .map { r =>
+                result(r.status, r.js, r.syms, Some(r.conf), attempts, r.tried)
+              }
               .getOrElse(result("unsolved", None, None, None, attempts))
           Thread
             .currentThread()
@@ -333,6 +346,7 @@ class CoverageMiddleTest extends SolverTest {
 
           var attempts = 0 // execution attempts
           var remainingBudget = Solver.DefaultReifyCandidateBudget
+          val maxTriedTrace = 5
           try {
             @scala.annotation.tailrec
             def retry(rejected: Option[Rejected]): BranchResult = {
@@ -364,9 +378,23 @@ class CoverageMiddleTest extends SolverTest {
                           ),
                         )
                       else // reified but not covering target
-                        nextRejected = Some(
-                          Rejected("fail-verify", Some(js), Some(syms), conf),
-                        )
+                        nextRejected = nextRejected match
+                          case Some(rejected) =>
+                            val tried =
+                              if (rejected.tried.size < maxTriedTrace)
+                                rejected.tried :+ js
+                              else rejected.tried
+                            Some(rejected.copy(tried = tried))
+                          case None =>
+                            Some(
+                              Rejected(
+                                "fail-verify",
+                                Some(js),
+                                Some(syms),
+                                conf,
+                                List(js),
+                              ),
+                            )
                     }
                     passed match {
                       case Some(result) => result
