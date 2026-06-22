@@ -268,14 +268,14 @@ class CoverageMiddleTest extends SolverTest {
           def elapsedNanos: Long = System.nanoTime() - t0
           val b = cond.branch
           val targetFunc = cfg.funcOf(b)
-          def mustTypeScore(conf: interp.Config, syms: List[Sym]): Double =
-            syms.count { sym =>
-              !conf.state.getMayMust(sym)._2.isBottom
-            }.toDouble / syms.size
+          def mustTypeScore(conf: interp.Config): Option[Double] =
+            val syms = conf.state.mayMustForSyms
+            Option.when(syms.nonEmpty) {
+              syms.values.count(!_._2.isBottom).toDouble / syms.size
+            }
           def result(
             status: String,
             js: Option[String],
-            syms: Option[List[Sym]],
             conf: Option[interp.Config],
             attempts: Int,
           ): BranchResult = {
@@ -287,10 +287,7 @@ class CoverageMiddleTest extends SolverTest {
               cond.cond,
               status,
               js,
-              for {
-                conf <- conf
-                syms <- syms
-              } yield mustTypeScore(conf, syms),
+              conf.flatMap(mustTypeScore),
               attempts,
               elapsedNanos,
               conf.map(_.conds),
@@ -301,22 +298,18 @@ class CoverageMiddleTest extends SolverTest {
           case class Rejected(
             status: String,
             js: Option[String],
-            syms: Option[List[Sym]],
             conf: interp.Config,
           )
           def rejectedResult(
             rejected: Option[Rejected],
             attempts: Int,
-          ): BranchResult =
-            rejected
-              .map(r => result(r.status, r.js, r.syms, Some(r.conf), attempts))
-              .getOrElse(result("unsolved", None, None, None, attempts))
-          Thread
-            .currentThread()
-            .setName(
-              s"builtin-branch-test ${f.name} " +
-              s"Branch[${b.id}]:${sideString(cond.cond)}",
-            )
+          ): BranchResult = rejected
+            .map(r => result(r.status, r.js, Some(r.conf), attempts))
+            .getOrElse(result("unsolved", None, None, attempts))
+          Thread.currentThread().setName {
+            s"builtin-branch-test ${f.name} " +
+            s"Branch[${b.id}]:${sideString(cond.cond)}"
+          }
 
           def verifies(js: String): Boolean =
             checkTimeout()
@@ -338,25 +331,15 @@ class CoverageMiddleTest extends SolverTest {
               checkTimeout()
               interp.nextCandidate match {
                 case Some(conf) =>
-                  interp.reifyWithSyms match {
-                    case Some((js, syms)) =>
+                  interp.reify match {
+                    case Some(js) =>
                       attempts += 1
                       if (verifies(js))
-                        result(
-                          "pass",
-                          Some(js),
-                          Some(syms),
-                          Some(conf),
-                          attempts,
-                        )
+                        result("pass", Some(js), Some(conf), attempts)
                       else // reified but not covering target
-                        retry(
-                          Some(
-                            Rejected("fail-verify", Some(js), Some(syms), conf),
-                          ),
-                        )
+                        retry(Some(Rejected("fail-verify", Some(js), conf)))
                     case None if rejected.isEmpty =>
-                      retry(Some(Rejected("fail-reify", None, None, conf)))
+                      retry(Some(Rejected("fail-reify", None, conf)))
                     case None => retry(rejected)
                   }
                 case None =>
