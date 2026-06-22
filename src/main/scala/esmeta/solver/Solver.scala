@@ -4,7 +4,6 @@ import esmeta.cfg.Func
 import esmeta.spec.*
 import esmeta.state.*
 import esmeta.ty.*
-import esmeta.util.*
 import esmeta.util.BaseUtils.*
 
 trait Solver { self: SymInterp =>
@@ -22,14 +21,6 @@ trait Solver { self: SymInterp =>
 
   /** reify to ECMAScript program with the used Syms */
   def reifyWithSyms: Option[(String, List[Sym])] =
-    reifyCandidatesWithSyms.headOption
-
-  /** enumerate ECMAScript programs with the used Syms */
-  def reifyCandidatesWithSyms: LazyList[(String, List[Sym])] =
-    reifyCandidatesWithSyms(Solver.DefaultReifyCandidateBudget)
-
-  /** enumerate ECMAScript programs with a per-configuration budget */
-  def reifyCandidatesWithSyms(budget: Int): LazyList[(String, List[Sym])] =
     given AbsState = st
     val thisValue = st.getMayMust(SThis.sym)
     val rest = st.getMayMust(SArgs.sym) // TODO : handle variadic parameters
@@ -39,16 +30,14 @@ trait Solver { self: SymInterp =>
       case _                    => 0
     }
     val args = (0 until len).toList.map(i => st.getMayMust(i))
-    val candidates = for {
-      path <- LazyList.from(getPath(entryFunc).toList)
-      thisV <- LazyList.from(getJSExprCandidates(thisValue))
+    for {
+      path <- getPath(entryFunc)
+      thisV <- getJSExpr(thisValue)
       vs <- args.zipWithIndex.map {
-        case (arg, idx) => getJSExprCandidates(arg).map(idx -> _)
-      }.cartesianProduct
-      nt <- LazyList.from(getNewTargetExprCandidates(newTarget))
-      code <- LazyList.from(reifyWithSyms(path, thisV, vs, nt).toList)
+        case (arg, idx) => getJSExpr(arg).map(idx -> _)
+      }.sequence
+      code <- reifyWithSyms(path, thisV, vs, getNewTargetExpr(newTarget))
     } yield code
-    candidates.take(math.max(0, budget))
 
   def reify(
     path: BuiltinPath,
@@ -92,59 +81,19 @@ trait Solver { self: SymInterp =>
           }
 }
 object Solver {
-  val DefaultReifyCandidateBudget: Int = 10
 
   // get a JavaScript expression representing the may/must value type
   def getJSExpr(mayMustTy: (ValueTy, ValueTy)): Option[String] =
-    getJSExprCandidates(mayMustTy).headOption
-
-  // get JavaScript expression candidates representing the may/must value type
-  def getJSExprCandidates(mayMustTy: (ValueTy, ValueTy)): List[String] =
     val (mayTy, mustTy) = mayMustTy
-    getJSExpr(mustTy).fold {
-      val mayExpr = if (mustTy.isBottom) getJSExpr(mayTy).toList else List()
-      val candidates = candidateTys(mayTy, mustTy)
-      (mayExpr ++ candidates.flatMap(getJSExpr)).distinct
-    }(List(_))
-
-  private def candidateTys(mayTy: ValueTy, mustTy: ValueTy): List[ValueTy] =
-    (mayTy :: possibleTys.map(_ && mayTy)).filter { ty =>
-      !ty.isBottom && mustTy <= ty && ty <= mayTy
-    }.distinct
-
-  private lazy val possibleTys: List[ValueTy] =
-    (primitives ++ defaults.map(_._1)).distinct
-
-  private lazy val primitives: List[ValueTy] =
-    import Double.*
-    val defaultBools = List(FalseT, TrueT)
-    val defaultStrs = List(StrT(""))
-    val defaultNumbers =
-      List(NumberT(0), NumberT(-1), NumberT(1), NumberT(NaN)) ++
-      List(NumberT(PositiveInfinity), NumberT(NegativeInfinity))
-    val defaultBigInts = List(BigIntT(0), BigIntT(1))
-    List(UndefT, NullT) ++ defaultBools ++ defaultStrs ++
-    defaultNumbers ++ defaultBigInts
+    getJSExpr(mustTy).orElse(getJSExpr(mayTy))
 
   // get a JavaScript expression representing the value type
   def getJSExpr(ty: ValueTy): Option[String] = exprFor(ty)
 
   // get a JavaScript expression representing the newTarget value type
   def getNewTargetExpr(mayMustTy: (ValueTy, ValueTy)): Option[String] =
-    getNewTargetExprCandidates(mayMustTy).headOption.flatten
-
-  // get JavaScript expression candidates representing the newTarget value type
-  def getNewTargetExprCandidates(
-    mayMustTy: (ValueTy, ValueTy),
-  ): List[Option[String]] =
     val (mayTy, mustTy) = mayMustTy
-    def candidates(upper: ValueTy): List[Option[String]] =
-      val none = if (UndefT ⊑ upper) List(None) else Nil
-      val some = getJSExprCandidates((upper && ConstructorT, BotT)).map(Some(_))
-      (none ++ some).distinct
-    candidates(mustTy) match
-      case Nil => candidates(mayTy)
-      case xs  => xs
+    if (UndefT ⊑ mayTy) None else getJSExpr(mayTy)
 
   def getPath(func: Func): Option[BuiltinPath] = func.head match {
     case Some(h: BuiltinHead) => Some(h.path)

@@ -168,7 +168,6 @@ class CoverageMiddleTest extends SolverTest {
         side: Boolean,
         status: String,
         js: Option[String],
-        tried: List[String],
         mustTypeScore: Option[Double],
         attempts: Int,
         elapsed: Long,
@@ -202,12 +201,6 @@ class CoverageMiddleTest extends SolverTest {
         app.wrap("", "") {
           app :> s"cfg: ${r.targetCfg}"
           for (js <- r.js) app :> s"js:  $js"
-          if (r.tried.nonEmpty) {
-            app :> "tried:"
-            r.tried.zipWithIndex.foreach { (js, idx) =>
-              app :> s"  [${idx + 1}] $js"
-            }
-          }
           for (score <- r.mustTypeScore) app :> f"must-type score: $score%.4f"
           // -------------------------------------------------------------------
           // XXX: remove later
@@ -258,7 +251,6 @@ class CoverageMiddleTest extends SolverTest {
             cond.cond,
             "timeout",
             None,
-            Nil,
             None,
             attempts,
             solveTimeout.toNanos,
@@ -286,7 +278,6 @@ class CoverageMiddleTest extends SolverTest {
             syms: Option[List[Sym]],
             conf: Option[interp.Config],
             attempts: Int,
-            tried: List[String] = List(),
           ): BranchResult = {
             BranchResult(
               f.name,
@@ -296,7 +287,6 @@ class CoverageMiddleTest extends SolverTest {
               cond.cond,
               status,
               js,
-              tried,
               for {
                 conf <- conf
                 syms <- syms
@@ -313,16 +303,13 @@ class CoverageMiddleTest extends SolverTest {
             js: Option[String],
             syms: Option[List[Sym]],
             conf: interp.Config,
-            tried: List[String] = List(),
           )
           def rejectedResult(
             rejected: Option[Rejected],
             attempts: Int,
           ): BranchResult =
             rejected
-              .map { r =>
-                result(r.status, r.js, r.syms, Some(r.conf), attempts, r.tried)
-              }
+              .map(r => result(r.status, r.js, r.syms, Some(r.conf), attempts))
               .getOrElse(result("unsolved", None, None, None, attempts))
           Thread
             .currentThread()
@@ -345,75 +332,39 @@ class CoverageMiddleTest extends SolverTest {
             }
 
           var attempts = 0 // execution attempts
-          var remainingBudget = Solver.DefaultReifyCandidateBudget
-          val maxTriedTrace = 5
           try {
             @scala.annotation.tailrec
             def retry(rejected: Option[Rejected]): BranchResult = {
               checkTimeout()
-              if (remainingBudget <= 0) rejectedResult(rejected, attempts)
-              else
-                interp.nextCandidate match {
-                  case Some(conf) =>
-                    val candidates =
-                      interp.reifyCandidatesWithSyms(remainingBudget).iterator
-                    var nextRejected: Option[Rejected] = None
-                    var hasCandidate = false
-                    var passed: Option[BranchResult] = None
-                    while (
-                      remainingBudget > 0 && candidates.hasNext && passed.isEmpty
-                    ) {
-                      remainingBudget -= 1
-                      hasCandidate = true
-                      val (js, syms) = candidates.next()
+              interp.nextCandidate match {
+                case Some(conf) =>
+                  interp.reifyWithSyms match {
+                    case Some((js, syms)) =>
                       attempts += 1
                       if (verifies(js))
-                        passed = Some(
-                          result(
-                            "pass",
-                            Some(js),
-                            Some(syms),
-                            Some(conf),
-                            attempts,
-                          ),
+                        result(
+                          "pass",
+                          Some(js),
+                          Some(syms),
+                          Some(conf),
+                          attempts,
                         )
                       else // reified but not covering target
-                        nextRejected = nextRejected match
-                          case Some(rejected) =>
-                            val tried =
-                              if (rejected.tried.size < maxTriedTrace)
-                                rejected.tried :+ js
-                              else rejected.tried
-                            Some(rejected.copy(tried = tried))
-                          case None =>
-                            Some(
-                              Rejected(
-                                "fail-verify",
-                                Some(js),
-                                Some(syms),
-                                conf,
-                                List(js),
-                              ),
-                            )
-                    }
-                    passed match {
-                      case Some(result) => result
-                      case None =>
-                        val latestRejected = nextRejected.orElse {
-                          if (!hasCandidate && rejected.isEmpty)
-                            Some(Rejected("fail-reify", None, None, conf))
-                          else rejected
-                        }
-                        if (remainingBudget <= 0)
-                          rejectedResult(latestRejected, attempts)
-                        else retry(latestRejected)
-                    }
-                  case None =>
-                    // symbolic execution returned no model: distinguish a genuine
-                    // "unsolved" from one aborted by the per-side time limit
-                    if (interp.timeout) timeoutResult(f, cond, attempts)
-                    else rejectedResult(rejected, attempts)
-                }
+                        retry(
+                          Some(
+                            Rejected("fail-verify", Some(js), Some(syms), conf),
+                          ),
+                        )
+                    case None if rejected.isEmpty =>
+                      retry(Some(Rejected("fail-reify", None, None, conf)))
+                    case None => retry(rejected)
+                  }
+                case None =>
+                  // symbolic execution returned no model: distinguish a genuine
+                  // "unsolved" from one aborted by the per-side time limit
+                  if (interp.timeout) timeoutResult(f, cond, attempts)
+                  else rejectedResult(rejected, attempts)
+              }
             }
             retry(None)
           } catch {
