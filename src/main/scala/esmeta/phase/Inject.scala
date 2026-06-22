@@ -3,8 +3,10 @@ package esmeta.phase
 import esmeta.*
 import esmeta.cfg.CFG
 import esmeta.injector.Injector
+import esmeta.interpreter.Interpreter
 import esmeta.es.*
 import esmeta.state.*
+import esmeta.test262.*
 import esmeta.util.*
 import esmeta.util.SystemUtils.*
 
@@ -18,9 +20,8 @@ case object Inject extends Phase[CFG, String] {
     config: Config,
   ): String =
     val filename = getFirstFilename(cmdConfig, this.name)
-    val src = readFile(filename)
-    val test = Injector(cfg, src)
-    val injected = test.toString
+    val test = Injector.fromFile(cfg, filename, config.log)
+    val injected = test.toString(detail = config.defs)
 
     // dump the assertion-injected ECMAScript program
     for (filename <- config.out)
@@ -34,12 +35,24 @@ case object Inject extends Phase[CFG, String] {
   def defaultConfig: Config = Config()
   val options: List[PhaseOption[Config]] = List(
     (
+      "defs",
+      BoolOption(_.defs = _),
+      "prepend definitions of helpers for assertions.",
+    ),
+    (
       "out",
       StrOption((c, s) => c.out = Some(s)),
       "dump an assertion-injected ECMAScript program to a given path.",
     ),
+    (
+      "log",
+      BoolOption(_.log = _),
+      "turn on logging mode.",
+    ),
   )
   case class Config(
+    var defs: Boolean = false,
     var out: Option[String] = None,
+    var log: Boolean = false,
   )
 }

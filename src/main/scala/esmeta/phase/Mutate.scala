@@ -1,7 +1,6 @@
 package esmeta.phase
 
 import esmeta.*
-import esmeta.analyzer.paramflow.*
 import esmeta.cfg.CFG
 import esmeta.es.*
 import esmeta.es.util.*
@@ -22,18 +21,7 @@ case object Mutate extends Phase[CFG, String] {
     val filename = getFirstFilename(cmdConfig, this.name)
     val code = readFile(filename)
 
-    val analyzer: Option[ParamFlowAnalyzer] =
-      if (!config.ablation) {
-        val an = ParamFlowAnalyzer(cfg, silent = true)
-        an.analyze
-        Some(an)
-      } else None
-    val cov = Coverage(
-      cfg,
-      kFs = config.kFs,
-      timeLimit = Some(1),
-      analyzer = analyzer,
-    )
+    val cov = Coverage(cfg, kFs = config.kFs, timeLimit = Some(1))
 
     // detect which side of the target branch is covered by the given program
     val coveredCondView: Option[CondView] = config.targetBranchId.map { id =>
@@ -67,7 +55,7 @@ case object Mutate extends Phase[CFG, String] {
     }
 
     given CFG = cfg
-    val mutator: Mutator = TargetMutator(config.ablation)()
+    val mutator: Mutator = RandomMutator()
     var blocked = Set[String]()
     var iter = 0
 
@@ -141,11 +129,6 @@ case object Mutate extends Phase[CFG, String] {
       "feature sensitivity level for targeting (default: 0).",
     ),
     (
-      "ablation",
-      BoolOption((c, b) => c.ablation = b),
-      "ablation mode: disable spec-aware features (default: false).",
-    ),
-    (
       "duration",
       NumOption((c, k) => c.duration = Some(k)),
       "set the maximum duration for mutation in seconds (default: 300).",
@@ -165,7 +148,6 @@ case object Mutate extends Phase[CFG, String] {
     var out: Option[String] = None,
     var targetBranchId: Option[Int] = None,
     var kFs: Int = 0,
-    var ablation: Boolean = false,
     var duration: Option[Int] = None,
     var trial: Option[Int] = None,
     var debug: Boolean = false,

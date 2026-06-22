@@ -1,6 +1,5 @@
 package esmeta.fuzzer
 
-import esmeta.analyzer.paramflow.*
 import esmeta.cfg.*
 import esmeta.error.*
 import esmeta.es.*
@@ -31,7 +30,6 @@ object Fuzzer {
     trial: Option[Int] = None, // `None` denotes no bound
     duration: Option[Int] = None, // `None` denotes no bound
     init: Option[String] = None, // initial pool directory path given by user
-    ablation: Boolean = false,
     kFs: Int = 0,
     cp: Boolean = false,
   ): Coverage = new Fuzzer(
@@ -45,7 +43,6 @@ object Fuzzer {
     trial,
     duration,
     init,
-    ablation,
     kFs,
     cp,
   ).result
@@ -68,7 +65,6 @@ class Fuzzer(
   trial: Option[Int],
   duration: Option[Int],
   init: Option[String],
-  ablation: Boolean,
   kFs: Int,
   cp: Boolean,
 ) {
@@ -141,7 +137,6 @@ class Fuzzer(
   /** one trial to fuzz new programs to increase coverage */
   def fuzz: Unit = {
     iter += 1
-    cov.currentIter = iter
 
     val startTime = System.currentTimeMillis
     debugging(("-" * 40) + f"  iter: $iter%10d  " + ("-" * 40))
@@ -239,17 +234,8 @@ class Fuzzer(
     val updated = if (pass) Counter(p + 1, f) else Counter(p, f + 1)
     map += t -> updated
 
-  /** light-weight analyzer for fuzzing */
-  lazy val analyzer: Option[ParamFlowAnalyzer] =
-    if (!ablation) {
-      val an = ParamFlowAnalyzer(cfg, silent = true)
-      an.analyze
-      Some(an)
-    } else None
-
   /** coverage */
-  val cov: Coverage =
-    Coverage(cfg, tyCheck, kFs, cp, timeLimit, analyzer = analyzer)
+  val cov: Coverage = Coverage(cfg, tyCheck, kFs, cp, timeLimit)
 
   /** target selector */
   val selector: TargetSelector = WeightedSelector(
@@ -264,7 +250,7 @@ class Fuzzer(
 
   /** mutator */
   val mutator: Mutator = WeightedMutator(
-    TargetMutator(ablation)() -> 6,
+    NearestMutator() -> 6,
     RandomMutator() -> 3,
     StatementInserter() -> 1,
     Remover() -> 1,
@@ -284,6 +270,7 @@ class Fuzzer(
           "GivenByUser" -> sourceText
         }
       case None =>
+        // FIXME: use only builtin init pool for experiment
         // val simpleSyn = SimpleSynthesizer(grammar)
         val builtinSyn = BuiltinSynthesizer(cfg.spec.algorithms)
         // simpleSyn.initPool.map(code => simpleSyn.name -> code) ++

@@ -1,55 +1,85 @@
 package esmeta.injector.util
 
+import esmeta.LINE_SEP
 import esmeta.injector.*
+import esmeta.injector.Injector.*
 import esmeta.state.*
+import esmeta.util.*
 import esmeta.util.Appender.*
-import esmeta.util.BaseUtils.*
 
-/** stringifier for injector elements */
-class Stringifier {
-  import Assertion.*, ExpectedValue.*
+/** stringifier for ECMAScript */
+class Stringifier(detail: Boolean) {
+  // elements
+  given elemRule: Rule[InjectorElem] = (app, elem) =>
+    elem match
+      case elem: ConformTest => testRule(app, elem)
+      case elem: ExitTag     => exitTagRule(app, elem)
+      case elem: Assertion   => assertRule(app, elem)
 
-  val description = "\"detailed description needed\""
+  // conformance tests
+  given testRule: Rule[ConformTest] = (app, test) =>
+    val ConformTest(id, script, exitTag, isAsync, assertions) = test
+    val delayHead = "$delay(() => {"
+    val delayTail = "});"
 
-  given conformTestRule: Rule[ConformTest] = (app, test) =>
-    val ConformTest(script, exitTag, throwTarget) = test
-
-    if (script.nonEmpty) app >> script
-
-    (exitTag, throwTarget) match
-      case (ExitTag.Throw(Some(error)), Some(expr)) =>
-        app.wrap(
-          s"assert.throws($error, function () {",
-          s"}, $description);",
-        ) { app :> expr >> ";" }
-      case _ =>
+    if (detail) app >> "\"use strict\";" >> LINE_SEP
+    app >> "// [EXIT] " >> exitTag
+    app :> script
+    if (exitTag.isNormal) {
+      app :> "// Assertions"
+      def body = {
+        // prepend auxiliary definitions for assertions
+        if (detail) app >> header
+        // handle async tests by delaying the execution
+        if (isAsync) app.wrap(delayHead, delayTail) {
+          assertions.foreach(app :> _)
+        }
+        else assertions.foreach(app :> _)
+      }
+      if (detail) (app :> "").wrap("(() => {", "})();")(body)
+      else body
+    }
     app
 
-  given assertionRule: Rule[Assertion] = (app, assertion) =>
-    assertion match
-      case SameValue(exprSource, expected) =>
-        app >> s"assert.sameValue($exprSource, ${expectedValueStr(Simple(expected))}, $description);"
-      case CompareArray(exprSource, elements) =>
-        app >> s"assert.compareArray($exprSource, ${expectedValueStr(Array(elements))}, $description);"
-      case VerifyProperty(objSource, property) =>
-        app >> s"verifyProperty($objSource, \"$property\", undefined);"
+  // exit tags
+  given exitTagRule: Rule[ExitTag] = (app, tag) =>
+    import ExitTag.*
+    tag match
+      case Normal                   => app >> s"normal"
+      case Timeout                  => app >> s"timeout"
+      case SpecError(error, cursor) => app >> s"spec-error: $cursor"
+      case ThrowValue(values)       => app >> s"throw: ${values.mkString(", ")}"
 
-  private def expectedValueStr(ev: ExpectedValue): String = ev match
-    case Simple(sv)   => simpleValueStr(sv)
-    case Array(elems) => arrayValueStr(elems)
+  // assertions
+  given assertRule: Rule[Assertion] = (app, assert) =>
+    given Rule[SimpleValue] = (app, value) =>
+      app >> (
+        value match
+          case Number(n) => n.toString
+          case v         => v.toString
+      )
 
-  private def simpleValueStr(sv: SimpleValue): String = sv match
-    case Number(Double.PositiveInfinity) => "Infinity"
-    case Number(Double.NegativeInfinity) => "-Infinity"
-    case Number(n) if n.isNaN            => "NaN"
-    case Number(n)                       => s"$n"
-    case BigInt(n)                       => s"${n}n"
-    case Str(s)                          => s"\"$s\""
-    case Bool(b)                         => s"$b"
-    case Undef                           => "undefined"
-    case Null                            => "null"
+    given Rule[Map[String, SimpleValue]] = (app, desc) =>
+      app.wrap(
+        desc.map((field, value) => app :> field >> ": " >> value >> ","),
+      )
 
-  private def arrayValueStr(elems: Vector[ExpectedValue]): String =
-    elems.map(expectedValueStr).mkString("[", ", ", "]")
-
+    // TODO(@hyp3rflow): ignore exception thrown during executing injected assertions
+    // https://github.com/kaist-plrg/esmeta/commit/a083e94f26bc8b39a4c76d9e9372b0cadb5d827f
+    assert match
+      case HasValue(x, v) =>
+        app >> s"$$assert.sameValue($x, " >> v >> ");"
+      case IsExtensible(addr, path, b) =>
+        app >> s"$$assert.sameValue(Object.isExtensible($path), $b);"
+      case IsCallable(addr, path, b) =>
+        app >> s"$$assert.${if b then "c" else "notC"}allable($path);"
+      case IsConstructable(addr, path, b) =>
+        app >> s"$$assert.${if b then "c" else "notC"}onstructable($path);"
+      case CompareArray(addr, path, array) =>
+        app >> s"$$assert.compareArray($$Reflect.ownKeys($path), ${array
+          .mkString("[", ", ", "]")}, $path);"
+      case SameObject(addr, path, origPath) =>
+        app >> s"$$assert.sameValue($path, $origPath);"
+      case VerifyProperty(addr, path, propStr, desc) =>
+        app >> s"$$verifyProperty($path, $propStr, " >> desc >> ");"
 }

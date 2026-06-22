@@ -1,6 +1,5 @@
 package esmeta.es.util
 
-import esmeta.analyzer.paramflow.{ParamFlowAnalyzer, ParamKind}
 import esmeta.{LINE_SEP, TEST262TEST_LOG_DIR}
 import esmeta.cfg.{Func => CFGFunc, *}
 import esmeta.injector.*
@@ -30,7 +29,6 @@ case class Coverage(
   all: Boolean = false,
   isTargetNode: (Node, State) => Boolean = (_, _) => true,
   isTargetBranch: (Branch, State) => Boolean = (_, _) => true,
-  analyzer: Option[ParamFlowAnalyzer] = None,
 ) {
   import Coverage.{*, given}
 
@@ -75,20 +73,9 @@ case class Coverage(
   private var counter: Map[Script, Int] = Map()
   def size: Int = counter.size
 
-  // target conditional branches (reached but one side left branches)
+  // target conditional branches
   private var _targetCondViews: Map[Cond, Map[View, Set[Target]]] = Map()
   def targetCondViews: Map[Cond, Map[View, Set[Target]]] = _targetCondViews
-
-  // branch attempt tracking
-  var currentIter: Int = 0
-  private val _branchRecords =
-    scala.collection.mutable.Map[Cond, BranchRecord]()
-  def branchRecords: scala.collection.mutable.Map[Cond, BranchRecord] =
-    _branchRecords
-
-  // record that a branch was selected as mutation target
-  def recordSelection(cond: Cond): Unit =
-    _branchRecords.get(cond).foreach(_.selectionCount += 1)
 
   private lazy val scriptParser = cfg.scriptParser
 
@@ -118,26 +105,10 @@ case class Coverage(
     run(sourceText, ast, None)
 
   /** evaluate a given ECMAScript program */
-  def run(
-    sourceText: String,
-    ast: Ast,
-    name: Option[String],
-  ): Interp =
-    val initSt = cfg.init.from(
-      sourceText,
-      Some(ast),
-      name,
-    )
-    val interp = Interp(
-      initSt,
-      tyCheck,
-      kFs,
-      cp,
-      timeLimit,
-      isTargetNode,
-      isTargetBranch,
-      analyzer,
-    )
+  def run(sourceText: String, ast: Ast, name: Option[String]): Interp =
+    val initSt = cfg.init.from(sourceText, Some(ast), name)
+    val interp =
+      Interp(initSt, tyCheck, kFs, cp, timeLimit, isTargetNode, isTargetBranch)
     interp.result; interp
 
   def check(script: Script, interp: Interp): (State, Boolean, Boolean) = {
@@ -295,26 +266,6 @@ case class Coverage(
         noSpace = false,
       )
       log("dumped target conds")
-    if (_branchRecords.nonEmpty)
-      val records = _branchRecords.values.toList.sortBy(-_.selectionCount)
-      val header = "branchId\tside\tfuncName\tentryIter\texitIter" +
-        "\tselectionCount\tcovered"
-      val lines = records
-        .map { r =>
-          val funcName =
-            cfg.funcOf.get(r.cond.branch).map(_.name).getOrElse("?")
-          val exit = r.exitIter.map(_.toString).getOrElse("-")
-          val covered = r.exitIter.isDefined
-          s"${r.cond.id}\t${r.cond.cond}\t$funcName\t${r.entryIter}" +
-          s"\t$exit\t${r.selectionCount}\t$covered"
-        }
-        .mkString("\n")
-      dumpFile(
-        name = "branch attempt records",
-        data = header + "\n" + lines,
-        filename = s"$baseDir/branch-attempts.tsv",
-      )
-      log("dumped branch attempt records")
     if (withUnreachableFuncs)
       dumpFile(
         name = "unreachable functions",
@@ -416,8 +367,6 @@ case class Coverage(
   // add a cond to targetConds
   private def addTargetCond(cv: CondView, targets: Set[Target]): Unit =
     val CondView(cond, view) = cv
-    if (!_targetCondViews.contains(cond))
-      _branchRecords.getOrElseUpdate(cond, BranchRecord(cond, currentIter))
     val newViews = _targetCondViews.getOrElse(cond, Map()) + (view -> targets)
     _targetCondViews += cond -> newViews
 
@@ -426,10 +375,8 @@ case class Coverage(
     val CondView(cond, view) = cv
     for (views <- _targetCondViews.get(cond)) {
       val newViews = views - view
-      if (newViews.isEmpty) {
-        _targetCondViews -= cond
-        _branchRecords.get(cond).foreach(_.exitIter = Some(currentIter))
-      } else _targetCondViews += cond -> newViews
+      if (newViews.isEmpty) _targetCondViews -= cond
+      else _targetCondViews += cond -> newViews
     }
 
   // get JSON for node coverage
@@ -485,7 +432,6 @@ object Coverage {
     timeLimit: Option[Int],
     isTargetNode: (Node, State) => Boolean,
     isTargetBranch: (Branch, State) => Boolean,
-    analyzer: Option[ParamFlowAnalyzer] = None,
   ) extends Interpreter(initSt, tyCheck = tyCheck, timeLimit = timeLimit) {
     var touchedNodeViews: Set[NodeView] = Set()
     var touchedCondViews: Map[CondView, Set[Target]] = Map()
@@ -525,137 +471,17 @@ object Coverage {
     override def eval(node: Node): Unit =
       // record touched nodes if it is a target node
       if (isTargetNode(node, st) && isBuiltinNearest)
+        // FIXME: check only builtin nearest for experiment
         touchedNodeViews += NodeView(node, getView(node))
       super.eval(node)
-
-    // get impact targets for a given expression in a given context
-    private def getTargets(
-      context: Context,
-      callStack: List[CallContext],
-      node: Node,
-      expr: Expr,
-      argIdx: Option[Int] = None,
-    ): Set[Target] = {
-      def next(
-        param: String,
-        nextArgIdx: Option[Int] = argIdx,
-      ): Set[Target] = callStack match {
-        case head :: tail =>
-          val idx = context.func.params.map(_.lhs.name).indexOf(param)
-          val cc = head.context
-          val cursor = cc.cursor.asInstanceOf[NodeCursor]
-          val callInst = cursor.node.asInstanceOf[Call].callInst
-          val args = callInst match
-            case ICall(_, _, args)          => args
-            case ISdoCall(_, base, _, args) => base :: args
-          val arg = args.lift(idx).getOrElse(EUndef())
-          getTargets(cc, tail, cursor.node, arg, nextArgIdx)
-        case Nil => Set()
-      }
-      // try to refine target to a specific argument AST when argIdx is set
-      def refineTarget(astOpt: Option[Ast]): Set[Target] =
-        given cfg: CFG = st.cfg
-        argIdx match
-          case Some(k) =>
-            extractCallArg(astOpt, k).flatMap(a => Target(Some(a))) match
-              case Some(t) => Set(t)
-              case None    => Target(astOpt).toSet
-          case None => Target(astOpt).toSet
-      for {
-        an <- analyzer.toSet
-        curNp = an.NodePoint(context.func, node, an.emptyView)
-        absSt = an.getResult(curNp)
-        (absV, _) = an.transfer.transfer(expr)(using curNp)(absSt)
-        param <- absV.params
-        target <- context.func.head match {
-          case Some(_: SyntaxDirectedOperationHead) =>
-            import ParamKind.*
-            given cfg: CFG = st.cfg
-            param match
-              case This => refineTarget(context.astOpt)
-              case ThisIdx(k) =>
-                refineTarget(context.astOpt.flatMap(_.children.lift(k).flatten))
-              case Named(name) => next(name)
-          case Some(_: BuiltinHead) =>
-            import ParamKind.*
-            param match
-              case This        => next("this")
-              case Named(name) =>
-                // count IPop(ArgumentsList) in this function for offset;
-                // each pop shifts the argument index by 1
-                // (e.g. Function.prototype.call pops thisArg before passing the remaining list)
-                val popOffset =
-                  if (argIdx.isDefined)
-                    context.func.nodes.toList.map {
-                      case Block(_, insts, _) =>
-                        insts.count {
-                          case IPop(_, ERef(Name("ArgumentsList")), _) => true
-                          case _                                       => false
-                        }
-                      case _ => 0
-                    }.sum
-                  else 0
-                // preserve argIdx from inner builtin with offset; compute fresh if not set
-                val resolvedArgIdx = argIdx
-                  .map(_ + popOffset)
-                  .orElse {
-                    an.builtinArgOrder.get(context.func.id).flatMap(_.get(name))
-                  }
-                next("ArgumentsList", resolvedArgIdx)
-              case _ => Set()
-          case _ => next(param.asInstanceOf[ParamKind.Named].name)
-        }
-      } yield target
-    }
-
-    // extract arguments from any argument-containing AST
-    private def extractArgs(astOpt: Option[Ast]): Option[Vector[Ast]] =
-      for {
-        ast <- astOpt
-        argList <- findArgList(ast)
-        args = flattenArgList(argList)
-        if args.nonEmpty
-      } yield args
-
-    // extract the k-th argument
-    private def extractCallArg(astOpt: Option[Ast], k: Int): Option[Ast] =
-      extractArgs(astOpt).flatMap(_.lift(k))
-
-    // find ArgumentList in AST by navigating the known grammar structure
-    private def findArgList(ast: Ast): Option[Syntactic] =
-      def childByName(a: Ast, name: String): Option[Syntactic] = a match
-        case s: Syntactic =>
-          s.children.flatten.collectFirst {
-            case c: Syntactic if c.name == name => c
-          }
-        case _ => None
-      ast match
-        case s: Syntactic if s.name == "ArgumentList" => Some(s)
-        case _ =>
-          childByName(ast, "ArgumentList").orElse {
-            childByName(ast, "Arguments").flatMap {
-              childByName(_, "ArgumentList")
-            }
-          }
 
     // override branch move
     override def moveBranch(branch: Branch, b: Boolean): Unit =
       // record touched conditional branch if it is a target branch
       if (isTargetBranch(branch, st) && isBuiltinNearest)
+        // FIXME: check only builtin nearest for experiment
         val cond = Cond(branch, b)
-        val targets = analyzer match
-          case Some(_) =>
-            val sourceLen = st.cachedSourceText.map(_.length).getOrElse(0)
-            // filter out targets from dynamically re-parsed code (e.g. Function
-            // constructor) whose locations exceed the original source boundary
-            val filtered =
-              getTargets(st.context, st.callStack, branch, branch.cond).filter {
-                case Target(_, _, _, Loc(start, end, _, _)) =>
-                  start.offset >= 0 && end.offset <= sourceLen
-              }
-            if (filtered.isEmpty) getNearest.toSet else filtered
-          case None => getNearest.toSet
-        touchedCondViews += CondView(cond, getView(cond)) -> targets
+        touchedCondViews += CondView(cond, getView(cond)) -> getNearest.toSet
       super.moveBranch(branch, b)
 
     // get syntax-sensitive views
@@ -667,7 +493,7 @@ object Coverage {
         case feature :: enclosing => Some(enclosing, feature, path)
       }
 
-    // get nearest target
+    // get location information
     private def getNearest: Option[Target] = st.context.nearest
 
     private def isBuiltinNearest: Boolean =
@@ -740,13 +566,5 @@ object Coverage {
     kFs: Int,
     cp: Boolean,
     timeLimit: Option[Int],
-  )
-
-  // branch attempt tracking record
-  case class BranchRecord(
-    cond: Cond,
-    entryIter: Int,
-    var exitIter: Option[Int] = None,
-    var selectionCount: Int = 0,
   )
 }

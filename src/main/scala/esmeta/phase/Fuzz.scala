@@ -38,7 +38,6 @@ case object Fuzz extends Phase[CFG, Coverage] {
       trial = config.trial,
       duration = config.duration,
       init = config.init,
-      ablation = config.ablation,
       kFs = config.kFs,
       cp = config.cp,
     )
@@ -105,11 +104,6 @@ case object Fuzz extends Phase[CFG, Coverage] {
       "explicitly use the given init pool",
     ),
     (
-      "ablation",
-      BoolOption((c, b) => c.ablation = b),
-      "ablation mode: disable spec-aware features (default: false).",
-    ),
-    (
       "k-fs",
       NumOption((c, k) => c.kFs = k),
       "set the k-value for feature sensitivity (default: 0).",
@@ -131,7 +125,6 @@ case object Fuzz extends Phase[CFG, Coverage] {
     var duration: Option[Int] = None,
     var seed: Option[Int] = None,
     var init: Option[String] = None,
-    var ablation: Boolean = false,
     var kFs: Int = 0,
     var cp: Boolean = false,
   )

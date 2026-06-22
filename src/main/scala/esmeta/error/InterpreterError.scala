@@ -11,6 +11,10 @@ import esmeta.ty.*
 sealed class InterpreterError(msg: String)
   extends ESMetaError(msg, "InterpreterError")
 
+// error with CFG components
+case class InterpreterErrorAt(error: InterpreterError, cursor: Cursor)
+  extends InterpreterError(s"${error.errMsg} @ $cursor")
+
 // invalid cases
 case class InvalidNodeId(nid: Int)
   extends InterpreterError(s"invalid node id: $nid")

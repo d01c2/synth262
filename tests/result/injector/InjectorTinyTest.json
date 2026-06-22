@@ -1,4 +1,0 @@
-{
-  "Normal Exit Injection from '42;'" : true,
-  "Throw Exit Injection from 'null.foo;'" : true
-}

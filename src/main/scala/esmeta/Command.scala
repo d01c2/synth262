@@ -111,16 +111,6 @@ case object CmdTyCheck extends Command("tycheck", CmdBuildCFG >> TyCheck) {
   )
 }
 
-/** `param-flow` command */
-case object CmdParamFlow
-  extends Command("param-flow", CmdBuildCFG >> ParamFlow) {
-  val help = "performs an analysis for flow of parameters."
-  val examples = List(
-    "esmeta param-flow                              # analyze spec.",
-    "esmeta param-flow -tycheck:target='.*ToString' # analyze spec. with targets",
-  )
-}
-
 // -----------------------------------------------------------------------------
 // Interpreter & Double Debugger for ECMAScript
 // -----------------------------------------------------------------------------

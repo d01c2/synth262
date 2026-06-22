@@ -66,9 +66,8 @@ object Remover {
     case Syntactic(name, args, rhsIdx, children) =>
       children.indexWhere { child =>
         child match
-          case Some(syn: Syntactic) if syn.name == name && syn.args == args =>
-            true
-          case _ => false
+          case Some(Syntactic(`name`, `args`, _, _)) => true
+          case _                                     => false
       }
     case _ => -1
 
