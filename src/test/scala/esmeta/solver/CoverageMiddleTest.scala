@@ -332,39 +332,60 @@ class CoverageMiddleTest extends SolverTest {
             }
 
           var attempts = 0 // execution attempts
+          var remainingBudget = Solver.DefaultReifyCandidateBudget
           try {
             @scala.annotation.tailrec
             def retry(rejected: Option[Rejected]): BranchResult = {
               checkTimeout()
-              interp.nextCandidate match {
-                case Some(conf) =>
-                  interp.reifyWithSyms match {
-                    case Some((js, syms)) =>
+              if (remainingBudget <= 0) rejectedResult(rejected, attempts)
+              else
+                interp.nextCandidate match {
+                  case Some(conf) =>
+                    val candidates =
+                      interp.reifyCandidatesWithSyms(remainingBudget).iterator
+                    var nextRejected: Option[Rejected] = None
+                    var hasCandidate = false
+                    var passed: Option[BranchResult] = None
+                    while (
+                      remainingBudget > 0 && candidates.hasNext && passed.isEmpty
+                    ) {
+                      remainingBudget -= 1
+                      hasCandidate = true
+                      val (js, syms) = candidates.next()
                       attempts += 1
                       if (verifies(js))
-                        result(
-                          "pass",
-                          Some(js),
-                          Some(syms),
-                          Some(conf),
-                          attempts,
-                        )
-                      else // reified but not covering target
-                        retry(
-                          Some(
-                            Rejected("fail-verify", Some(js), Some(syms), conf),
+                        passed = Some(
+                          result(
+                            "pass",
+                            Some(js),
+                            Some(syms),
+                            Some(conf),
+                            attempts,
                           ),
                         )
-                    case None if rejected.isEmpty =>
-                      retry(Some(Rejected("fail-reify", None, None, conf)))
-                    case None => retry(rejected)
-                  }
-                case None =>
-                  // symbolic execution returned no model: distinguish a genuine
-                  // "unsolved" from one aborted by the per-side time limit
-                  if (interp.timeout) timeoutResult(f, cond, attempts)
-                  else rejectedResult(rejected, attempts)
-              }
+                      else // reified but not covering target
+                        nextRejected = Some(
+                          Rejected("fail-verify", Some(js), Some(syms), conf),
+                        )
+                    }
+                    passed match {
+                      case Some(result) => result
+                      case None =>
+                        val latestRejected = nextRejected.orElse {
+                          if (!hasCandidate && rejected.isEmpty)
+                            Some(Rejected("fail-reify", None, None, conf))
+                          else rejected
+                        }
+                        if (remainingBudget <= 0)
+                          rejectedResult(latestRejected, attempts)
+                        else retry(latestRejected)
+                    }
+                  case None =>
+                    // symbolic execution returned no model: distinguish a genuine
+                    // "unsolved" from one aborted by the per-side time limit
+                    if (interp.timeout) timeoutResult(f, cond, attempts)
+                    else rejectedResult(rejected, attempts)
+                }
             }
             retry(None)
           } catch {

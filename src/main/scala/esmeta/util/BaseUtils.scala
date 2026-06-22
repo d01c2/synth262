@@ -318,4 +318,13 @@ object BaseUtils {
             hasNone = true
 
       if hasNone then None else Some(buffer.toList)
+
+  extension [A](xss: List[List[A]])
+    def cartesianProduct: LazyList[List[A]] = xss match
+      case Nil => LazyList(Nil)
+      case xs :: rest =>
+        for {
+          x <- LazyList.from(xs)
+          suffix <- rest.cartesianProduct
+        } yield x :: suffix
 }
