@@ -12,6 +12,14 @@ var $error = (globalThis.console && globalThis.console.log) || globalThis.print;
 // algo map
 var $algo = new Map();
 
+// null-safe wrapper of Reflect
+var $Reflect = {
+  ownKeys: function (o) {
+    if (o === null || o === undefined) return undefined;
+    return Reflect.ownKeys(o);
+  },
+};
+
 // conversion to string
 function $toString(value) {
   if (value === 0 && 1 / value === -Infinity) return "«-0»";
