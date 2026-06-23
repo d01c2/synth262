@@ -4,7 +4,9 @@
 The universe is the set of all branch sides reachable from builtin entries,
 loaded from the solver log directory.  By default, the solver-covered set is
 the solver ``pass`` status, while Test262 and fuzz sets are loaded from
-``branch-coverage.json`` files in their log directories.
+``branch-coverage.json`` files in their log directories.  The JSON output also
+keeps branch-side lists for each Venn region, including solver pass programs
+when available.
 """
 
 from __future__ import annotations
@@ -23,6 +25,8 @@ BranchSide = tuple[int, str]
 BRANCH_FILE_RE = re.compile(r"^branch-(\d+)-([TF])$")
 SUMMARY_BRANCH_RE = re.compile(r"\bBranch\[(\d+)\]:(T|F)\b")
 SUMMARY_STATUS_RE = re.compile(r"^\s*\[([A-Za-z0-9_.-]+)\]\s+\d+\s*$")
+JS_LINE_RE = re.compile(r"^\s*js:\s*(.*\S)\s*$")
+SIDE_ORDER = {"T": 0, "F": 1}
 
 
 def format_int(n: int) -> str:
@@ -54,27 +58,42 @@ def parse_branch_side_from_summary_line(line: str) -> BranchSide | None:
     return int(match.group(1)), match.group(2)
 
 
+def load_solver_program(path: Path) -> str | None:
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            match = JS_LINE_RE.match(line)
+            if match:
+                return match.group(1)
+    return None
+
+
 def load_solver_sets(
     solver_log: Path,
     solver_statuses: set[str],
-) -> tuple[set[BranchSide], set[BranchSide], dict[str, int]]:
+) -> tuple[set[BranchSide], set[BranchSide], dict[str, int], dict[BranchSide, str]]:
     if not solver_log.exists():
         raise FileNotFoundError(f"solver log directory not found: {solver_log}")
 
     universe: set[BranchSide] = set()
     solver: set[BranchSide] = set()
     status_counts: dict[str, int] = {}
+    solver_programs: dict[BranchSide, str] = {}
 
     for child in sorted(solver_log.iterdir()):
         if not child.is_dir():
             continue
-        sides = {
-            side
-            for path in child.iterdir()
-            if path.is_file()
-            for side in [parse_branch_side_from_name(path)]
-            if side is not None
-        }
+        sides: set[BranchSide] = set()
+        for path in child.iterdir():
+            if not path.is_file():
+                continue
+            side = parse_branch_side_from_name(path)
+            if side is None:
+                continue
+            sides.add(side)
+            if child.name == "pass":
+                program = load_solver_program(path)
+                if program is not None:
+                    solver_programs[side] = program
         if not sides:
             continue
         status_counts[child.name] = len(sides)
@@ -83,7 +102,7 @@ def load_solver_sets(
             solver |= sides
 
     if universe:
-        return universe, solver, status_counts
+        return universe, solver, status_counts, solver_programs
 
     summary = solver_log / "summary"
     if not summary.exists():
@@ -110,7 +129,7 @@ def load_solver_sets(
 
     if not universe:
         raise ValueError(f"no branch sides found in solver log: {solver_log}")
-    return universe, solver, status_counts
+    return universe, solver, status_counts, solver_programs
 
 
 def coverage_json_files(path: Path, merge_nested: bool) -> list[Path]:
@@ -161,23 +180,67 @@ def region_counts(
     test262: set[BranchSide],
     fuzz: set[BranchSide],
 ) -> dict[str, int]:
+    regions = region_sets(universe, solver, test262, fuzz)
     s = solver & universe
     t = test262 & universe
     f = fuzz & universe
     return {
-        "solver_only": len(s - t - f),
-        "test262_only": len(t - s - f),
-        "fuzz_only": len(f - s - t),
-        "solver_test262": len((s & t) - f),
-        "solver_fuzz": len((s & f) - t),
-        "test262_fuzz": len((t & f) - s),
-        "all_three": len(s & t & f),
-        "none": len(universe - (s | t | f)),
+        **{name: len(sides) for name, sides in regions.items()},
         "universe": len(universe),
         "solver": len(s),
         "test262": len(t),
         "fuzz": len(f),
     }
+
+
+def region_sets(
+    universe: set[BranchSide],
+    solver: set[BranchSide],
+    test262: set[BranchSide],
+    fuzz: set[BranchSide],
+) -> dict[str, set[BranchSide]]:
+    s = solver & universe
+    t = test262 & universe
+    f = fuzz & universe
+    return {
+        "solver_only": s - t - f,
+        "test262_only": t - s - f,
+        "fuzz_only": f - s - t,
+        "solver_test262": (s & t) - f,
+        "solver_fuzz": (s & f) - t,
+        "test262_fuzz": (t & f) - s,
+        "all_three": s & t & f,
+        "none": universe - (s | t | f),
+    }
+
+
+def branch_side_key(side: BranchSide) -> tuple[int, int]:
+    branch, side_name = side
+    return branch, SIDE_ORDER[side_name]
+
+
+def region_details(
+    regions: dict[str, set[BranchSide]],
+    solver_programs: dict[BranchSide, str],
+) -> dict[str, list[dict[str, object]]]:
+    solver_regions = {
+        "solver_only",
+        "solver_test262",
+        "solver_fuzz",
+        "all_three",
+    }
+    details: dict[str, list[dict[str, object]]] = {}
+    for name, sides in regions.items():
+        entries: list[dict[str, object]] = []
+        for branch, side in sorted(sides, key=branch_side_key):
+            entry: dict[str, object] = {"branch": branch, "side": side}
+            if name in solver_regions:
+                program = solver_programs.get((branch, side))
+                if program is not None:
+                    entry["program"] = program
+            entries.append(entry)
+        details[name] = entries
+    return details
 
 
 def svg_text(
@@ -251,6 +314,7 @@ def svg_text(
 def write_json_summary(
     path: Path,
     counts: dict[str, int],
+    regions: dict[str, list[dict[str, object]]],
     sources: dict[str, object],
     outside_universe: dict[str, int],
     solver_status_counts: dict[str, int],
@@ -258,6 +322,7 @@ def write_json_summary(
     data = {
         "counts": counts,
         "outside_universe": outside_universe,
+        "regions": regions,
         "solver_status_counts": solver_status_counts,
         "sources": sources,
     }
@@ -324,7 +389,7 @@ def main() -> int:
         print("error: --solver-statuses must not be empty", file=sys.stderr)
         return 2
 
-    universe, raw_solver, solver_status_counts = load_solver_sets(
+    universe, raw_solver, solver_status_counts, solver_programs = load_solver_sets(
         args.solver_log,
         solver_statuses,
     )
@@ -337,6 +402,10 @@ def main() -> int:
     fuzz = raw_fuzz & universe
     test262 = raw_test262 & universe
     counts = region_counts(universe, solver, test262, fuzz)
+    regions = region_details(
+        region_sets(universe, solver, test262, fuzz),
+        solver_programs,
+    )
     outside_universe = {
         "solver": len(raw_solver - universe),
         "test262": len(raw_test262 - universe),
@@ -360,6 +429,7 @@ def main() -> int:
     write_json_summary(
         json_out,
         counts,
+        regions,
         sources={
             "solver_log": str(args.solver_log),
             "solver_statuses": sorted(solver_statuses),
