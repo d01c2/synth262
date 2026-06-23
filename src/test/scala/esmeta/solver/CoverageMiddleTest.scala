@@ -9,7 +9,7 @@ import esmeta.ty.ValueTy
 import esmeta.util.Appender.*
 import esmeta.util.Appender.{*, given}
 import esmeta.util.BaseUtils.*
-import esmeta.util.SystemUtils.{mkdir, getPrintWriter, readJson, exists}
+import esmeta.util.SystemUtils.*
 import esmeta.{ESMetaTest, SOLVER_LOG_DIR, BASE_DIR}
 import io.circe.*, io.circe.generic.semiauto.*
 import scala.collection.mutable.{Set => MSet, Queue}
@@ -418,6 +418,18 @@ class CoverageMiddleTest extends SolverTest {
         statusOrder.filter(byStatus.contains) ++
         byStatus.keys.filterNot(statusOrder.contains).toList.sorted
 
+      val solvedDir = s"$SOLVER_LOG_DIR/solved-programs"
+      mkdir(solvedDir, remove = true)
+      verifiedResults
+        .sortBy(r => (r.bid, if (r.side) 0 else 1))
+        .foreach { r =>
+          r.js match
+            case Some(js) =>
+              val filename = s"${r.bid}-${sideString(r.side)}.js"
+              dumpFile(js, s"$solvedDir/$filename")
+            case None => ()
+        }
+
       // emit the run summary to an arbitrary sink (console and/or dump file)
       def writeReport(out: String => Unit): Unit = {
         // per-status breakdown: count, share, and elapsed time per status tag
@@ -518,16 +530,16 @@ class CoverageMiddleTest extends SolverTest {
       // -------------------------------------------------------------------------
       // XXX: remove later
       // -------------------------------------------------------------------------
-      val dumpFile = getPrintWriter(s"$SOLVER_LOG_DIR/fail-verify-todo")
+      val dumpFail = getPrintWriter(s"$SOLVER_LOG_DIR/fail-verify-todo")
       try
         missedResults
           .filter(r => expectedInjection.contains((r.bid, r.side)))
           .sortBy(r => (r.conds.map(_.size).getOrElse(0), r.bid))
           .foreach { r =>
-            dumpCase(s => dumpFile.println(s), r)
-            dumpFile.println()
+            dumpCase(s => dumpFail.println(s), r)
+            dumpFail.println()
           }
-      finally dumpFile.close()
+      finally dumpFail.close()
       // -------------------------------------------------------------------------
 
       val mustOverApproxDump =

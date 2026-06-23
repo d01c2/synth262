@@ -177,8 +177,9 @@ case object CmdInject extends Command("inject", CmdBuildCFG >> Inject) {
   val examples = List(
     "esmeta inject a.js                               # inject assertions.",
     "esmeta inject a.js -inject:defs -inject:out=b.js # dump with definitions.",
+    "esmeta inject js-dir -inject:batch -inject:out=out-dir # inject all JS files.",
   )
-  override val targetName = "<js>+"
+  override val targetName = "<js|dir>"
 }
 
 /** `mutate` command */
