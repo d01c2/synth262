@@ -136,8 +136,8 @@ trait Parsers extends BasicParsers {
     } | "BigInt" ^^^ ValueTy(bigInt = Many) |
     // string
     "String[" ~> rep1sep(string, ",") <~ "]" ^^ {
-      case s => ValueTy(str = Fin(s.toSet))
-    } | "String" ^^^ ValueTy(str = Inf) |
+      case s => ValueTy(str = Flat(s.toSet))
+    } | "String" ^^^ ValueTy(str = Many) |
     // boolean
     singleBoolTy ^^ { case b => ValueTy(bool = b) } |
     // undefined

@@ -10,6 +10,7 @@
   "GetViewByteLength",
   "IsLessThan",
   "IsStrictlyEqual",
+  "Record[ProxyExoticObject].OwnPropertyKeys",
   "Record[SourceTextModuleRecord].ExecuteModule",
   "SameValue",
   "SameValueNonNumber",

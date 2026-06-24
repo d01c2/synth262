@@ -457,6 +457,14 @@ class Stringifier(
     } app >> " " >> loc.toString
     app
 
+  // rule for flat lattice
+  private given flatRule[T: Ordering](using Rule[T]): Rule[Flat[T]] =
+    (app, flat) =>
+      flat match
+        case Zero   => app >> "[]"
+        case One(s) => app >> "[" >> s >> "]"
+        case Many   => app
+
   // rule for bounded set lattice
   private given bsetRule[T: Ordering](using Rule[T]): Rule[BSet[T]] =
     (app, set) =>

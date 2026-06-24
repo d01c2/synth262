@@ -1065,8 +1065,9 @@ class Stringifier(detail: Boolean, location: Boolean) {
 
     // strings
     ty.str match
-      case Inf      => tys :+= "String".withArticle(article)
-      case Fin(set) => for (s <- set.toList.sorted) tys :+= s"\"$s\""
+      case Many   => tys :+= "String".withArticle(article)
+      case One(s) => tys :+= s"\"$s\""
+      case _      =>
 
     // booleans
     if (ty.bool.set.size > 1) tys :+= "Boolean".withArticle(article)

@@ -73,7 +73,7 @@ lazy val ESPrimT: ValueTy = ValueTy(
   record = RecordTy("Symbol"),
   number = NumberTy.Top,
   bigInt = Many,
-  str = Inf,
+  str = Many,
   bool = BoolTy.Top,
   undef = true,
   nullv = true,
@@ -152,13 +152,13 @@ lazy val NonNegNumberT = ValueTy(number = NumberTy.NonNeg)
 lazy val BigIntT: ValueTy = ValueTy(bigInt = Many)
 def BigIntT(n: BigInt): ValueTy = ValueTy(bigInt = One(n))
 def BigIntT(str: String): ValueTy = BigIntT(BigInt(str))
-lazy val StrT: ValueTy = ValueTy(str = Inf)
+lazy val StrT: ValueTy = ValueTy(str = Many)
 def StrT(set: Set[String]): ValueTy =
   if (set.isEmpty) BotT
-  else ValueTy(str = Fin(set))
+  else ValueTy(str = Flat(set))
 def StrT(xs: String*): ValueTy =
   if (xs.isEmpty) BotT
-  else ValueTy(str = Fin(xs.toSet))
+  else ValueTy(str = Flat(xs.toSet))
 def BoolT(set: Set[Boolean]): ValueTy =
   if (set.isEmpty) BotT
   else ValueTy(bool = BoolTy(set))

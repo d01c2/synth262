@@ -24,7 +24,7 @@ sealed trait ValueTy extends Ty with Lattice[ValueTy] {
   def infinity: InfinityTy
   def number: NumberTy
   def bigInt: Flat[scala.BigInt]
-  def str: BSet[String]
+  def str: Flat[String]
   def bool: BoolTy
   def undef: Boolean
   def nullv: Boolean
@@ -210,7 +210,7 @@ sealed trait ValueTy extends Ty with Lattice[ValueTy] {
     infinity: InfinityTy = infinity,
     number: NumberTy = number,
     bigInt: Flat[scala.BigInt] = bigInt,
-    str: BSet[String] = str,
+    str: Flat[String] = str,
     bool: BoolTy = bool,
     undef: Boolean = undef,
     nullv: Boolean = nullv,
@@ -306,7 +306,7 @@ sealed trait ValueTy extends Ty with Lattice[ValueTy] {
         map = MapTy.Bot,
         list = ListTy.Bot,
         ast = AstTy.Bot,
-        str = Fin(),
+        str = Zero,
       )
 
   /** boolean operations */
@@ -369,7 +369,7 @@ sealed trait ValueTy extends Ty with Lattice[ValueTy] {
       if (!infinity.isBottom) tys :+= ValueElemTy(infinity = InfinityTy.Top)
       if (!number.isBottom) tys :+= ValueElemTy(number = NumberTy.Top)
       if (!bigInt.isBottom) tys :+= ValueElemTy(bigInt = Many)
-      if (!str.isBottom) tys :+= ValueElemTy(str = Inf)
+      if (!str.isBottom) tys :+= ValueElemTy(str = Many)
       if (!bool.isBottom) tys :+= ValueElemTy(bool = BoolTy.Top)
       if (undef) tys :+= ValueElemTy(undef = true)
       if (nullv) tys :+= ValueElemTy(nullv = true)
@@ -400,7 +400,7 @@ case object ValueTopTy extends ValueTy {
   def infinity: InfinityTy = InfinityTy.Top
   def number: NumberTy = NumberTy.Top
   def bigInt: Flat[scala.BigInt] = Many
-  def str: BSet[String] = Inf
+  def str: Flat[String] = Many
   def bool: BoolTy = BoolTy.Top
   def undef: Boolean = true
   def nullv: Boolean = true
@@ -420,7 +420,7 @@ case class ValueElemTy(
   infinity: InfinityTy = InfinityTy.Bot,
   number: NumberTy = NumberTy.Bot,
   bigInt: Flat[scala.BigInt] = Zero,
-  str: BSet[String] = Fin(),
+  str: Flat[String] = Zero,
   bool: BoolTy = BoolTy.Bot,
   undef: Boolean = false,
   nullv: Boolean = false,
@@ -440,7 +440,7 @@ object ValueTy extends Parser.From(Parser.valueTy) {
     infinity: InfinityTy = InfinityTy.Bot,
     number: NumberTy = NumberTy.Bot,
     bigInt: Flat[scala.BigInt] = Zero,
-    str: BSet[String] = Fin(),
+    str: Flat[String] = Zero,
     bool: BoolTy = BoolTy.Bot,
     undef: Boolean = false,
     nullv: Boolean = false,

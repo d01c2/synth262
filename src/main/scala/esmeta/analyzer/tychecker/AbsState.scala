@@ -214,7 +214,7 @@ trait AbsStateDecl { self: TyChecker =>
         case _ => AstT // TODO warning(s"invalid access: $name of $ast")
 
     // string lookup
-    private def lookupStr(str: BSet[String], field: ValueTy): ValueTy =
+    private def lookupStr(str: Flat[String], field: ValueTy): ValueTy =
       if (str.isBottom) BotT
       else {
         var res = BotT

@@ -37,9 +37,15 @@ trait AbsRetDecl { self: TyChecker =>
 
     /** appender */
     given rule: Rule[AbsRet] = (app, elem) =>
-      (app >> elem.noSym).wrap {
-        for ((np, (v, mayMust)) <- elem.syms.toList.sortBy(_._1.node.id))
-          app :> np.node.name >> " -> " >> v >> " (" >> mayMust >> ")"
+      val AbsRet(value, (v, m), syms) = elem
+      app.wrap {
+        app :> "- value: " >> value
+        app :> "- noSym: " >> v >> " (" >> m >> ")"
+        app :> "- syms(" >> syms.size >> "): "
+        app.wrap {
+          for ((np, (v, mayMust)) <- elem.syms.toList.sortBy(_._1.node.id))
+            app :> np.node.name >> " -> " >> v >> " (" >> mayMust >> ")"
+        }
       }
   }
 }
