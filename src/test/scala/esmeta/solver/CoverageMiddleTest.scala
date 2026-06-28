@@ -331,16 +331,26 @@ class CoverageMiddleTest extends SolverTest {
               checkTimeout()
               interp.nextCandidate match {
                 case Some(conf) =>
-                  interp.reify match {
-                    case Some(js) =>
-                      attempts += 1
-                      if (verifies(js))
-                        result("pass", Some(js), Some(conf), attempts)
-                      else // reified but not covering target
-                        retry(Some(Rejected("fail-verify", Some(js), conf)))
-                    case None if rejected.isEmpty =>
+                  interp.reifyCandidates() match {
+                    case jsCandidates if jsCandidates.nonEmpty =>
+                      var passed: Option[String] = None
+                      var lastFailed: Option[String] = None
+                      val iter = jsCandidates.iterator
+                      while (passed.isEmpty && iter.hasNext) {
+                        val js = iter.next()
+                        checkTimeout()
+                        attempts += 1
+                        if (verifies(js)) passed = Some(js)
+                        else lastFailed = Some(js)
+                      }
+                      passed match
+                        case Some(js) =>
+                          result("pass", Some(js), Some(conf), attempts)
+                        case None =>
+                          retry(Some(Rejected("fail-verify", lastFailed, conf)))
+                    case _ if rejected.isEmpty =>
                       retry(Some(Rejected("fail-reify", None, conf)))
-                    case None => retry(rejected)
+                    case _ => retry(rejected)
                   }
                 case None =>
                   // symbolic execution returned no model: distinguish a genuine
