@@ -2,7 +2,7 @@ package esmeta.phase
 
 import esmeta.*
 import esmeta.cfg.CFG
-import esmeta.error.{NotSupported => NSError}
+import esmeta.error.{NotSupported => NSError, InterpreterError}
 import esmeta.injector.Injector
 import esmeta.interpreter.Interpreter
 import esmeta.es.*
@@ -29,7 +29,7 @@ case object Inject extends Phase[CFG, String] {
       .sortBy(_.getName)
     val injected = files.flatMap { file =>
       try Some(file.getName -> injectFile(cfg, file.getPath, config))
-      catch { case _: NSError => None }
+      catch { case _: InterpreterError | _: NSError => None }
     }
     (injected, files.size)
   }
