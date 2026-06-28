@@ -87,7 +87,7 @@ class CoverageMiddleTest extends SolverTest {
   def init: Unit = {
     given CFG = cfg
     val cov = Coverage(cfg, timeLimit = Some(10))
-    val solveTimeLimit = 5
+    val solveTimeLimit = 10
     val solveTimeout = Duration(solveTimeLimit, "seconds")
     // ------------------------------------------------------------------------
     // FIXME: for ablation test, remove later

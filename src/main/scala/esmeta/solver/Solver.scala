@@ -129,9 +129,9 @@ object Solver {
     limit: Int = REIFY_BUDGET,
   ): List[String] =
     val (mayTy, mustTy) = mayMustTy
-    val mustCandidates = jsExprCandidates(mustTy, limit)
-    if (mustCandidates.nonEmpty) mustCandidates
-    else jsExprCandidates(mayTy, limit)
+    val mustWitness = getJSExpr(mustTy).toList
+    val mayCandidates = jsExprCandidates(mayTy, limit)
+    (mustWitness ++ mayCandidates).distinct
 
   private def newTargetExprCandidates(
     mayMustTy: (ValueTy, ValueTy),
