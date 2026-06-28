@@ -18,8 +18,16 @@ class SymInterp(
   val target: Cond,
   val timeLimit: Option[Int] = None,
   val detail: Boolean = false,
+  val useMayMust: (Boolean, Boolean) = (true, true),
 ) extends Solver {
   import tychecker.*, monad.*, SymTy.*, Result.*
+
+  private val (useMay, useMust) = useMayMust
+
+  private def applyAblation(mayMust: MayMust): MayMust =
+    val may = if (useMay) mayMust.may else TypeConstr.Top
+    val must = if (useMust) mayMust.must else TypeConstr.Bot
+    MayMust(may, must)
 
   // start time
   val startTime: Long = System.currentTimeMillis
@@ -31,7 +39,7 @@ class SymInterp(
   lazy val result: Option[Config] = findAllMustCandidate
   def findAllMustCandidate: Option[Config] = nextCandidate match
     case Some(config) =>
-      if (config.state.allMust) Some(config)
+      if (!useMust || config.state.allMust) Some(config)
       else findAllMustCandidate
     case None => None
   def nextCandidate: Option[Config] = results.nextOption
@@ -133,7 +141,10 @@ class SymInterp(
                 val newLocals: Map[Local, AbsValue] = (for {
                   (param, arg) <- (params zip vs)
                 } yield param.lhs -> arg.kill(vars, false)).toMap
-                st = st.copy(locals = newLocals, mayMust = st.mayMust.onlySym)
+                st = st.copy(
+                  locals = newLocals,
+                  mayMust = applyAblation(st.mayMust.onlySym),
+                )
               })(st)
               node = callee.entry
               funcs += callee
@@ -168,7 +179,7 @@ class SymInterp(
           (for { v <- transfer.transfer(cond); newSt <- get } yield {
             def aux(to: Node, taken: Boolean): Config =
               val b = BoolT(taken)
-              val takenSt = transfer.refine(v, b)(st)
+              val takenSt = refineWithAblation(v, b)(st)
               wrap.copy(node = to, state = takenSt).push(Cond(branch, taken))
             (thenNode, elseNode) match
               case (Some(t), Some(e)) =>
@@ -221,7 +232,9 @@ class SymInterp(
       if (!retV.isBottom)
         push(
           wrap.copy(
-            state = st.define(x, retV).copy(mayMust = MayMust(retMay, retMust)),
+            state = st
+              .define(x, retV)
+              .copy(mayMust = applyAblation(MayMust(retMay, retMust))),
             node = next,
           ),
         )
@@ -246,12 +259,14 @@ class SymInterp(
       refiner <- transfer.manualRefiners.get(callee.name)
       v = refiner(callee, vs, retTy, callerSt)
       newV = instantiate(v, vs, callerNp, callerSt)
-    } yield (newV, MayMust.Must)).getOrElse {
+    } yield (newV, applyAblation(MayMust.Must))).getOrElse {
       val rp = ReturnPoint(callee, emptyView)
       val ret = getResult(rp)
       val AbsRet(_, noSym, syms) = ret
       for ((_, (v, mayMust)) <- syms) {
-        val newMayMust = instantiate(mayMust, vs, callerNp, callerSt)
+        val newMayMust = applyAblation(
+          instantiate(mayMust, vs, callerNp, callerSt),
+        )
         val newSt = transfer.refine(newMayMust)(callerSt)
         val newV = instantiate(v, vs, callerNp, callerSt)
         _configs ::= wrap.copy(
@@ -262,7 +277,7 @@ class SymInterp(
       val (v, mayMust) = noSym
       (
         instantiate(v, vs, callerNp, callerSt),
-        instantiate(mayMust, vs, callerNp, callerSt),
+        applyAblation(instantiate(mayMust, vs, callerNp, callerSt)),
       )
     }
   }
@@ -325,7 +340,7 @@ class SymInterp(
         ) ++ (for ((p, i) <- ps if p.kind != Variadic) yield {
           i -> ESValueT
         })
-        AbsState(true, locals, symEnv, MayMust.Must)
+        AbsState(true, locals, symEnv, applyAblation(MayMust.Must))
       case _ => AbsState.Bot
     }
   }
@@ -343,8 +358,11 @@ class SymInterp(
 
   // push the current config and refine it using the branch condition and side
   def push(config: Config): Unit =
-    if (isCandidate(config.node) && !config.state.isBottom)
-      configs.enqueue(config -> configScore(config))
+    val next = config.copy(
+      state = config.state.copy(mayMust = applyAblation(config.state.mayMust)),
+    )
+    if (isCandidate(next.node) && !next.state.isBottom)
+      configs.enqueue(next -> configScore(next))
   def push(configs: List[Config]): Unit = configs.foreach(push)
 
   // pop the previous config and backtrack
@@ -356,9 +374,18 @@ class SymInterp(
   def refine(branch: Branch, taken: Boolean)(using NodePoint[?]): Updater =
     for {
       v <- transfer.transfer(branch.cond)
-      newSt <- get
-      _ <- transfer.refine(v, BoolT(taken))
+      _ <- refineWithAblation(v, BoolT(taken))
     } yield ()
+
+  private def refineWithAblation(v: AbsValue, ty: ValueTy)(using
+    NodePoint[?],
+  ): Updater = st =>
+    import TargetType.*
+    val dty = TargetType(ty)
+    val vty = v.ty(using st)
+    val mayMust = applyAblation(v.guard.derive(vty, dty.ty))
+    if (vty distinct ty) AbsState.Bot
+    else transfer.refine(mayMust)(st)
 
   // configuration of symbolic execution
   case class Config(
@@ -374,7 +401,8 @@ class SymInterp(
   }
 
   private def configScore(config: Config): Double =
-    val mayMust = config.state.mayMustForSyms
+    val state = config.state.copy(mayMust = applyAblation(config.state.mayMust))
+    val mayMust = state.mayMustForSyms
     val mustCount = mayMust.count(!_._2._2.isBottom)
     if (mayMust.isEmpty) 0.0 else mustCount.toDouble / mayMust.size
 
@@ -409,10 +437,11 @@ object SymInterp {
     cfg: CFG,
     timeLimit: Option[Int] = None,
     detail: Boolean = false,
+    useMayMust: (Boolean, Boolean) = (true, true),
   ): SymInterpRunner = {
     val tyChecker = TyChecker(cfg, silent = true)
     tyChecker.analyze
-    SymInterpRunner(tyChecker, timeLimit, detail)
+    SymInterpRunner(tyChecker, timeLimit, detail, useMayMust)
   }
 
   /** BFS from `func` over the reverse call graph, mapping each reached function
@@ -495,7 +524,8 @@ case class SymInterpRunner(
   tyChecker: TyChecker,
   timeLimit: Option[Int] = None,
   detail: Boolean = false,
+  useMayMust: (Boolean, Boolean) = (true, true),
 ) {
   def apply(func: Func, cond: Cond): SymInterp =
-    new SymInterp(tyChecker, func, cond, timeLimit, detail)
+    new SymInterp(tyChecker, func, cond, timeLimit, detail, useMayMust)
 }

@@ -89,9 +89,37 @@ class CoverageMiddleTest extends SolverTest {
     val cov = Coverage(cfg, timeLimit = Some(10))
     val solveTimeLimit = 5
     val solveTimeout = Duration(solveTimeLimit, "seconds")
+    // ------------------------------------------------------------------------
+    // FIXME: for ablation test, remove later
+    // ------------------------------------------------------------------------
+    def readBooleanProperty(name: String, default: Boolean): Boolean =
+      sys.props.get(name) match
+        case None          => default
+        case Some("true")  => true
+        case Some("false") => false
+        case Some(value) =>
+          throw IllegalArgumentException(
+            s"System property $name must be true or false, but got: $value",
+          )
+    val useMayMust = (
+      readBooleanProperty("esmeta.solver.useMay", true),
+      readBooleanProperty("esmeta.solver.useMust", true),
+    )
+    assert(
+      useMayMust != (false, false),
+      "Do not disable both may and must reification.",
+    )
+    println(
+      s"  Solver may/must ablation: may=${useMayMust._1}, must=${useMayMust._2}",
+    )
+    // ------------------------------------------------------------------------
     val allBuiltins = cfg.funcs.filter(_.isBuiltin).sortBy(_.name)
 
-    val runner = SymInterp(cfg, timeLimit = Some(solveTimeLimit))
+    val runner = SymInterp(
+      cfg,
+      timeLimit = Some(solveTimeLimit),
+      useMayMust = useMayMust, // FIXME: for ablation
+    )
     import runner.tyChecker.{cfg => _, *}, AbsState.given
 
     val nThreads = Runtime.getRuntime.availableProcessors

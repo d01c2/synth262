@@ -44,3 +44,4 @@ tests/result/test262
 ## FIXME: manual
 experiment/result.*
 experiment/bugs.json
+experiment/ablation.csv
