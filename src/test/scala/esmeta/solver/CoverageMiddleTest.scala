@@ -89,36 +89,11 @@ class CoverageMiddleTest extends SolverTest {
     val cov = Coverage(cfg, timeLimit = Some(10))
     val solveTimeLimit = 10
     val solveTimeout = Duration(solveTimeLimit, "seconds")
-    // ------------------------------------------------------------------------
-    // FIXME: for ablation test, remove later
-    // ------------------------------------------------------------------------
-    def readBooleanProperty(name: String, default: Boolean): Boolean =
-      sys.props.get(name) match
-        case None          => default
-        case Some("true")  => true
-        case Some("false") => false
-        case Some(value) =>
-          throw IllegalArgumentException(
-            s"System property $name must be true or false, but got: $value",
-          )
-    val useMayMust = (
-      readBooleanProperty("esmeta.solver.useMay", true),
-      readBooleanProperty("esmeta.solver.useMust", true),
-    )
-    assert(
-      useMayMust != (false, false),
-      "Do not disable both may and must reification.",
-    )
-    println(
-      s"  Solver may/must ablation: may=${useMayMust._1}, must=${useMayMust._2}",
-    )
-    // ------------------------------------------------------------------------
     val allBuiltins = cfg.funcs.filter(_.isBuiltin).sortBy(_.name)
 
     val runner = SymInterp(
       cfg,
       timeLimit = Some(solveTimeLimit),
-      useMayMust = useMayMust, // FIXME: for ablation
     )
     import runner.tyChecker.{cfg => _, *}, AbsState.given
 
@@ -196,12 +171,11 @@ class CoverageMiddleTest extends SolverTest {
         side: Boolean,
         status: String,
         js: Option[String],
-        mustTypeScore: Option[Double],
         attempts: Int,
         elapsed: Long,
         conds: Option[List[Cond]],
         calls: Option[List[Call]],
-        saturated: Option[Map[Sym, (ValueTy, ValueTy)]],
+        saturated: Option[Map[Sym, ValueTy]],
       )
 
       def sideString(side: Boolean): String = if (side) "T" else "F"
@@ -229,7 +203,6 @@ class CoverageMiddleTest extends SolverTest {
         app.wrap("", "") {
           app :> s"cfg: ${r.targetCfg}"
           for (js <- r.js) app :> s"js:  $js"
-          for (score <- r.mustTypeScore) app :> f"must-type score: $score%.4f"
           // -------------------------------------------------------------------
           // XXX: remove later
           // -------------------------------------------------------------------
@@ -244,7 +217,7 @@ class CoverageMiddleTest extends SolverTest {
             val ss = cs.map(c => s"${cfg.funcOf(c).name}:${c.id}")
             app :> s"calls: [${ss.size}] ${ss.mkString(" <- ")}"
           }
-          given Rule[Map[Sym, (ValueTy, ValueTy)]] = AbsState.mayMustMapRule
+          given Rule[Map[Sym, ValueTy]] = AbsState.constrMapRule
           for (fs <- r.saturated if fs.nonEmpty)
             app :> s"saturated: " >> fs
         }
@@ -279,7 +252,6 @@ class CoverageMiddleTest extends SolverTest {
             cond.cond,
             "timeout",
             None,
-            None,
             attempts,
             solveTimeout.toNanos,
             None,
@@ -296,11 +268,6 @@ class CoverageMiddleTest extends SolverTest {
           def elapsedNanos: Long = System.nanoTime() - t0
           val b = cond.branch
           val targetFunc = cfg.funcOf(b)
-          def mustTypeScore(conf: interp.Config): Option[Double] =
-            val syms = conf.state.mayMustForSyms
-            Option.when(syms.nonEmpty) {
-              syms.values.count(!_._2.isBottom).toDouble / syms.size
-            }
           def result(
             status: String,
             js: Option[String],
@@ -315,12 +282,11 @@ class CoverageMiddleTest extends SolverTest {
               cond.cond,
               status,
               js,
-              conf.flatMap(mustTypeScore),
               attempts,
               elapsedNanos,
               conf.map(_.conds),
               conf.map(_.calls),
-              conf.map(_.state.mayMustForSyms),
+              conf.map(_.state.constrForSyms),
             )
           }
           case class Rejected(
@@ -359,26 +325,16 @@ class CoverageMiddleTest extends SolverTest {
               checkTimeout()
               interp.nextCandidate match {
                 case Some(conf) =>
-                  interp.reifyCandidates() match {
-                    case jsCandidates if jsCandidates.nonEmpty =>
-                      var passed: Option[String] = None
-                      var lastFailed: Option[String] = None
-                      val iter = jsCandidates.iterator
-                      while (passed.isEmpty && iter.hasNext) {
-                        val js = iter.next()
-                        checkTimeout()
-                        attempts += 1
-                        if (verifies(js)) passed = Some(js)
-                        else lastFailed = Some(js)
-                      }
-                      passed match
-                        case Some(js) =>
-                          result("pass", Some(js), Some(conf), attempts)
-                        case None =>
-                          retry(Some(Rejected("fail-verify", lastFailed, conf)))
-                    case _ if rejected.isEmpty =>
+                  interp.reify match {
+                    case Some(js) =>
+                      attempts += 1
+                      if (verifies(js))
+                        result("pass", Some(js), Some(conf), attempts)
+                      else // reified but not covering target
+                        retry(Some(Rejected("fail-verify", Some(js), conf)))
+                    case None if rejected.isEmpty =>
                       retry(Some(Rejected("fail-reify", None, conf)))
-                    case _ => retry(rejected)
+                    case None => retry(rejected)
                   }
                 case None =>
                   // symbolic execution returned no model: distinguish a genuine
@@ -442,9 +398,6 @@ class CoverageMiddleTest extends SolverTest {
       val missedResults = results.filter(_.status == "fail-verify")
       val solved = verifiedResults.size + missedResults.size
       val verified = verifiedResults.size
-      val verifiedMustTypeScores = verifiedResults.flatMap(_.mustTypeScore)
-      val missedMustOverApproxResults =
-        missedResults.filter(_.mustTypeScore.contains(1.0))
       val timings =
         (verifiedResults ++ missedResults)
           .map(r => (r.fname, r.bid, r.side, r.elapsed, r.attempts))
@@ -493,16 +446,6 @@ class CoverageMiddleTest extends SolverTest {
           f"    ${"total"}%-12s $totalCount%5d (100.0%%)  " +
           f"(total $grandTotalS%8.1fs, avg attempts $avgAttempts%5.1f)",
         )
-        if (verifiedMustTypeScores.nonEmpty) {
-          val scoreSum = verifiedMustTypeScores.sum
-          out("\n  Must-type reify score:")
-          out(f"    pass cases: ${verifiedMustTypeScores.size}%d/$verified%d")
-          out(f"    sum:        $scoreSum%.4f")
-          out(
-            f"    fail-verify must-over-approx cases: " +
-            f"${missedMustOverApproxResults.size}%d/${missedResults.size}%d",
-          )
-        }
         // timing summary
         if (timings.nonEmpty) {
           out("\n  Top 10 slowest:")
@@ -579,17 +522,6 @@ class CoverageMiddleTest extends SolverTest {
           }
       finally dumpFail.close()
       // -------------------------------------------------------------------------
-
-      val mustOverApproxDump =
-        getPrintWriter(s"$SOLVER_LOG_DIR/fail-verify-must-over-approx")
-      try
-        missedMustOverApproxResults
-          .sortBy(r => (r.conds.map(_.size).getOrElse(0), r.bid))
-          .foreach { r =>
-            dumpCase(s => mustOverApproxDump.println(s), r)
-            mustOverApproxDump.println()
-          }
-      finally mustOverApproxDump.close()
 
       println(s"dumped to $SOLVER_LOG_DIR/")
 

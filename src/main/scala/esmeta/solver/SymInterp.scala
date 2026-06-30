@@ -18,16 +18,8 @@ class SymInterp(
   val target: Cond,
   val timeLimit: Option[Int] = None,
   val detail: Boolean = false,
-  val useMayMust: (Boolean, Boolean) = (true, true),
 ) extends Solver {
   import tychecker.*, monad.*, SymTy.*, Result.*
-
-  private val (useMay, useMust) = useMayMust
-
-  private def applyAblation(mayMust: MayMust): MayMust =
-    val may = if (useMay) mayMust.may else TypeConstr.Top
-    val must = if (useMust) mayMust.must else TypeConstr.Bot
-    MayMust(may, must)
 
   // start time
   val startTime: Long = System.currentTimeMillis
@@ -36,12 +28,9 @@ class SymInterp(
   lazy val targetFunc: Func = cfg.funcOf(target.branch)
 
   // main entry point of symbolic execution
-  lazy val result: Option[Config] = findAllMustCandidate
-  def findAllMustCandidate: Option[Config] = nextCandidate match
-    case Some(config) =>
-      if (!useMust || config.state.allMust) Some(config)
-      else findAllMustCandidate
-    case None => None
+  lazy val result: Option[Config] = nextCandidate
+
+  // get the next candidate configuration
   def nextCandidate: Option[Config] = results.nextOption
 
   private lazy val results: Iterator[Config] =
@@ -143,7 +132,7 @@ class SymInterp(
                 } yield param.lhs -> arg.kill(vars, false)).toMap
                 st = st.copy(
                   locals = newLocals,
-                  mayMust = applyAblation(st.mayMust.onlySym),
+                  constr = st.constr.onlySym,
                 )
               })(st)
               node = callee.entry
@@ -162,9 +151,9 @@ class SymInterp(
           // -------------------------------------------------------------------
           // XXX: remove
           // -------------------------------------------------------------------
-          import AbsState.mayMustMapRule
+          import AbsState.constrMapRule
           log("=" * 80)
-          log(s"FOUND: ${stringify(st.mayMustForSyms)(using mayMustMapRule)}")
+          log(s"FOUND: ${stringify(st.constrForSyms)(using constrMapRule)}")
           log("-" * 80)
           log(node)
           // -------------------------------------------------------------------
@@ -179,7 +168,7 @@ class SymInterp(
           (for { v <- transfer.transfer(cond); newSt <- get } yield {
             def aux(to: Node, taken: Boolean): Config =
               val b = BoolT(taken)
-              val takenSt = refineWithAblation(v, b)(st)
+              val takenSt = refine(v, b)(st)
               wrap.copy(node = to, state = takenSt).push(Cond(branch, taken))
             (thenNode, elseNode) match
               case (Some(t), Some(e)) =>
@@ -210,8 +199,7 @@ class SymInterp(
     } yield {
       _configs = Nil
       var retV = AbsValue.Bot
-      var retMay = TypeConstr.Bot
-      var retMust = TypeConstr.Top
+      var retConstr = TypeConstr.Bot
       fty.clo match
         case CloTopTy           => retV ⊔= AbsValue(AnyT)
         case CloArrowTy(_, ret) => retV ⊔= AbsValue(ret)
@@ -219,22 +207,22 @@ class SymInterp(
           for {
             fname <- names
             f <- cfg.fnameMap.get(fname)
-            (v, MayMust(may, must)) = pushCall(callerNp, f, st, vs, x, next)
-          } { retV ⊔= v; retMay ||= may; retMust &&= must }
+            (v, constr) = pushCall(callerNp, f, st, vs, x, next)
+          } { retV ⊔= v; retConstr ||= constr }
       fty.cont match
         case Inf => retV ⊔= AbsValue(AnyT)
         case Fin(fids) =>
           for {
             fid <- fty.cont.toIterable(stop = false)
             f <- cfg.funcMap.get(fid)
-            (v, MayMust(may, must)) = pushCall(callerNp, f, st, vs, x, next)
-          } { retV ⊔= v; retMay ||= may; retMust &&= must }
+            (v, constr) = pushCall(callerNp, f, st, vs, x, next)
+          } { retV ⊔= v; retConstr ||= constr }
       if (!retV.isBottom)
         push(
           wrap.copy(
             state = st
               .define(x, retV)
-              .copy(mayMust = applyAblation(MayMust(retMay, retMust))),
+              .copy(constr = retConstr),
             node = next,
           ),
         )
@@ -250,7 +238,7 @@ class SymInterp(
     vs: List[AbsValue],
     x: Local,
     next: Node,
-  ): (AbsValue, MayMust) = {
+  ): (AbsValue, TypeConstr) = {
     given NodePoint[Call] = callerNp
     given AbsState = callerSt
     val call = callerNp.node
@@ -259,25 +247,23 @@ class SymInterp(
       refiner <- transfer.manualRefiners.get(callee.name)
       v = refiner(callee, vs, retTy, callerSt)
       newV = instantiate(v, vs, callerNp, callerSt)
-    } yield (newV, applyAblation(MayMust.Must))).getOrElse {
+    } yield (newV, TypeConstr.Top)).getOrElse {
       val rp = ReturnPoint(callee, emptyView)
       val ret = getResult(rp)
       val AbsRet(_, noSym, syms) = ret
-      for ((_, (v, mayMust)) <- syms) {
-        val newMayMust = applyAblation(
-          instantiate(mayMust, vs, callerNp, callerSt),
-        )
-        val newSt = transfer.refine(newMayMust)(callerSt)
+      for ((_, (v, constr)) <- syms) {
+        val newConstr = instantiate(constr, vs, callerNp, callerSt)
+        val newSt = transfer.refine(newConstr)(callerSt)
         val newV = instantiate(v, vs, callerNp, callerSt)
         _configs ::= wrap.copy(
-          state = newSt.define(x, newV).copy(mayMust = newMayMust),
+          state = newSt.define(x, newV).copy(constr = newConstr),
           node = next,
         )
       }
-      val (v, mayMust) = noSym
+      val (v, constr) = noSym
       (
         instantiate(v, vs, callerNp, callerSt),
-        applyAblation(instantiate(mayMust, vs, callerNp, callerSt)),
+        instantiate(constr, vs, callerNp, callerSt),
       )
     }
   }
@@ -298,16 +284,16 @@ class SymInterp(
 
   /** instantiation of return value */
   def instantiate(
-    mayMust: MayMust,
+    constr: TypeConstr,
     vs: List[AbsValue],
     callerNp: NodePoint[Call],
     callerSt: AbsState,
-  ): MayMust =
+  ): TypeConstr =
     given AbsState = callerSt
     val map = vs.zipWithIndex.map {
       case (v, i) => i -> v
     }.toMap
-    transfer.instantiate(mayMust, map)
+    transfer.instantiate(constr, map)
 
   // ---------------------------------------------------------------------------
   // helper functions for configuration manipulation
@@ -340,7 +326,7 @@ class SymInterp(
         ) ++ (for ((p, i) <- ps if p.kind != Variadic) yield {
           i -> ESValueT
         })
-        AbsState(true, locals, symEnv, applyAblation(MayMust.Must))
+        AbsState(true, locals, symEnv, TypeConstr.Top)
       case _ => AbsState.Bot
     }
   }
@@ -358,9 +344,7 @@ class SymInterp(
 
   // push the current config and refine it using the branch condition and side
   def push(config: Config): Unit =
-    val next = config.copy(
-      state = config.state.copy(mayMust = applyAblation(config.state.mayMust)),
-    )
+    val next = config
     if (isCandidate(next.node) && !next.state.isBottom)
       configs.enqueue(next -> configScore(next))
   def push(configs: List[Config]): Unit = configs.foreach(push)
@@ -374,18 +358,18 @@ class SymInterp(
   def refine(branch: Branch, taken: Boolean)(using NodePoint[?]): Updater =
     for {
       v <- transfer.transfer(branch.cond)
-      _ <- refineWithAblation(v, BoolT(taken))
+      _ <- refine(v, BoolT(taken))
     } yield ()
 
-  private def refineWithAblation(v: AbsValue, ty: ValueTy)(using
+  private def refine(v: AbsValue, ty: ValueTy)(using
     NodePoint[?],
   ): Updater = st =>
     import TargetType.*
     val dty = TargetType(ty)
     val vty = v.ty(using st)
-    val mayMust = applyAblation(v.guard.derive(vty, dty.ty))
+    val constr = v.guard.derive(vty, dty.ty)
     if (vty distinct ty) AbsState.Bot
-    else transfer.refine(mayMust)(st)
+    else transfer.refine(constr)(st)
 
   // configuration of symbolic execution
   case class Config(
@@ -400,11 +384,7 @@ class SymInterp(
     override def toString: String = stringify(this)
   }
 
-  private def configScore(config: Config): Double =
-    val state = config.state.copy(mayMust = applyAblation(config.state.mayMust))
-    val mayMust = state.mayMustForSyms
-    val mustCount = mayMust.count(!_._2._2.isBottom)
-    if (mayMust.isEmpty) 0.0 else mustCount.toDouble / mayMust.size
+  private def configScore(config: Config): Double = 0.0 // FIXME: priority score
 
   private def elsePriority(config: Config): Int =
     config.conds.headOption match
@@ -437,11 +417,10 @@ object SymInterp {
     cfg: CFG,
     timeLimit: Option[Int] = None,
     detail: Boolean = false,
-    useMayMust: (Boolean, Boolean) = (true, true),
   ): SymInterpRunner = {
     val tyChecker = TyChecker(cfg, silent = true)
     tyChecker.analyze
-    SymInterpRunner(tyChecker, timeLimit, detail, useMayMust)
+    SymInterpRunner(tyChecker, timeLimit, detail)
   }
 
   /** BFS from `func` over the reverse call graph, mapping each reached function
@@ -524,8 +503,7 @@ case class SymInterpRunner(
   tyChecker: TyChecker,
   timeLimit: Option[Int] = None,
   detail: Boolean = false,
-  useMayMust: (Boolean, Boolean) = (true, true),
 ) {
   def apply(func: Func, cond: Cond): SymInterp =
-    new SymInterp(tyChecker, func, cond, timeLimit, detail, useMayMust)
+    new SymInterp(tyChecker, func, cond, timeLimit, detail)
 }

@@ -220,18 +220,16 @@ class TyChecker(
       value = getResult(ReturnPoint(func, emptyView)).value
       if value.hasTypeGuard(entrySt)
       guard = TypeGuard(for {
-        (dty, mayMust) <- value.guard.map
-        newMayMust = mayMust.map(constr =>
-          constr.map(map =>
-            for {
-              pair <- map
-              (x, ty) = pair
-              if !(entrySt.getTy(x) <= ty)
-            } yield pair,
-          ),
+        (dty, constr) <- value.guard.map
+        newConstr = constr.map(map =>
+          for {
+            pair <- map
+            (x, ty) = pair
+            if !(entrySt.getTy(x) <= ty)
+          } yield pair,
         )
-        if !newMayMust.isTop
-      } yield dty -> newMayMust)
+        if !newConstr.isTop
+      } yield dty -> newConstr)
     } yield func -> value.copy(guard = guard)
 
   // ---------------------------------------------------------------------------
@@ -271,8 +269,7 @@ class TyChecker(
     val (newLocals, symEnv) = (for {
       ((x, value), sym) <- idxLocals
     } yield (x -> AbsValue(SSym(sym)), sym -> value.ty)).unzip
-    val mayMust = if (callee.isMethod) MayMust.May else MayMust.Must
-    AbsState(true, newLocals.toMap, symEnv.toMap, mayMust)
+    AbsState(true, newLocals.toMap, symEnv.toMap, TypeConstr.Top)
 
   /** get initial abstract states in each node point */
   private def getInitNpMap(

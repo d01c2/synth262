@@ -12,49 +12,50 @@ import esmeta.util.SystemUtils.exists
 trait TypeGuardDecl { self: TyChecker =>
 
   /** type guard */
-  case class TypeGuard(map: Map[TargetType, MayMust] = Map()) {
+  case class TypeGuard(map: Map[TargetType, TypeConstr] = Map()) {
     def isEmpty: Boolean = map.isEmpty
     def nonEmpty: Boolean = !isEmpty
     def dtys: Set[TargetType] = map.keySet
 
-    def apply(dty: TargetType): MayMust = map.getOrElse(dty, MayMust.Must)
+    def apply(dty: TargetType): TypeConstr =
+      map.getOrElse(dty, TypeConstr.Top)
 
     def bases: Set[Base] = map.values.flatMap(_.bases).toSet
 
     def kill(bases: Set[Base])(using AbsState): TypeGuard = TypeGuard(for {
-      (dty, mayMust) <- map
-      newMayMust = mayMust.kill(bases)
-      if !newMayMust.isTop
-    } yield dty -> newMayMust)
+      (dty, constr) <- map
+      newConstr = constr.kill(bases)
+      if !newConstr.isTop
+    } yield dty -> newConstr)
 
     def filter(ty: ValueTy): TypeGuard =
       TypeGuard(map.filter { (dty, _) => dty.ty overlap ty })
 
     def has(x: Base): Boolean = map.values.exists(_.has(x))
 
-    def derive(fromTy: ValueTy, toTy: ValueTy): MayMust =
+    def derive(fromTy: ValueTy, toTy: ValueTy): TypeConstr =
       val ty = fromTy && toTy
       map
-        .collect { case (dty, mayMust) if ty <= dty.ty => mayMust }
-        .foldLeft(MayMust.Must)(_ && _)
+        .collect { case (dty, constr) if ty <= dty.ty => constr }
+        .foldLeft(TypeConstr.Top)(_ && _)
 
     def hasLocal: Boolean = map.values.exists(_.hasLocal)
 
     def hasSym: Boolean = map.values.exists(_.hasSym)
 
     def onlySym: TypeGuard = TypeGuard(
-      map.map { (dty, mayMust) => dty -> mayMust.onlySym },
+      map.map { (dty, constr) => dty -> constr.onlySym },
     )
 
     def normalized(upper: ValueTy): TypeGuard = TypeGuard(
-      map.filter((dty, mayMust) => (dty.ty overlap upper) && !mayMust.isTop),
+      map.filter((dty, constr) => (dty.ty overlap upper) && !constr.isTop),
     )
 
     override def toString: String = (new Appender >> this).toString
   }
   object TypeGuard {
     val Empty: TypeGuard = TypeGuard()
-    def apply(ps: (TargetType, MayMust)*): TypeGuard = TypeGuard(
+    def apply(ps: (TargetType, TypeConstr)*): TypeGuard = TypeGuard(
       ps.toMap,
     )
   }
@@ -63,8 +64,8 @@ trait TypeGuardDecl { self: TyChecker =>
       val (luty, lguard) = lpair
       val (ruty, rguard) = rpair
       luty <= ruty &&
-      rguard.map.forall { (dty, mayMust) =>
-        (luty distinct dty.ty) || lguard(dty) <= mayMust
+      rguard.map.forall { (dty, constr) =>
+        (luty distinct dty.ty) || lguard(dty) <= constr
       }
     }
     def ||(rpair: (ValueTy, TypeGuard)): TypeGuard = {
@@ -74,12 +75,12 @@ trait TypeGuardDecl { self: TyChecker =>
       TypeGuard(
         (for {
           dty <- (lguard.dtys ++ rguard.dtys).toList
-          mayMust = {
-            (if (dty.ty overlap luty) lguard(dty) else MayMust.Bot) ||
-            (if (dty.ty overlap ruty) rguard(dty) else MayMust.Bot)
+          constr = {
+            (if (dty.ty overlap luty) lguard(dty) else TypeConstr.Bot) ||
+            (if (dty.ty overlap ruty) rguard(dty) else TypeConstr.Bot)
           }
-          if !mayMust.isTop
-        } yield dty -> mayMust).toMap,
+          if !constr.isTop
+        } yield dty -> constr).toMap,
       )
     }
     def &&(rpair: (ValueTy, TypeGuard)): TypeGuard = {
@@ -90,14 +91,14 @@ trait TypeGuardDecl { self: TyChecker =>
         (for {
           dty <- (lguard.dtys ++ rguard.dtys).toList
           if dty.ty overlap ty
-          mayMust = lguard(dty) && rguard(dty)
-        } yield dty -> mayMust).toMap,
+          constr = lguard(dty) && rguard(dty)
+        } yield dty -> constr).toMap,
       )
     }
-    def add(mayMust: MayMust): TypeGuard =
+    def add(constr: TypeConstr): TypeGuard =
       val (uty, guard) = lpair
       TypeGuard(
-        TargetType.from(uty).map(dty => dty -> (guard(dty) && mayMust)).toMap,
+        TargetType.from(uty).map(dty => dty -> (guard(dty) && constr)).toMap,
       )
   }
 
@@ -185,10 +186,6 @@ trait TypeGuardDecl { self: TyChecker =>
           }
         } yield x -> pair).toMap)
 
-    def toMay: MayMust = MayMust(this, TypeConstr.Bot)
-    def toMayMust: MayMust = MayMust(this, this)
-    def toMust: MayMust = MayMust(TypeConstr.Top, this)
-
     def has(x: Base): Boolean = exists(_.contains(x))
 
     def bases: Set[Base] = this match
@@ -197,6 +194,8 @@ trait TypeGuardDecl { self: TyChecker =>
 
     def kill(bases: Set[Base])(using AbsState): TypeConstr =
       map(_.filter { case (x, _) => !bases.contains(x) })
+
+    def lift(using st: AbsState): TypeConstr = this && st.constr
 
     def hasLocal: Boolean = exists(_.keySet.exists {
       case _: Local => true
@@ -216,41 +215,6 @@ trait TypeGuardDecl { self: TyChecker =>
   object TypeConstr {
     val Top: TypeConstr = Elem(Map())
     def apply(pairs: (Base, ValueTy)*): TypeConstr = Elem(pairs.toMap)
-  }
-
-  case class MayMust(may: TypeConstr, must: TypeConstr) {
-    def isTop: Boolean = may.isTop && must.isTop
-    def isBottom: Boolean = may.isBottom && must.isBottom
-    def <=(that: MayMust): Boolean =
-      this.may <= that.may && this.must <= that.must
-    def &&(that: MayMust): MayMust =
-      MayMust(this.may && that.may, this.must && that.must)
-    def ||(that: MayMust): MayMust =
-      MayMust(this.may || that.may, this.must || that.must)
-
-    def dropMust: MayMust = MayMust(may, TypeConstr.Bot)
-
-    def map(f: TypeConstr => TypeConstr): MayMust =
-      MayMust(f(may), f(must))
-
-    def has(x: Base): Boolean = may.has(x) || must.has(x)
-
-    def bases: Set[Base] = may.bases ++ must.bases
-
-    def kill(bases: Set[Base])(using AbsState): MayMust = map(_.kill(bases))
-
-    def lift(using st: AbsState): MayMust = this && st.mayMust
-
-    def hasLocal: Boolean = may.hasLocal || must.hasLocal
-
-    def hasSym: Boolean = may.hasSym || must.hasSym
-
-    def onlySym: MayMust = map(_.onlySym)
-  }
-  object MayMust {
-    val Bot: MayMust = MayMust(TypeConstr.Bot, TypeConstr.Bot)
-    val Must: MayMust = MayMust(TypeConstr.Top, TypeConstr.Top)
-    val May: MayMust = MayMust(TypeConstr.Top, TypeConstr.Bot)
   }
   // -----------------------------------------------------------------------------
   // helpers
@@ -275,11 +239,4 @@ trait TypeGuardDecl { self: TyChecker =>
         if (map.nonEmpty) app >> map
         app
 
-  /** MayMust */
-  given Rule[MayMust] = (app, mayMust) =>
-    import MayMust.*
-    app >> mayMust.may
-    if (mayMust.may != mayMust.must)
-      app >> " (MUST: " >> mayMust.must >> ")"
-    app
 }
