@@ -17,22 +17,33 @@ trait Solver { self: SymInterp =>
     symEnv.forall { case (sym, ty) => !ty.isBottom }
 
   /** reify a satisfiable path into an ECMAScript program */
-  def reify: Option[String] =
+  def reify: Option[String] = reifyAll.headOption
+
+  def reifyAll: LazyList[String] =
     given AbsState = st
     val thisValue = st.getConstr(SThis.sym)
-    val rest = st.getConstr(SArgs.sym) // TODO : handle variadic parameters
+    val rest = st.getConstr(SArgs.sym) // TODO: handle variadic parameters
     val newTarget = st.getConstr(SNewTarget.sym)
     val len = entryFunc.head match {
       case Some(h: BuiltinHead) => h.arity._2
       case _                    => 0
     }
     val args = (0 until len).toList.map(i => st.getConstr(i))
-    for {
-      path <- getPath(entryFunc)
-      thisV <- getJSExpr(thisValue)
-      vs <- args.map(getJSExpr).sequence
-      code <- buildJSProgram(path, thisV, vs, getNewTargetExpr(newTarget))
-    } yield code
+    getPath(entryFunc) match
+      case None => LazyList.empty
+      case Some(path) =>
+        val thisCands = candidates(thisValue).toList
+        val argCands = args.map(candidates(_).toList)
+        val ntCands = newTargetCandidates(newTarget)
+        val slots = (thisCands :: argCands) :+ ntCands
+        oneChange(slots).flatMap {
+          case thisV :: rest =>
+            rest.splitAt(args.length) match
+              case (vs, nt :: Nil) =>
+                buildJSProgram(path, thisV, vs, Option.when(nt.nonEmpty)(nt))
+              case _ => None
+          case _ => None
+        }
 }
 object Solver {
 
@@ -42,6 +53,99 @@ object Solver {
   // get a JavaScript expression representing the newTarget value type
   def getNewTargetExpr(ty: ValueTy): Option[String] =
     if (UndefT ⊑ ty) None else getJSExpr(ty)
+
+  // ---------------------------------------------------------------------------
+  // candidate enumeration
+  // ---------------------------------------------------------------------------
+  def candidates(ty: ValueTy): LazyList[String] =
+    val base = exprFor(ty).iterator.to(LazyList)
+    val objects =
+      if (isBasePlainObject(ty)) objectCandidates(ty) else LazyList.empty
+    val extra =
+      extraCands.collect { case (isTy, js) if isTy(ty) => js }.to(LazyList)
+    distinct(base #::: objects #::: extra)
+
+  def newTargetCandidates(ty: ValueTy): List[String] =
+    if (UndefT ⊑ ty) List("")
+    else candidates(ty).toList
+
+  def oneChange(slots: List[List[String]]): LazyList[List[String]] =
+    if (slots.exists(_.isEmpty)) LazyList.empty
+    else
+      val heads = slots.map(_.head)
+      val variants =
+        for {
+          (slot, i) <- slots.iterator.zipWithIndex
+          alt <- slot.tail
+        } yield heads.updated(i, alt)
+      heads #:: variants.to(LazyList)
+
+  private def distinct(xs: LazyList[String]): LazyList[String] =
+    val seen = scala.collection.mutable.Set[String]()
+    xs.filter(seen.add)
+
+  private val extraCands: List[(ValueTy => Boolean, String)] =
+    def isNum(v: Double): ValueTy => Boolean = _.number.contains(Number(v))
+    def isAnyNum: ValueTy => Boolean = !_.number.isBottom
+    def isBig(v: BigInt): ValueTy => Boolean = _.bigInt.contains(v)
+    def isAnyBig: ValueTy => Boolean = !_.bigInt.isBottom
+    def isBool(b: Boolean): ValueTy => Boolean = _.bool.contains(b)
+    def isStr(s: String): ValueTy => Boolean = _.str.contains(s)
+    def isAnyStr: ValueTy => Boolean = !_.str.isBottom
+    def isUndef: ValueTy => Boolean = !_.undef.isBottom
+    def isNull: ValueTy => Boolean = !_.nullv.isBottom
+    def isSym: ValueTy => Boolean = ty => SymbolT ⊑ ty || (ty overlap SymbolT)
+    def isObj: ValueTy => Boolean = ty => ObjectT ⊑ ty
+    List(
+      (isUndef, "undefined"),
+      (isNull, "null"),
+      (isBool(true), "true"),
+      (isBool(false), "false"),
+      (isNum(0), "0"),
+      (isNum(1), "1"),
+      (isNum(-0.0), "-0"),
+      (isNum(-1), "-1"),
+      (isNum(0.1), "0.1"),
+      (isNum(-0.1), "-0.1"),
+      ((_: ValueTy).number.contains(Number.NaN), "NaN"),
+      ((_: ValueTy).number.contains(Number.Inf), "Infinity"),
+      ((_: ValueTy).number.contains(-Number.Inf), "-Infinity"),
+      (isAnyNum, "Number.MAX_SAFE_INTEGER"),
+      (isAnyNum, "Number.MIN_SAFE_INTEGER"),
+      (isAnyNum, "Number.MAX_VALUE"),
+      (isAnyNum, "-Number.MAX_VALUE"),
+      (isBig(BigInt(0)), "0n"),
+      (isBig(BigInt(1)), "1n"),
+      (isBig(BigInt(-1)), "-1n"),
+      (isAnyBig, "9223372036854775807n"),
+      (isAnyBig, "-9223372036854775808n"),
+      (isAnyBig, "18446744073709551615n"),
+      (isSym, "Symbol()"),
+      (isSym, "Symbol.iterator"),
+      (isStr(""), "\"\""),
+      (isStr("0"), "\"0\""),
+      (isAnyStr, "\"\""),
+      (isObj, "[]"),
+      (isObj, "{}"),
+      (isObj, "function(){}"),
+      (isObj, "Object.freeze({ x: 1 })"),
+      (isObj, "Object.seal({ x: 1 })"),
+      (isObj, "Object.preventExtensions({})"),
+      (isObj, "Object.create(null)"),
+    )
+
+  private def objectCandidates(ty: ValueTy): LazyList[String] =
+    ty.record match
+      case RecordTy.Elem(_, ObjShape(props, _, _)) if props.nonEmpty =>
+        val ordered = props.toList.sortBy { case (p, _) => propKey(p) }
+        val slots: List[List[String]] = ordered.map { (prop, desc) =>
+          val k = propKey(prop)
+          if (desc.getExc) List(s"get $k() { throw 0; }")
+          else if (desc.setExc) List(s"set $k(_) { throw 0; }")
+          else candidates(desc.ty).toList.map(v => s"$k: $v")
+        }
+        oneChange(slots).map(_.mkString("{ ", ", ", " }"))
+      case _ => LazyList.empty
 
   private def buildJSProgram(
     path: BuiltinPath,

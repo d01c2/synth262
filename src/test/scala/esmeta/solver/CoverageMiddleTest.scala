@@ -114,11 +114,11 @@ class CoverageMiddleTest extends SolverTest {
     val builtins = {
       val futures = allBuiltins.map { f =>
         Future {
-          val ok = Solver.funcAccessExpr(f).exists { js =>
+          val isSupported = Solver.funcAccessExpr(f).exists { js =>
             try { cov.run(js + ".call();").supported }
             catch { case _: Throwable => false }
           }
-          if (ok) Some(f) else None
+          if (isSupported) Some(f) else None
         }
       }
       futures.flatMap(Await.result(_, Duration.Inf))
@@ -319,22 +319,31 @@ class CoverageMiddleTest extends SolverTest {
             }
 
           var attempts = 0 // execution attempts
+          val maxCandsPerPath = 64
           try {
             @scala.annotation.tailrec
             def retry(rejected: Option[Rejected]): BranchResult = {
               checkTimeout()
               interp.nextCandidate match {
                 case Some(conf) =>
-                  interp.reify match {
-                    case Some(js) =>
-                      attempts += 1
-                      if (verifies(js))
-                        result("pass", Some(js), Some(conf), attempts)
-                      else // reified but not covering target
-                        retry(Some(Rejected("fail-verify", Some(js), conf)))
-                    case None if rejected.isEmpty =>
+                  val cands = interp.reifyAll.take(maxCandsPerPath).toList
+                  cands match {
+                    case Nil if rejected.isEmpty =>
                       retry(Some(Rejected("fail-reify", None, conf)))
-                    case None => retry(rejected)
+                    case Nil => retry(rejected)
+                    case _ =>
+                      val passing = cands.iterator
+                        .map { js =>
+                          attempts += 1; js
+                        }
+                        .find(verifies)
+                      passing match {
+                        case Some(js) =>
+                          result("pass", Some(js), Some(conf), attempts)
+                        case None => // reified but none covering target
+                          val js = cands.head
+                          retry(Some(Rejected("fail-verify", Some(js), conf)))
+                      }
                   }
                 case None =>
                   // symbolic execution returned no model: distinguish a genuine
