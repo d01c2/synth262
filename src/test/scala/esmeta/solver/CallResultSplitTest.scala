@@ -410,15 +410,13 @@ class CallResultSplitTest extends SolverTest {
     val topSplits = splitEntries.take(10).map {
       case (split, count) =>
         f"      ${count}%6d/$demanded%-6d " +
-        f"${percentString(count, demanded)}%-9s " +
-        f"${percentString(count, total)}%-9s ${split.mkString(" | ")}"
+        f"${percentString(count, demanded)}%-9s ${split.mkString(" | ")}"
     }
     val remaining = splitEntries.drop(10).map(_._2).sum
     val remainingLine =
       Option.when(remaining > 0)(
         f"      ${remaining}%6d/$demanded%-6d " +
-        f"${percentString(remaining, demanded)}%-9s " +
-        f"${percentString(remaining, total)}%-9s (remaining splits)",
+        f"${percentString(remaining, demanded)}%-9s (remaining splits)",
       )
     val splitText = (topSplits ++ remainingLine).mkString("\n")
     println(s"""
@@ -432,7 +430,7 @@ class CallResultSplitTest extends SolverTest {
     other:                  $other/$noBranch
 
   top demanded splits under extracted-demand:
-      sites/demand parent%   total%    split
+      sites/demand %         split
 $splitText
 
   dumped to $dir/summary.tsv
