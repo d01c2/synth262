@@ -31,6 +31,7 @@ class CoverageMiddleTest extends SolverTest {
   lazy val cfg = ESMetaTest.cfg
   private lazy val resultTypeInsensitive: Boolean =
     CoverageMiddleTest.resultTypeInsensitive
+  private lazy val noSummary: Boolean = CoverageMiddleTest.noSummary
 
   // -------------------------------------------------------------------------
   // XXX: remove later
@@ -100,6 +101,7 @@ class CoverageMiddleTest extends SolverTest {
       tyCheckerConfig = TyChecker.Config(
         resultTypeInsensitive = resultTypeInsensitive,
       ),
+      useSummary = !noSummary,
     )
     import runner.tyChecker.{cfg => _, *}, AbsState.given
 
@@ -195,7 +197,8 @@ class CoverageMiddleTest extends SolverTest {
         s"  Solving ${targets.size} branch sides from " +
         s"${targetBranchEntries.size} branches with $nThreads threads " +
         s"(timeout: $solveTimeout per side, " +
-        s"result-type-insensitive: $resultTypeInsensitive)...",
+        s"result-type-insensitive: $resultTypeInsensitive, " +
+        s"no-summary: $noSummary)...",
       )
 
       // per-case detail, written into one file per (branch, taken side)
@@ -443,6 +446,7 @@ class CoverageMiddleTest extends SolverTest {
         val totalCount = results.size
         out("\n  Mode:")
         out(f"    result-type-insensitive: $resultTypeInsensitive")
+        out(f"    no-summary: $noSummary")
         out("\n  Status breakdown:")
         for (status <- orderedStatuses) {
           val rs = byStatus(status)
@@ -562,6 +566,8 @@ object CoverageMiddleTest {
     "esmeta.coverage.resultTypeInsensitive"
   private val resultTypeInsensitiveEnv =
     "ESMETA_COVERAGE_RESULT_TYPE_INSENSITIVE"
+  private val noSummaryProp = "esmeta.coverage.noSummary"
+  private val noSummaryEnv = "ESMETA_COVERAGE_NO_SUMMARY"
 
   private def isTruthy(value: String): Boolean =
     value.trim.toLowerCase match
@@ -571,4 +577,8 @@ object CoverageMiddleTest {
   lazy val resultTypeInsensitive: Boolean =
     sys.props.get(resultTypeInsensitiveProp).exists(isTruthy) ||
     sys.env.get(resultTypeInsensitiveEnv).exists(isTruthy)
+
+  lazy val noSummary: Boolean =
+    sys.props.get(noSummaryProp).exists(isTruthy) ||
+    sys.env.get(noSummaryEnv).exists(isTruthy)
 }

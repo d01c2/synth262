@@ -16,8 +16,9 @@ RAW_OUT = ROOT / "experiment" / "ablation.raw.csv"
 TEST_TASK = "Test / testOnly esmeta.solver.CoverageMiddleTest"
 
 MODES = [
-    ("baseline", False),
-    ("result-type-insensitive", True),
+    ("baseline", False, False),
+    ("result-type-insensitive", True, False),
+    ("no-summary", False, True),
 ]
 
 STATUS_RE = re.compile(
@@ -30,19 +31,24 @@ STATUS_RE = re.compile(
 )
 
 
-def run_test(mode: str, result_type_insensitive: bool) -> None:
+def run_test(mode: str, result_type_insensitive: bool, no_summary: bool) -> None:
     env = {
         **os.environ,
         "ESMETA_HOME": str(ROOT),
         "ESMETA_COVERAGE_RESULT_TYPE_INSENSITIVE": (
             "true" if result_type_insensitive else "false"
         ),
+        "ESMETA_COVERAGE_NO_SUMMARY": "true" if no_summary else "false",
     }
     print(f"==> {mode}")
     subprocess.run(["sbt", TEST_TASK], cwd=ROOT, env=env, check=True)
 
 
-def parse_summary(mode: str, result_type_insensitive: bool) -> list[dict[str, str]]:
+def parse_summary(
+    mode: str,
+    result_type_insensitive: bool,
+    no_summary: bool,
+) -> list[dict[str, str]]:
     if not SUMMARY.exists():
         raise FileNotFoundError(f"summary not found: {SUMMARY}")
 
@@ -54,6 +60,7 @@ def parse_summary(mode: str, result_type_insensitive: bool) -> list[dict[str, st
         row = match.groupdict(default="")
         row["mode"] = mode
         row["result_type_insensitive"] = str(result_type_insensitive).lower()
+        row["no_summary"] = str(no_summary).lower()
         rows.append(row)
 
     if not rows:
@@ -61,7 +68,12 @@ def parse_summary(mode: str, result_type_insensitive: bool) -> list[dict[str, st
     return rows
 
 
-def compact_row(mode: str, result_type_insensitive: bool, rows: list[dict[str, str]]) -> dict[str, str]:
+def compact_row(
+    mode: str,
+    result_type_insensitive: bool,
+    no_summary: bool,
+    rows: list[dict[str, str]],
+) -> dict[str, str]:
     by_status = {row["status"]: row for row in rows}
 
     def count(status: str) -> int:
@@ -79,6 +91,7 @@ def compact_row(mode: str, result_type_insensitive: bool, rows: list[dict[str, s
     return {
         "mode": mode,
         "result_type_insensitive": str(result_type_insensitive).lower(),
+        "no_summary": str(no_summary).lower(),
         "total": str(total),
         "pass": str(passed),
         "fail_verify": str(fail_verify),
@@ -105,11 +118,13 @@ def main() -> int:
     raw_rows: list[dict[str, str]] = []
     summary_rows: list[dict[str, str]] = []
 
-    for mode, result_type_insensitive in MODES:
-        run_test(mode, result_type_insensitive)
-        rows = parse_summary(mode, result_type_insensitive)
+    for mode, result_type_insensitive, no_summary in MODES:
+        run_test(mode, result_type_insensitive, no_summary)
+        rows = parse_summary(mode, result_type_insensitive, no_summary)
         raw_rows.extend(rows)
-        summary_rows.append(compact_row(mode, result_type_insensitive, rows))
+        summary_rows.append(
+            compact_row(mode, result_type_insensitive, no_summary, rows),
+        )
 
     write_csv(
         RAW_OUT,
@@ -117,6 +132,7 @@ def main() -> int:
         [
             "mode",
             "result_type_insensitive",
+            "no_summary",
             "status",
             "count",
             "pct",
@@ -131,6 +147,7 @@ def main() -> int:
         [
             "mode",
             "result_type_insensitive",
+            "no_summary",
             "total",
             "pass",
             "fail_verify",
