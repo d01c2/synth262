@@ -1,13 +1,15 @@
 package esmeta.solver
 
 import esmeta.*
+import esmeta.analyzer.tychecker.TyChecker
 import esmeta.cfg.*
 import esmeta.ir.*
 import esmeta.ir.util.UnitWalker
 import esmeta.ty.*
+import esmeta.util.{Fin, Inf}
 import esmeta.util.BaseUtils.*
 import esmeta.util.SystemUtils.*
-import scala.collection.mutable.{Map => MMap, Queue, Set => MSet}
+import scala.collection.mutable.{ListBuffer, Map => MMap, Queue, Set => MSet}
 
 /** Counts how call results are split by downstream branches */
 class CallResultSplitTest extends SolverTest {
@@ -16,6 +18,10 @@ class CallResultSplitTest extends SolverTest {
   val name: String = "callResultSplitTest"
 
   lazy val cfg = ESMetaTest.cfg
+  lazy val tychecker: TyChecker =
+    val checker = TyChecker(cfg, silent = true)
+    checker.analyze
+    checker
 
   // ---------------------------------------------------------------------------
   // private helpers
@@ -35,33 +41,11 @@ class CallResultSplitTest extends SolverTest {
   private val ValueField = "value"
   private val CompletionKind = "completion-kind"
 
-  private def completionTypes(name: String): Set[ValueTy] = name match
-    case "normal"   => Set(NormalT, AbruptT)
-    case "break"    => Set(BreakT)
-    case "continue" => Set(ContinueT)
-    case "return"   => Set(ReturnT)
-    case "throw"    => Set(ThrowT)
-    case _          => Set(EnumT(name))
-
-  private def literalValueTypes(expr: Expr): Set[ValueTy] = expr match
-    case EUndef()     => Set(UndefT)
-    case ENull()      => Set(NullT)
-    case EBool(value) => Set(BoolT(value))
-    case EEnum(name)  => Set(EnumT(name))
-    case _            => Set()
-
-  private def typeOfTypes(expr: Expr): Set[ValueTy] = expr match
-    case EStr(name) =>
-      val ty = ValueTy.fromTypeOf(name)
-      if (ty.isBottom) Set() else Set(ty)
-    case _ => Set()
-
   private def refUse(
     ref: Ref,
     flow: Map[Local, Set[String]],
   ): Set[String] = ref match
-    case local: Local =>
-      flow.getOrElse(local, Set())
+    case local: Local => flow.getOrElse(local, Set())
     case Field(base, EStr(field)) =>
       val baseUse = refUse(base, flow)
       if (!baseUse(Direct)) Set()
@@ -82,115 +66,7 @@ class CallResultSplitTest extends SolverTest {
     case ETypeOf(base)           => exprUse(base, flow)
     case ETypeCheck(base, _)     => exprUse(base, flow)
     case EInstanceOf(base, _)    => exprUse(base, flow)
-    case _                       => Set()
-
-  private def refinedDemand(
-    base: Expr,
-    ty: ValueTy,
-    flow: Map[Local, Set[String]],
-  ): Set[ValueTy] =
-    val use = exprUse(base, flow)
-    Set.from(
-      List(
-        Option.when(use(Direct))(ty),
-        Option.when(use(ValueField))(NormalT(ty)),
-      ).flatten,
-    )
-
-  private def completionSplitTypes(ty: ValueTy): Set[ValueTy] =
-    if (ty <= AbruptT) Set(ty, NormalT)
-    else if (ty <= NormalT) Set(ty, AbruptT)
-    else Set(ty)
-
-  private def typeCheckDemand(
-    base: Expr,
-    ty: ValueTy,
-    flow: Map[Local, Set[String]],
-  ): Set[ValueTy] =
-    val use = exprUse(base, flow)
-    Set.from(
-      List(
-        Option.when(use(Direct))(completionSplitTypes(ty)),
-        Option.when(use(ValueField))(Set(NormalT(ty))),
-      ).flatten.flatten,
-    )
-
-  private def literalDemand(
-    base: Expr,
-    literal: Expr,
-    flow: Map[Local, Set[String]],
-  ): Set[ValueTy] =
-    literalValueTypes(literal)
-      .map(refinedDemand(base, _, flow))
-      .foldLeft(Set[ValueTy]())(_ ++ _)
-
-  private def completionKindDemand(
-    left: Expr,
-    right: Expr,
-    flow: Map[Local, Set[String]],
-  ): Set[ValueTy] =
-    def isCompletionKind(expr: Expr): Boolean =
-      exprUse(expr, flow)(CompletionKind)
-    (left, right) match
-      case (l, EEnum(name)) if isCompletionKind(l) => completionTypes(name)
-      case (EEnum(name), r) if isCompletionKind(r) => completionTypes(name)
-      case _                                       => Set()
-
-  private def boolDemand(
-    left: Expr,
-    right: Expr,
-    flow: Map[Local, Set[String]],
-  ): Set[ValueTy] =
-    def labels(base: Expr, value: Boolean): Set[ValueTy] =
-      val use = exprUse(base, flow)
-      Set.from(
-        List(
-          Option.when(use(Direct))(BoolT(value)),
-          Option.when(use(Direct))(BoolT(!value)),
-          Option.when(use(ValueField))(NormalT(BoolT(value))),
-          Option.when(use(ValueField))(NormalT(BoolT(!value))),
-        ).flatten,
-      )
-    (left, right) match
-      case (l, EBool(value)) => labels(l, value)
-      case (EBool(value), r) => labels(r, value)
-      case _                 => Set()
-
-  private def typeOfDemand(
-    left: Expr,
-    right: Expr,
-    flow: Map[Local, Set[String]],
-  ): Set[ValueTy] =
-    (left, right) match
-      case (ETypeOf(base), r) if exprUse(base, flow)(Direct) => typeOfTypes(r)
-      case (l, ETypeOf(base)) if exprUse(base, flow)(Direct) => typeOfTypes(l)
-      case _                                                 => Set()
-
-  private def demandOn(
-    expr: Expr,
-    flow: Map[Local, Set[String]],
-  ): Set[ValueTy] = expr match
-    case ETypeCheck(base, ty) => typeCheckDemand(base, ty.toValue, flow)
-    case ERef(ref) =>
-      val use = refUse(ref, flow)
-      Set.from(
-        List(
-          Option.when(use(Direct))(Set(TrueT, FalseT)),
-          Option.when(use(ValueField))(Set(NormalT(TrueT), NormalT(FalseT))),
-        ).flatten.flatten,
-      )
-    case EUnary(UOp.Not, operand) => demandOn(operand, flow)
-    case EBinary(BOp.Eq, left, right) =>
-      val completion = completionKindDemand(left, right, flow)
-      val bools = boolDemand(left, right, flow)
-      val literals =
-        if (completion.nonEmpty || bools.nonEmpty) Set()
-        else
-          literalDemand(left, right, flow) ++ literalDemand(right, left, flow)
-      completion ++ bools ++ typeOfDemand(left, right, flow) ++ literals
-    case EBinary(BOp.And | BOp.Or, left, right) =>
-      demandOn(left, flow) ++ demandOn(right, flow)
-    case _ => Set()
+    case _ => locals(expr).flatMap(local => flow.getOrElse(local, Set()))
 
   private def callRefLocals(call: Call): Set[Local] = call.callInst match
     case ICall(_, fexpr, args)      => (fexpr :: args).flatMap(locals).toSet
@@ -223,16 +99,183 @@ class CallResultSplitTest extends SolverTest {
       },
     )
 
+  private case class AnalyzedCallResult(resultTy: ValueTy, valueTy: ValueTy)
+
+  private def sameTy(left: ValueTy, right: ValueTy): Boolean =
+    left <= right && right <= left
+
+  private def isStrictRefinement(before: ValueTy, after: ValueTy): Boolean =
+    after <= before && !sameTy(before, after)
+
+  private def abruptLabels(ty: ValueTy): Set[ValueTy] =
+    if (!(ty && AbruptT).isBottom) Set(AbruptT) else Set()
+
+  private def primitiveLabels(ty: ValueTy): Set[ValueTy] =
+    val typeOfLabels =
+      List(NumberT, BigIntT, StrT, ObjectT, SymbolT)
+        .filter(label => !(ty && label).isBottom)
+        .toSet
+    Set.from(
+      List(
+        Option.when(!(ty && TrueT).isBottom)(TrueT),
+        Option.when(!(ty && FalseT).isBottom)(FalseT),
+        Option.when(ty.undef)(UndefT),
+        Option.when(ty.nullv)(NullT),
+      ).flatten,
+    ) ++ (ty.enumv match
+      case Fin(set) => set.map(EnumT(_))
+      case Inf      => Set(EnumT)
+    ) ++ typeOfLabels
+
+  private def labelsFromUse(use: Set[String], ty: ValueTy): Set[ValueTy] =
+    Set
+      .from(
+        List(
+          Option.when(use(Direct))(ty),
+          Option.when(use(ValueField))(NormalT(ty)),
+        ).flatten,
+      )
+      .filterNot(_.isBottom)
+
+  private def booleanSideLabels(
+    expr: Expr,
+    flow: Map[Local, Set[String]],
+    side: ValueTy,
+    exprTy: Expr => ValueTy,
+  ): Set[ValueTy] =
+    val sideValue =
+      if (side <= TrueT) Some(true)
+      else if (side <= FalseT) Some(false)
+      else None
+    sideValue match
+      case None => Set()
+      case Some(value) =>
+        val ty = BoolT(value)
+        expr match
+          case ERef(ref) =>
+            labelsFromUse(refUse(ref, flow), ty)
+          case EUnary(UOp.Not, operand) =>
+            booleanSideLabels(operand, flow, BoolT(!value), exprTy)
+          case EBinary(BOp.Eq, left, EBool(literal)) =>
+            val nextTy = BoolT(value == literal)
+            if (value || exprTy(left) <= BoolT)
+              booleanSideLabels(left, flow, nextTy, exprTy)
+            else Set()
+          case EBinary(BOp.Eq, EBool(literal), right) =>
+            val nextTy = BoolT(value == literal)
+            if (value || exprTy(right) <= BoolT)
+              booleanSideLabels(right, flow, nextTy, exprTy)
+            else Set()
+          case EBinary(BOp.And, left, right) =>
+            if (value)
+              booleanSideLabels(left, flow, TrueT, exprTy) ++
+              booleanSideLabels(right, flow, TrueT, exprTy)
+            else Set()
+          case EBinary(BOp.Or, left, right) =>
+            if (value) Set()
+            else
+              booleanSideLabels(left, flow, FalseT, exprTy) ++
+              booleanSideLabels(right, flow, FalseT, exprTy)
+          case _ => Set()
+
+  private def isBooleanSummaryLabel(ty: ValueTy): Boolean =
+    sameTy(ty, BoolT) || sameTy(ty, NormalT(BoolT))
+
+  private def normalizeLabels(labels: Set[ValueTy]): Set[ValueTy] =
+    val hasNormalTrue = labels.exists(sameTy(_, NormalT(TrueT)))
+    val hasNormalFalse = labels.exists(sameTy(_, NormalT(FalseT)))
+    if (hasNormalTrue && hasNormalFalse)
+      labels.filterNot(sameTy(_, NormalT(BoolT)))
+    else labels
+
+  private def resultLabels(
+    before: AnalyzedCallResult,
+    after: AnalyzedCallResult,
+  ): Set[ValueTy] =
+    val resultRefined = isStrictRefinement(before.resultTy, after.resultTy)
+    val valueRefined = isStrictRefinement(before.valueTy, after.valueTy)
+    val normalLabels =
+      if ((after.resultTy && NormalT).isBottom) Set()
+      else
+        val base = if (resultRefined) Set(NormalT) else Set()
+        val payload = after.valueTy
+        if (
+          valueRefined &&
+          !payload.isBottom &&
+          !payload.isTop &&
+          payload.distinct(CompT)
+        ) base + NormalT(payload)
+        else base
+    normalLabels ++
+    Option.when(resultRefined)(abruptLabels(after.resultTy)).getOrElse(Set()) ++
+    Option.when(resultRefined)(primitiveLabels(after.resultTy)).getOrElse(Set())
+
   private def traceCall(
     call: Call,
   ): (List[Set[ValueTy]], Boolean) =
     val queue = Queue.empty[(Node, Map[Local, Set[String]])]
     var seen = Set.empty[(Node, List[(Local, List[String])])]
-    var branchDemands = List.empty[Set[ValueTy]]
+    var branchTargetTypeSets = List.empty[Set[ValueTy]]
     var propagated = false
 
     def enqueue(next: Option[Node], flow: Map[Local, Set[String]]): Unit =
       next.foreach(node => queue.enqueue(node -> flow))
+
+    def analyzedCallResult(
+      checker: TyChecker,
+      st: checker.AbsState,
+    ): AnalyzedCallResult =
+      given checker.AbsState = st
+      val result = st.get(call.lhs)
+      val value = st.get(result, checker.AbsValue(StrT("Value")))
+      AnalyzedCallResult(result.ty, value.ty)
+
+    def branchTargetTypes(
+      branch: Branch,
+      flow: Map[Local, Set[String]],
+    ): Set[ValueTy] =
+      val checker = tychecker
+      val np = checker.NodePoint(
+        cfg.funcOf(branch),
+        branch,
+        checker.emptyView,
+      )
+      val beforeSt = checker.getResult(np)
+      if (beforeSt.isBottom) Set()
+      else
+        given checker.NodePoint[Node] = np
+        val before = analyzedCallResult(checker, beforeSt)
+        val (cond, condSt) = checker.transfer.transfer(branch.cond)(beforeSt)
+        val condTy =
+          given checker.AbsState = beforeSt
+          cond.ty
+        val exprTyCache = MMap.empty[Expr, ValueTy]
+        def exprTy(expr: Expr): ValueTy =
+          exprTyCache.getOrElseUpdate(
+            expr, {
+              val (value, _) = checker.transfer.transfer(expr)(beforeSt)
+              given checker.AbsState = beforeSt
+              value.ty
+            },
+          )
+        Set
+          .from(
+            List(
+              Option.when(condTy.bool.contains(true))(TrueT),
+              Option.when(condTy.bool.contains(false))(FalseT),
+            ).flatten.flatMap { boolTy =>
+              val nextSt = checker.transfer.refine(cond, boolTy)(condSt)
+              if (nextSt.isBottom) Set()
+              else
+                val refined =
+                  resultLabels(before, analyzedCallResult(checker, nextSt))
+                val booleans =
+                  booleanSideLabels(branch.cond, flow, boolTy, exprTy)
+                if (booleans.isEmpty) refined
+                else refined.filterNot(isBooleanSummaryLabel) ++ booleans
+            },
+          )
+          .filterNot(_.isBottom)
 
     enqueue(call.next, Map(call.lhs -> Set(Direct)))
     while (queue.nonEmpty) {
@@ -262,30 +305,31 @@ class CallResultSplitTest extends SolverTest {
             enqueue(downstream.next, flow)
 
           case branch: Branch =>
-            val demand = demandOn(branch.cond, flow)
             if (exprUse(branch.cond, flow).nonEmpty) {
+              val targetTypes = branchTargetTypes(branch, flow)
               val completed =
-                if (branch.isAbruptNode && demand.isEmpty) Set(AbruptT)
-                else demand
-              branchDemands ::= completed
+                if (branch.isAbruptNode && targetTypes.isEmpty) Set(AbruptT)
+                else targetTypes
+              branchTargetTypeSets ::= completed
             }
             enqueue(branch.thenNode, flow)
             enqueue(branch.elseNode, flow)
       }
     }
-    branchDemands.reverse -> propagated
+    branchTargetTypeSets.reverse -> propagated
 
   // ---------------------------------------------------------------------------
   // tests
   // ---------------------------------------------------------------------------
   def init: Unit = check("call-result splits at call sites") {
     var total = 0
-    var demanded = 0
+    var targetTyped = 0
     var branched = 0
     var unknownBranch = 0
     var propagated = 0
     var other = 0
     val splitCounts = MMap[List[String], Int]()
+    val typeCounts = MMap[String, Int]()
 
     for {
       func <- cfg.funcs
@@ -293,17 +337,19 @@ class CallResultSplitTest extends SolverTest {
       call <- calls
     } {
       total += 1
-      val (branchDemands, isPropagated) = traceCall(call)
-      val demand = branchDemands.flatten.toSet
-      if (demand.nonEmpty) {
-        demanded += 1
-        val split = demand.toList.map(_.toString).sorted
+      val (branchTargetTypes, isPropagated) = traceCall(call)
+      val targetTypes = normalizeLabels(branchTargetTypes.flatten.toSet)
+      if (targetTypes.nonEmpty) {
+        targetTyped += 1
+        val split = targetTypes.toList.map(_.toString).sorted
         splitCounts += split -> (splitCounts.getOrElse(split, 0) + 1)
+        for (ty <- split)
+          typeCounts += ty -> (typeCounts.getOrElse(ty, 0) + 1)
       }
-      if (branchDemands.nonEmpty) branched += 1
+      if (branchTargetTypes.nonEmpty) branched += 1
 
-      if (demand.isEmpty)
-        if (branchDemands.nonEmpty) unknownBranch += 1
+      if (targetTypes.isEmpty)
+        if (branchTargetTypes.nonEmpty) unknownBranch += 1
         else if (isPropagated) propagated += 1
         else other += 1
     }
@@ -318,12 +364,12 @@ class CallResultSplitTest extends SolverTest {
       .map {
         case (split, count) =>
           Vector(
-            "demand-split",
+            "target-type-split",
             split.mkString(" | "),
             count,
-            "extracted-demand",
-            demanded,
-            percentString(count, demanded),
+            "target-types",
+            targetTyped,
+            percentString(count, targetTyped),
             total,
             percentString(count, total),
           )
@@ -350,14 +396,14 @@ class CallResultSplitTest extends SolverTest {
         percentString(branched, total),
       ),
       Vector(
-        "extracted-demand",
+        "target-types",
         "(any)",
-        demanded,
+        targetTyped,
         "result-branch",
         branched,
-        percentString(demanded, branched),
+        percentString(targetTyped, branched),
         total,
-        percentString(demanded, total),
+        percentString(targetTyped, total),
       ),
     ) ++ splitRows ++ List(
       Vector(
@@ -407,33 +453,85 @@ class CallResultSplitTest extends SolverTest {
       s"$dir/summary.tsv",
     )
 
-    val topSplits = splitEntries.take(10).map {
-      case (split, count) =>
-        f"      ${count}%6d/$demanded%-6d " +
-        f"${percentString(count, demanded)}%-9s ${split.mkString(" | ")}"
+    val typeEntries = typeCounts.toList.sortBy {
+      case (ty, count) => (-count, ty)
     }
-    val remaining = splitEntries.drop(10).map(_._2).sum
+    val typeRows = List(
+      Vector(
+        "type",
+        "sites",
+        "parent-class",
+        "parent-sites",
+        "parent-percent",
+        "total-sites",
+        "total-percent",
+      ),
+    ) ++ typeEntries.map {
+      case (ty, count) =>
+        Vector(
+          ty,
+          count,
+          "target-types",
+          targetTyped,
+          percentString(count, targetTyped),
+          total,
+          percentString(count, total),
+        )
+    }
+    dumpFile(
+      typeRows.map(_.mkString("\t")).mkString(LINE_SEP),
+      s"$dir/types.tsv",
+    )
+
+    val shownEntries = ListBuffer.empty[(List[String], Int)]
+    var shownSites = 0
+    for {
+      entry @ (_, count) <- splitEntries
+      if shownEntries.size < 50 &&
+      (shownEntries.size < 10 || shownSites < targetTyped * 0.9)
+    } {
+      shownEntries += entry
+      shownSites += count
+    }
+    val topSplits = shownEntries.map {
+      case (split, count) =>
+        f"      ${count}%6d/$targetTyped%-6d ${split.mkString(" | ")}"
+    }
+    val remaining = splitEntries.drop(shownEntries.size).map(_._2).sum
     val remainingLine =
       Option.when(remaining > 0)(
-        f"      ${remaining}%6d/$demanded%-6d " +
-        f"${percentString(remaining, demanded)}%-9s (remaining splits)",
+        f"      ${remaining}%6d/$targetTyped%-6d (remaining splits)",
       )
     val splitText = (topSplits ++ remainingLine).mkString("\n")
+    val shownTypes = typeEntries.take(30)
+    val typeText = shownTypes
+      .map {
+        case (ty, count) =>
+          f"      ${count}%6d/$targetTyped%-6d $ty"
+      }
+      .mkString("\n")
     println(s"""
 === Call-result splits at call sites ===
   total call sites:         $total
-  result-branch uses:       $branched/$total ${percentString(branched, total)}
-    extracted-demand:       $demanded/$branched
+  result-branch uses:       $branched/$total
+    target-types:           $targetTyped/$branched
     unknown-branch:         $unknownBranch/$branched
-  no result branch:         $noBranch/$total ${percentString(noBranch, total)}
+  no result branch:         $noBranch/$total
     propagated-only:        $propagated/$noBranch
     other:                  $other/$noBranch
 
-  top demanded splits under extracted-demand:
-      sites/demand %         split
+  top target-type splits:
+    shown exact splits:     ${shownEntries.size}/${splitEntries.size}
+    shown coverage:         $shownSites/$targetTyped
+      sites/target           split
 $splitText
 
+  top target types:
+      sites/target           type
+$typeText
+
   dumped to $dir/summary.tsv
+  dumped to $dir/types.tsv
 """)
   }
 
