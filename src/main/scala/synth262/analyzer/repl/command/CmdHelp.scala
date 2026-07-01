@@ -1,0 +1,32 @@
+package synth262.analyzer.repl.command
+
+import synth262.analyzer.*
+import synth262.analyzer.repl.*
+
+trait CmdHelpDecl { self: Self =>
+
+// help command
+  case object CmdHelp
+    extends Command(
+      "help",
+      "Show help message.",
+    ) {
+    // options
+    val options = Nil
+
+    // run command
+    def apply(
+      cpOpt: Option[ControlPoint],
+      args: List[String],
+    ): Unit = showHelp
+
+    // show help message
+    def showHelp: Unit = {
+      println
+      println("command list:")
+      for (cmd <- Command.commands) {
+        println("- %-25s%s".format(cmd.name, cmd.help))
+      }
+    }
+  }
+}

@@ -25,7 +25,7 @@ DELAY_CALL = re.compile(r"^\s*\$delay\s*\(", re.M)
 
 
 def inject():
-    env = {**os.environ, "ESMETA_HOME": str(ROOT)}
+    env = {**os.environ, "SYNTH262_HOME": str(ROOT)}
     cmd = f"run inject {INPUT} -inject:batch -inject:defs -inject:out={INJECTED}"
     subprocess.run(["sbt", cmd], cwd=ROOT, env=env, check=True)
     return sorted(INJECTED.glob("*.js"))

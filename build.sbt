@@ -1,6 +1,6 @@
 import sbtassembly.AssemblyPlugin.defaultUniversalScript
 
-// ESMeta version
+// Synth262 version
 // NOTE: please update VERSION together in top-level package.scala
 // NOTE: please update version info in the README.md file
 ThisBuild / version := "0.7.1"
@@ -8,8 +8,8 @@ ThisBuild / version := "0.7.1"
 // Scala version
 ThisBuild / scalaVersion := "3.3.6"
 
-// ESMeta organization
-ThisBuild / organization := "esmeta"
+// Synth262 organization
+ThisBuild / organization := "synth262"
 
 // Scala options
 ThisBuild / scalacOptions := Seq(
@@ -164,7 +164,7 @@ val Http4sVersion = "0.23.30"
 lazy val root = project
   .in(file("."))
   .settings(
-    name := "esmeta",
+    name := "synth262",
 
     // libraries
     libraryDependencies ++= Seq(
@@ -191,7 +191,7 @@ lazy val root = project
     retrieveManaged := true,
 
     // set the main class for 'sbt run'
-    Compile / mainClass := Some("esmeta.ESMeta"),
+    Compile / mainClass := Some("synth262.Synth262"),
 
     // test setting
     Test / testOptions += Tests
@@ -200,7 +200,7 @@ lazy val root = project
 
     // assembly setting
     assembly / test := {},
-    assembly / assemblyOutputPath := file("bin/esmeta"),
+    assembly / assemblyOutputPath := file("bin/synth262"),
 
     // fix deduplicate issue of polyglot dependencies
     // https://stackoverflow.com/questions/54834125/sbt-assembly-deduplicate-module-info-class
@@ -304,7 +304,7 @@ lazy val root = project
 
 // create the `.completion` file for autocompletion in shell
 lazy val genCompl = taskKey[Unit]("generate autocompletion file (.completion)")
-genCompl := (Compile / runMain).toTask(" esmeta.util.GenCompl").value
+genCompl := (Compile / runMain).toTask(" synth262.util.GenCompl").value
 
 // build for release with genCompl and assembly
 lazy val release = taskKey[Unit]("release with format, genCompl, and assembly")

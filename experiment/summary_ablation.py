@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SUMMARY = ROOT / "logs" / "solver" / "summary"
 OUT = ROOT / "experiment" / "ablation.csv"
 RAW_OUT = ROOT / "experiment" / "ablation.raw.csv"
-TEST_TASK = "Test / testOnly esmeta.solver.CoverageMiddleTest"
+TEST_TASK = "Test / testOnly synth262.solver.CoverageMiddleTest"
 TOTAL_TIMEOUT_S = 300  # timeout: 300 sec (5 min)
 
 MODES = [
@@ -35,12 +35,12 @@ STATUS_RE = re.compile(
 def run_test(mode: str, result_type_insensitive: bool, no_summary: bool) -> None:
     env = {
         **os.environ,
-        "ESMETA_HOME": str(ROOT),
-        "ESMETA_COVERAGE_RESULT_TYPE_INSENSITIVE": (
+        "SYNTH262_HOME": str(ROOT),
+        "SYNTH262_COVERAGE_RESULT_TYPE_INSENSITIVE": (
             "true" if result_type_insensitive else "false"
         ),
-        "ESMETA_COVERAGE_NO_SUMMARY": "true" if no_summary else "false",
-        "ESMETA_COVERAGE_TOTAL_TIMEOUT": str(TOTAL_TIMEOUT_S),
+        "SYNTH262_COVERAGE_NO_SUMMARY": "true" if no_summary else "false",
+        "SYNTH262_COVERAGE_TOTAL_TIMEOUT": str(TOTAL_TIMEOUT_S),
     }
     print(f"==> {mode}")
     subprocess.run(["sbt", TEST_TASK], cwd=ROOT, env=env, check=True)

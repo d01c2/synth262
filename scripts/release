@@ -134,13 +134,13 @@ log "Updating \`build.sbt\`"
 
 log "Updating \`package.json\`"
 (
-  sed -i '' -r -e 's/VERSION = "[^ ]+"/VERSION = "'$VERSION'"/' src/main/scala/esmeta/package.scala &&
+  sed -i '' -r -e 's/VERSION = "[^ ]+"/VERSION = "'$VERSION'"/' src/main/scala/synth262/package.scala &&
   pass
 ) >/dev/null 2>&1 && pass || clean
 
 log "Updating \`README.md\`"
 (
-  sed -i '' -r -e 's/ESMeta v[^ ]+/ESMeta '$TAG_NAME'/' README.md &&
+  sed -i '' -r -e 's/Synth262 v[^ ]+/Synth262 '$TAG_NAME'/' README.md &&
   pass
 ) >/dev/null 2>&1 && pass || clean
 
@@ -156,7 +156,7 @@ log "Testing using \`sbt test\`"
 
 log "Adding commit to \`dev\`"
 (
-  git add build.sbt src/main/scala/esmeta/package.scala README.md &&
+  git add build.sbt src/main/scala/synth262/package.scala README.md &&
   git commit -m 'Updated version'
 ) >/dev/null 2>&1 && pass || clean
 
@@ -185,7 +185,7 @@ log "Merging \`main\` to \`dev\`"
 ) >/dev/null 2>&1 && pass || clean
 
 echo
-echo -n "Do you want to publish ESMeta $TAG_NAME to the remote server? (y/n) "
+echo -n "Do you want to publish Synth262 $TAG_NAME to the remote server? (y/n) "
 read PUBLISH
 if [ "$PUBLISH" != "y" ] && [ "$PUBLISH" != "" ]; then
   log "Rollback \`dev\` and \`main\` branches "

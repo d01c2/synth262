@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a three-way Venn SVG for ESMeta branch-side coverage logs.
+"""Generate a three-way Venn SVG for Synth262 branch-side coverage logs.
 
 The universe is the set of all branch sides reachable from builtin entries,
 loaded from ``logs/solver``.  The solver-covered set is the solver ``pass``

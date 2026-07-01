@@ -1,0 +1,140 @@
+package synth262
+
+import synth262.error.*
+import synth262.phase.*
+import synth262.util.*
+import synth262.util.BaseUtils.*
+
+/** Synth262 top-level object */
+object Synth262 extends Git(BASE_DIR) {
+
+  /** the main entry point of Synth262. */
+  def main(tokens: Array[String]): Unit = try
+    tokens.toList match
+      case Nil                                        => println(welcome)
+      case List("--version" | "-version" | "version") => println(VERSION)
+      case str :: args =>
+        cmdMap.get(str) match {
+          case Some(cmd) => cmd(args)
+          case None      => throw NoCmdError(str)
+        }
+  catch
+    // NotSupported: print only the error message and no status mode.
+    case e: NotSupported =>
+      Console.err.println(getMessage(e))
+      if (ERROR_MODE) throw e
+    // Synth262Error: print only the error message.
+    case e: Synth262Error =>
+      Console.err.println(getMessage(e))
+      if (ERROR_MODE) throw e
+      if (STATUS_MODE) sys.exit(1)
+    // Unexpected: print the stack trace.
+    case e: Throwable =>
+      Console.err.println(s"[Synth262 v$VERSION] Unexpected error occurred:")
+      throw e
+
+  /** execute Synth262 with a runner */
+  def apply[Result](
+    command: Command[Result],
+    runner: CommandConfig => Result,
+    config: CommandConfig,
+  ): Result =
+    // silent for help command
+    if (command == CmdHelp) config.silent = true
+    // target existence check
+    if (command.needTarget && config.targets.isEmpty)
+      throw NoTargetError(command)
+    // set the start time.
+    val startTime = System.currentTimeMillis
+    // execute the command.
+    val result: Result = runner(config)
+    // duration
+    val duration = Time(System.currentTimeMillis - startTime)
+    // display the result.
+    if (!config.silent) command.showResult(result)
+    // display the time.
+    if (config.time)
+      val name = config.command.name
+      println(f"The command '$name' took $duration.")
+    // return result
+    result
+
+  /** welcome message */
+  val welcome: String =
+    s"""Welcome to Synth262 v$VERSION - ECMAScript Specification Metalanguage.
+       |Please type `synth262 help` to see the help message.""".stripMargin
+
+  /** commands */
+  val commands: List[Command[_]] = List(
+    CmdHelp,
+    // Mechanized Specification Extraction
+    CmdExtract,
+    CmdCompile,
+    CmdBuildCFG,
+    // Analysis of ECMA-262
+    CmdTyCheck,
+    // Interpreter & Double Debugger for ECMAScript
+    CmdParse,
+    CmdEval,
+    CmdWeb,
+    // Tester for Test262 (ECMAScript Test Suite)
+    CmdTest262Test,
+    // ECMAScript Fuzzer
+    CmdFuzz,
+    CmdInject,
+    CmdMutate,
+    CmdDumpDebugger,
+    CmdDumpVisualizer,
+    // Constraint Solver
+    CmdSolve,
+  )
+  val cmdMap = commands.foldLeft[Map[String, Command[_]]](Map()) {
+    case (map, cmd) => map + (cmd.name -> cmd)
+  }
+
+  /** phases */
+  var phases: List[Phase[_, _]] = List(
+    Help,
+    // Mechanized Specification Extraction
+    Extract,
+    Compile,
+    BuildCFG,
+    // Analysis of ECMA-262
+    TyCheck,
+    // Interpreter & Double Debugger for ECMAScript
+    Parse,
+    Eval,
+    Web,
+    // Tester for Test262 (ECMAScript Test Suite)
+    Test262Test,
+    // ECMAScript Fuzzer
+    Fuzz,
+    Inject,
+    Mutate,
+    DumpDebugger,
+    DumpVisualizer,
+    // Constraint Solver
+    Solve,
+  )
+
+  /** command options */
+  val options: List[PhaseOption[CommandConfig]] = List(
+    ("silent", BoolOption(_.silent = _), "do not show final results."),
+    ("error", BoolOption((_, b) => ERROR_MODE = b), "show error stack traces."),
+    ("status", BoolOption((_, b) => STATUS_MODE = b), "exit with status."),
+    ("time", BoolOption(_.time = _), "display the duration time."),
+    (
+      "test262dir",
+      StrOption((c, s) => TEST262_DIR = s),
+      "set the directory of Test262 (default: $SYNTH262_HOME/tests/test262).",
+    ),
+  )
+}
+
+/** command configuration */
+case class CommandConfig(
+  var command: Command[_],
+  var targets: List[String] = Nil,
+  var silent: Boolean = false,
+  var time: Boolean = false,
+)

@@ -6,8 +6,8 @@ else
   bashcompinit
 fi
 
-# completion for esmeta
-_esmeta_completions() {
+# completion for synth262
+_synth262_completions() {
   local cur prev opts lastc informats outformats datafiles
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
@@ -107,4 +107,4 @@ _esmeta_completions() {
   COMPREPLY=( $(compgen -X '' -f "${cur}") )
 }
 # completion setting
-complete -o filenames -o bashdefault -F _esmeta_completions esmeta
+complete -o filenames -o bashdefault -F _synth262_completions synth262

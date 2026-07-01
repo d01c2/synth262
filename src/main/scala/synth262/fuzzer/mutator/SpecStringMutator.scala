@@ -1,0 +1,50 @@
+package synth262.fuzzer.mutator
+
+import synth262.cfg.CFG
+import synth262.es.*
+import synth262.es.util.*
+import synth262.fuzzer.*
+import synth262.fuzzer.synthesizer.*
+import synth262.util.BaseUtils.*
+
+/** A mutator that generates based on strings in spec literals */
+class SpecStringMutator(using cfg: CFG)(
+  val synBuilder: Synthesizer.Builder = RandomSynthesizer,
+) extends Mutator {
+  import Mutator.*, SpecStringMutator.*, SpecStringSynthesizer.*, Coverage.*
+
+  val randomMutator = RandomMutator()
+  val synthesizer = SpecStringSynthesizer(synBuilder(cfg.grammar))
+
+  val names = "SpecStringMutator" :: randomMutator.names
+
+  /** mutate ASTs */
+  def apply(
+    ast: Ast,
+    n: Int,
+    target: Option[(CondView, Coverage)],
+  ): Seq[Ast] =
+    // count the number of primary expressions
+    val k = primaryCounter(ast)
+    if (k > 0) {
+      synthesizer.targetCond = target.map(_._1.cond)
+      Seq.tabulate(n)(_ => walk(ast))
+    } else randomMutator(ast, n, target)
+
+  /** walk AST and return mutated AST */
+  private def walk(ast: Ast): Ast = ast match
+    case syn: Syntactic if isPrimary(syn) => synthesizer(syn)
+    case Syntactic(name, args, rhsIdx, children) =>
+      Syntactic(name, args, rhsIdx, children.map(_.map(walk)))
+    case lex: Lexical => lex
+}
+
+object SpecStringMutator {
+  val PRIMARY_EXPRESSION = "PrimaryExpression"
+
+  def isPrimary(ast: Ast): Boolean = ast match
+    case Syntactic(PRIMARY_EXPRESSION, _, _, _) => true
+    case _                                      => false
+
+  val primaryCounter = Util.AstCounter(isPrimary)
+}

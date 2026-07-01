@@ -1,0 +1,324 @@
+package synth262.lang.util
+
+import synth262.util.BasicUnitWalker
+import synth262.lang.*
+
+/** a unit walker for metalanguage */
+trait UnitWalker extends BasicUnitWalker {
+  def walk(elem: LangElem): Unit = elem match {
+    case elem: Syntax                         => walk(elem)
+    case elem: ForEachOwnPropertyKeyStepOrder => walk(elem)
+    case elem: ConversionExpressionOperator   => walk(elem)
+    case elem: PredicateConditionOperator     => walk(elem)
+    case elem: MathFuncExpressionOperator     => walk(elem)
+    case elem: BinaryExpressionOperator       => walk(elem)
+    case elem: UnaryExpressionOperator        => walk(elem)
+    case elem: XRefExpressionOperator         => walk(elem)
+    case elem: BinaryConditionOperator        => walk(elem)
+    case elem: ContainsConditionTarget        => walk(elem)
+    case elem: CompoundConditionOperator      => walk(elem)
+  }
+
+  def walk(syn: Syntax): Unit = syn match {
+    case syn: Block      => walk(syn)
+    case syn: SubStep    => walk(syn)
+    case syn: Step       => walk(syn)
+    case syn: Expression => walk(syn)
+    case syn: Condition  => walk(syn)
+    case syn: Reference  => walk(syn)
+    case syn: Type       => walk(syn)
+    case syn: Intrinsic  => walk(syn)
+  }
+
+  def walk(block: Block): Unit = block match {
+    case block: StepBlock => walk(block)
+    case ExprBlock(exprs) => walkList(exprs, walk)
+    case Figure(lines)    =>
+  }
+
+  def walk(stepBlock: StepBlock): Unit =
+    walkList(stepBlock.steps, walk)
+
+  def walk(subStep: SubStep): Unit =
+    val SubStep(directive, step) = subStep
+    walkOpt(directive, walk); walk(step)
+
+  def walk(directive: Directive): Unit =
+    val Directive(name, values) = directive
+    walk(name); walkList(values, walk)
+
+  def walk(step: Step): Unit = step match {
+    case LetStep(x, expr)       => walk(x); walk(expr)
+    case SetStep(x, expr)       => walk(x); walk(expr)
+    case SetAsStep(x, verb, id) => walk(x); walk(verb); walk(id)
+    case SetEvaluationStateStep(base, func, args) =>
+      walk(base); walk(func); walkList(args, walk)
+    case PerformStep(expr)               => walk(expr)
+    case InvokeShorthandStep(name, args) => walk(name); walkList(args, walk)
+    case AppendStep(expr, ref)           => walk(expr); walk(ref)
+    case PrependStep(expr, ref)          => walk(expr); walk(ref)
+    case InsertStep(expr, ref)           => walk(expr); walk(ref)
+    case AddStep(expr, ref)              => walk(expr); walk(ref)
+    case RemoveStep(target, p, list)     => walk(target); walk(p); walk(list)
+    case PushContextStep(ref)            => walk(ref)
+    case SuspendStep(ref, remove)        => walkOpt(ref, walk); walk(remove)
+    case RemoveContextStep(ctxt, target) => walk(ctxt); walk(target)
+    case AssertStep(cond)                => walk(cond)
+    case IfStep(cond, thenStep, elseStep, config) =>
+      walk(cond); walk(thenStep); walkOpt(elseStep, walk); walk(config)
+    case RepeatStep(cond, body) => walk(cond); walk(body)
+    case ForEachStep(ty, elem, expr, forward, body) =>
+      walkOpt(ty, walk); walk(elem); walk(expr); walk(forward); walk(body)
+    case ForEachIntegerStep(x, low, lowInc, high, highInc, ascending, body) =>
+      walk(x); walk(low); walk(lowInc); walk(high); walk(highInc); walk(body)
+    case ForEachOwnPropertyKeyStep(key, obj, cond, ascending, order, body) =>
+      walk(key); walk(obj); walk(cond); walk(body)
+    case ForEachParseNodeStep(x, expr, body) =>
+      walk(x); walk(expr); walk(body)
+    case ReturnStep(expr) => walk(expr)
+    case ThrowStep(expr)  => walk(expr)
+    case ResumeStep(callerCtxt, arg, genCtxt, param, steps) =>
+      walk(callerCtxt); walk(arg); walk(genCtxt); walk(param);
+      walkList(steps, walk)
+    case ResumeEvaluationStep(b, aOpt, pOpt, steps) =>
+      walk(b); walkOpt(aOpt, walk); walkOpt(pOpt, walkPair(_, walk, walk));
+      walkList(steps, walk)
+    case ResumeTopContextStep() =>
+    case NoteStep(note)         =>
+    case BlockStep(block)       => walk(block)
+    case YetStep(expr)          => walk(expr)
+    // -------------------------------------------------------------------------
+    // special steps rarely used in the spec
+    // -------------------------------------------------------------------------
+    case SetFieldsWithIntrinsicsStep(ref, desc) =>
+      walk(ref); walk(desc)
+    case PerformBlockStep(block, desc) =>
+      walk(block); walk(desc)
+    // -------------------------------------------------------------------------
+    // TODO refactor following code
+    // -------------------------------------------------------------------------
+  }
+
+  def walk(target: RemoveStep.Target): Unit =
+    import RemoveStep.Target.*
+    target match {
+      case First(count)  => walkOpt(count, walk)
+      case Last(count)   => walkOpt(count, walk)
+      case Element(elem) => walk(elem)
+    }
+
+  def walk(target: RemoveContextStep.RestoreTarget): Unit =
+    import RemoveContextStep.RestoreTarget.*
+    target match {
+      case NoRestore    =>
+      case StackTop     =>
+      case Context(ref) => walk(ref)
+    }
+
+  def walk(cond: RepeatStep.LoopCondition): Unit =
+    import RepeatStep.LoopCondition.*
+    cond match {
+      case NoCondition =>
+      case While(cond) => walk(cond)
+      case Until(cond) => walk(cond)
+    }
+
+  def walk(config: IfStep.ElseConfig): Unit =
+    val IfStep.ElseConfig(newLine, keyword, comma) = config
+    walk(newLine); walk(keyword); walk(comma)
+
+  def walk(expr: Expression): Unit = expr match {
+    case StringConcatExpression(exprs) =>
+      walkList(exprs, walk)
+    case ListConcatExpression(exprs) =>
+      walkList(exprs, walk)
+    case ListCopyExpression(expr) =>
+      walk(expr)
+    case RecordExpression(ty, fields, _) =>
+      walk(ty); walkList(fields, { case (f, e) => walk(f); walk(e) });
+    case LengthExpression(expr) =>
+      walk(expr)
+    case SubstringExpression(expr, from, to) =>
+      walk(expr); walk(from); walkOpt(to, walk)
+    case TrimExpression(expr, leading, trailing) =>
+      walk(expr); walk(leading); walk(trailing)
+    case NumberOfExpression(name, pre, expr, exclude) =>
+      walk(name); walkOpt(pre, walk); walk(expr); walkOpt(exclude, walk)
+    case SourceTextExpression(expr) =>
+      walk(expr)
+    case CoveredByExpression(from, to) =>
+      walk(from); walk(to)
+    case GetItemsExpression(nt, expr) =>
+      walk(nt); walk(expr)
+    case IntrinsicExpression(intr) =>
+      walk(intr)
+    case expr: CalcExpression =>
+      walk(expr)
+    case ClampExpression(target, lower, upper) =>
+      walk(target); walk(lower); walk(upper)
+    case MathOpExpression(op, args) =>
+      walk(op); walkList(args, walk)
+    case BitwiseExpression(left, op, right) =>
+      walk(left); walk(op); walk(right)
+    case invoke: InvokeExpression =>
+      walk(invoke)
+    case ListExpression(form) =>
+      import ListExpressionForm.*
+      form match
+        case LiteralSyntax(entries) =>
+          walkList(entries, walk)
+        case SoleElement(entry) =>
+          walk(entry)
+        case EmptyList(isNewUsed, typeDesc) =>
+          walk(isNewUsed)
+        case IntRange(from, fromInc, to, toInc, asc) =>
+          walk(from); walk(fromInc); walk(to); walk(toInc); walk(asc)
+    case XRefExpression(kind, id) =>
+      walk(kind);
+    case SoleElementExpression(expr) =>
+      walk(expr)
+    case CodeUnitAtExpression(base, index) =>
+      walk(base); walk(index)
+    case StringExpression(expr) =>
+      walk(expr)
+    case multi: MultilineExpression =>
+      walk(multi)
+    case yet: YetExpression =>
+      walk(yet)
+  }
+
+  def walk(multi: MultilineExpression): Unit = multi match {
+    case AbstractClosureExpression(params, captured, body) =>
+      walkList(params, walk); walkList(captured, walk); walk(body)
+  }
+
+  def walk(yet: YetExpression): Unit =
+    val YetExpression(str, block) = yet
+    walkOpt(block, walk)
+
+  def walk(expr: CalcExpression): Unit = expr match {
+    case ReturnIfAbruptExpression(expr, check) =>
+      walk(expr)
+    case ReferenceExpression(ref) =>
+      walk(ref)
+    case MathFuncExpression(op, args) =>
+      walk(op); walkList(args, walk)
+    case ConversionExpression(op, expr, form) =>
+      walk(op); walk(expr)
+    case ExponentiationExpression(base, power) =>
+      walk(base); walk(power)
+    case BinaryExpression(left, op, right) =>
+      walk(left); walk(op); walk(right)
+    case UnaryExpression(op, expr) =>
+      walk(op); walk(expr)
+    case lit: Literal =>
+      walk(lit)
+  }
+
+  def walk(order: ForEachOwnPropertyKeyStepOrder): Unit = {}
+
+  def walk(op: MathOpExpressionOperator): Unit = {}
+
+  def walk(op: MathFuncExpressionOperator): Unit = {}
+
+  def walk(op: ConversionExpressionOperator): Unit = {}
+
+  def walk(op: BinaryExpressionOperator): Unit = {}
+
+  def walk(op: UnaryExpressionOperator): Unit = {}
+
+  def walk(op: BitwiseExpressionOperator): Unit = {}
+
+  def walk(op: XRefExpressionOperator): Unit = {}
+
+  def walk(lit: Literal): Unit = {}
+
+  def walk(invoke: InvokeExpression): Unit = invoke match {
+    case InvokeAbstractOperationExpression(name, args, tag) =>
+      walkList(args, walk)
+    case InvokeNumericMethodExpression(ty, name, args) =>
+      walk(ty); walkList(args, walk)
+    case InvokeAbstractClosureExpression(x, args) =>
+      walk(x); walkList(args, walk)
+    case InvokeMethodExpression(access, args, tag) =>
+      walk(access); walkList(args, walk)
+    case InvokeSyntaxDirectedOperationExpression(
+          base,
+          name,
+          args,
+          article,
+          tag,
+        ) =>
+      walk(base); walkList(args, walk)
+  }
+
+  def walk(cond: Condition): Unit = cond match {
+    case ExpressionCondition(expr) =>
+      walk(expr)
+    case TypeCheckCondition(expr, neg, ty) =>
+      walk(expr); walk(neg); walkList(ty, walk)
+    case HasFieldCondition(ref, neg, field, _) =>
+      walk(ref); walk(neg); walk(field)
+    case HasBindingCondition(ref, neg, binding) =>
+      walk(ref); walk(neg); walk(binding)
+    case ProductionCondition(nt, lhs, rhs) =>
+      walk(nt);
+    case PredicateCondition(expr, neg, op) =>
+      walk(expr); walk(neg); walk(op)
+    case IsAreCondition(ls, neg, rs) =>
+      walkList(ls, walk); walk(neg); walkList(rs, walk)
+    case BinaryCondition(left, op, right) =>
+      walk(left); walk(op); walk(right)
+    case InclusiveIntervalCondition(left, neg, from, to, verbose) =>
+      walk(left); walk(neg); walk(from); walk(to); walk(verbose)
+    case ContainsCondition(list, neg, target) =>
+      walk(list); walk(neg); walk(target)
+    case CompoundCondition(left, op, right) =>
+      walk(left); walk(op); walk(right)
+  }
+
+  def walk(op: PredicateConditionOperator): Unit = {}
+
+  def walk(op: BinaryConditionOperator): Unit = {}
+
+  def walk(target: ContainsConditionTarget): Unit =
+    import ContainsConditionTarget.*
+    target match
+      case Expr(expr) => walk(expr)
+      case WhoseField(tyOpt, fieldName, expr) =>
+        walkOpt(tyOpt, walk); walk(expr)
+      case SuchThat(tyOpt, x, cond) =>
+        walkOpt(tyOpt, walk); walk(x); walk(cond)
+
+  def walk(op: CompoundConditionOperator): Unit = {}
+
+  def walk(ref: Reference): Unit = ref match {
+    case x: Variable                      => walk(x)
+    case x: Access                        => walk(x)
+    case ValueOf(base)                    => walk(base)
+    case IntrinsicField(base, intr)       => walk(base); walk(intr)
+    case IndexLookup(base, index)         => walk(base); walk(index)
+    case BindingLookup(base, binding)     => walk(base); walk(binding)
+    case NonterminalLookup(base, nt)      => walk(base)
+    case PositionalElement(base, isFirst) => walk(base)
+    case IntrinsicObject(base, expr)      => walk(base); walk(expr)
+    case RunningExecutionContext()        =>
+    case SecondExecutionContext()         =>
+    case CurrentRealmRecord()             =>
+    case ActiveFunctionObject()           =>
+    case AgentRecord()                    =>
+  }
+
+  def walk(x: Variable): Unit = {}
+
+  def walk(access: Access): Unit = access match
+    case Access(base, name, kind, form) => walk(base); walk(kind); walk(form)
+
+  def walk(kind: AccessKind): Unit = {}
+
+  def walk(form: AccessForm): Unit = {}
+
+  def walk(intr: Intrinsic): Unit = {}
+
+  def walk(ty: Type): Unit = {}
+}
