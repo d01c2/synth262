@@ -14,6 +14,7 @@ SUMMARY = ROOT / "logs" / "solver" / "summary"
 OUT = ROOT / "experiment" / "ablation.csv"
 RAW_OUT = ROOT / "experiment" / "ablation.raw.csv"
 TEST_TASK = "Test / testOnly esmeta.solver.CoverageMiddleTest"
+TOTAL_TIMEOUT_S = 300  # timeout: 300 sec (5 min)
 
 MODES = [
     ("baseline", False, False),
@@ -39,6 +40,7 @@ def run_test(mode: str, result_type_insensitive: bool, no_summary: bool) -> None
             "true" if result_type_insensitive else "false"
         ),
         "ESMETA_COVERAGE_NO_SUMMARY": "true" if no_summary else "false",
+        "ESMETA_COVERAGE_TOTAL_TIMEOUT": str(TOTAL_TIMEOUT_S),
     }
     print(f"==> {mode}")
     subprocess.run(["sbt", TEST_TASK], cwd=ROOT, env=env, check=True)
@@ -98,6 +100,7 @@ def compact_row(
         "fail_reify": str(count("fail-reify")),
         "unsolved": str(count("unsolved")),
         "timeout": str(count("timeout")),
+        "not_run": str(count("not-run")),
         "solved": str(solved),
         "pass_rate": pass_rate,
         "solved_rate": solved_rate,
@@ -154,6 +157,7 @@ def main() -> int:
             "fail_reify",
             "unsolved",
             "timeout",
+            "not_run",
             "solved",
             "pass_rate",
             "solved_rate",

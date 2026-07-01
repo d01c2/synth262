@@ -32,6 +32,8 @@ class CoverageMiddleTest extends SolverTest {
   private lazy val resultTypeInsensitive: Boolean =
     CoverageMiddleTest.resultTypeInsensitive
   private lazy val noSummary: Boolean = CoverageMiddleTest.noSummary
+  private lazy val totalTimeLimit: Option[Long] =
+    CoverageMiddleTest.totalTimeLimit
 
   // -------------------------------------------------------------------------
   // XXX: remove later
@@ -93,6 +95,7 @@ class CoverageMiddleTest extends SolverTest {
     val cov = Coverage(cfg, timeLimit = Some(10))
     val solveTimeLimit = 10
     val solveTimeout = Duration(solveTimeLimit, "seconds")
+    val totalTimeout = totalTimeLimit.map(Duration(_, "seconds"))
     val allBuiltins = cfg.funcs.filter(_.isBuiltin).sortBy(_.name)
 
     val runner = SymInterp(
@@ -197,6 +200,7 @@ class CoverageMiddleTest extends SolverTest {
         s"  Solving ${targets.size} branch sides from " +
         s"${targetBranchEntries.size} branches with $nThreads threads " +
         s"(timeout: $solveTimeout per side, " +
+        s"total-timeout: ${totalTimeout.fold("none")(_.toString)}, " +
         s"result-type-insensitive: $resultTypeInsensitive, " +
         s"no-summary: $noSummary)...",
       )
@@ -246,6 +250,7 @@ class CoverageMiddleTest extends SolverTest {
       // clear previous run before streaming per-case logs into it
       mkdir(SOLVER_LOG_DIR, remove = true)
 
+      var totalTimedOut = false
       val results = {
         def timeoutResult(
           f: Func,
@@ -371,11 +376,38 @@ class CoverageMiddleTest extends SolverTest {
         val completion = ExecutorCompletionService[BranchResult](pool)
         val targetIter = targets.iterator
         val resultBuilder = List.newBuilder[BranchResult]
+        val runStartedAt = System.nanoTime()
+        val totalTimeoutNanos = totalTimeLimit.map(TimeUnit.SECONDS.toNanos)
         var submitted = 0
         var completed = 0
 
+        def totalElapsedNanos: Long = System.nanoTime() - runStartedAt
+
+        def totalRemainingNanos: Option[Long] =
+          totalTimeoutNanos.map(_ - totalElapsedNanos)
+
+        def reachedTotalTimeout: Boolean =
+          totalRemainingNanos.exists(_ <= 0)
+
+        def stopForTotalTimeout(): Unit =
+          totalTimedOut = true
+          pool.shutdownNow()
+          println(
+            s"  total timeout reached after " +
+            f"${totalElapsedNanos / 1e9}%.1fs; " +
+            s"reporting $completed / ${targets.size} completed " +
+            s"($submitted submitted).",
+          )
+
+        def pollTimeoutNanos: Long =
+          val progressNanos = TimeUnit.SECONDS.toNanos(30)
+          totalRemainingNanos match
+            case Some(remaining) =>
+              math.min(progressNanos, math.max(0L, remaining))
+            case None => progressNanos
+
         def submitNext(): Unit =
-          if (targetIter.hasNext) {
+          if (targetIter.hasNext && !reachedTotalTimeout) {
             val (f, cond) = targetIter.next()
             completion.submit(new Callable[BranchResult] {
               def call(): BranchResult = solveTarget(f, cond)
@@ -385,22 +417,29 @@ class CoverageMiddleTest extends SolverTest {
 
         for (_ <- 0 until math.min(nThreads, targets.size)) submitNext()
 
-        while (completed < targets.size) {
-          val done = completion.poll(30, TimeUnit.SECONDS)
+        while (completed < targets.size && !totalTimedOut) {
+          val waitNanos = pollTimeoutNanos
+          val done =
+            if (waitNanos <= 0L) null
+            else completion.poll(waitNanos, TimeUnit.NANOSECONDS)
           if (done == null) {
-            println(
-              s"  progress: $completed / ${targets.size} completed " +
-              s"($submitted submitted)",
-            )
-            // diagnostic: dump where the in-flight worker threads are stuck
-            import scala.jdk.CollectionConverters.*
-            for {
-              (t, stack) <- Thread.getAllStackTraces.asScala.toList
-              if t.getName.startsWith("builtin-branch-test")
-            } {
-              println(s"  [stuck] ${t.getName}")
-              for (frame <- stack.take(20))
-                println(s"      at $frame")
+            if (reachedTotalTimeout) {
+              stopForTotalTimeout()
+            } else {
+              println(
+                s"  progress: $completed / ${targets.size} completed " +
+                s"($submitted submitted)",
+              )
+              // diagnostic: dump where the in-flight worker threads are stuck
+              import scala.jdk.CollectionConverters.*
+              for {
+                (t, stack) <- Thread.getAllStackTraces.asScala.toList
+                if t.getName.startsWith("builtin-branch-test")
+              } {
+                println(s"  [stuck] ${t.getName}")
+                for (frame <- stack.take(20))
+                  println(s"      at $frame")
+              }
             }
           } else {
             val r = done.get()
@@ -408,6 +447,8 @@ class CoverageMiddleTest extends SolverTest {
             writeCaseLog(r)
             completed += 1
             submitNext()
+            if (reachedTotalTimeout && completed < targets.size)
+              stopForTotalTimeout()
           }
         }
         resultBuilder.result().sortBy(r => (r.bid, if (r.side) 0 else 1))
@@ -443,31 +484,43 @@ class CoverageMiddleTest extends SolverTest {
       // emit the run summary to an arbitrary sink (console and/or dump file)
       def writeReport(out: String => Unit): Unit = {
         // per-status breakdown: count, share, and elapsed time per status tag
-        val totalCount = results.size
+        val totalCount = targets.size
+        val notRun = targets.size - results.size
+        def writeStatus(
+          status: String,
+          count: Int,
+          totalS: Double,
+          avgS: Double,
+          avgAttempts: Double,
+        ): Unit =
+          val pct =
+            if (totalCount == 0) 0.0 else count * 100.0 / totalCount
+          out(
+            f"    $status%-12s $count%5d (${pct}%5.1f%%)  " +
+            f"(total $totalS%8.1fs, avg $avgS%6.3fs, " +
+            f"avg attempts $avgAttempts%5.1f)",
+          )
         out("\n  Mode:")
         out(f"    result-type-insensitive: $resultTypeInsensitive")
         out(f"    no-summary: $noSummary")
+        out(f"    total-timeout: ${totalTimeout.fold("none")(_.toString)}")
+        out(f"    total-timeout-reached: $totalTimedOut")
+        out(f"    completed: ${results.size} / ${targets.size}")
         out("\n  Status breakdown:")
         for (status <- orderedStatuses) {
           val rs = byStatus(status)
           val totalS = rs.map(_.elapsed).sum / 1e9
           val avgS = totalS / rs.size
           val avgAttempts = rs.map(_.attempts).sum.toDouble / rs.size
-          val pct = if (totalCount == 0) 0.0 else rs.size * 100.0 / totalCount
-          out(
-            f"    $status%-12s ${rs.size}%5d (${pct}%5.1f%%)  " +
-            f"(total $totalS%8.1fs, avg $avgS%6.3fs, " +
-            f"avg attempts $avgAttempts%5.1f)",
-          )
+          writeStatus(status, rs.size, totalS, avgS, avgAttempts)
         }
+        if (notRun > 0) writeStatus("not-run", notRun, 0.0, 0.0, 0.0)
         val grandTotalS = results.map(_.elapsed).sum / 1e9
+        val avgS = if (totalCount == 0) 0.0 else grandTotalS / totalCount
         val avgAttempts =
           if (totalCount == 0) 0.0
           else results.map(_.attempts).sum.toDouble / totalCount
-        out(
-          f"    ${"total"}%-12s $totalCount%5d (100.0%%)  " +
-          f"(total $grandTotalS%8.1fs, avg attempts $avgAttempts%5.1f)",
-        )
+        writeStatus("total", totalCount, grandTotalS, avgS, avgAttempts)
         // timing summary
         if (timings.nonEmpty) {
           out("\n  Top 10 slowest:")
@@ -547,8 +600,11 @@ class CoverageMiddleTest extends SolverTest {
 
       println(s"dumped to $SOLVER_LOG_DIR/")
 
-      assert(solved > 0)
-      assert(verified > 0)
+      if (totalTimedOut) assert(results.nonEmpty)
+      else {
+        assert(solved > 0)
+        assert(verified > 0)
+      }
     }
 
     check("builtin branches: summary") {
@@ -568,6 +624,8 @@ object CoverageMiddleTest {
     "ESMETA_COVERAGE_RESULT_TYPE_INSENSITIVE"
   private val noSummaryProp = "esmeta.coverage.noSummary"
   private val noSummaryEnv = "ESMETA_COVERAGE_NO_SUMMARY"
+  private val totalTimeLimitProp = "esmeta.coverage.totalTimeout"
+  private val totalTimeLimitEnv = "ESMETA_COVERAGE_TOTAL_TIMEOUT"
 
   private def isTruthy(value: String): Boolean =
     value.trim.toLowerCase match
@@ -581,4 +639,19 @@ object CoverageMiddleTest {
   lazy val noSummary: Boolean =
     sys.props.get(noSummaryProp).exists(isTruthy) ||
     sys.env.get(noSummaryEnv).exists(isTruthy)
+
+  lazy val totalTimeLimit: Option[Long] =
+    sys.props
+      .get(totalTimeLimitProp)
+      .orElse(sys.env.get(totalTimeLimitEnv))
+      .map(_.trim)
+      .filter(_.nonEmpty)
+      .map { str =>
+        val seconds = str.toLong
+        require(
+          seconds > 0,
+          s"expected positive seconds for $totalTimeLimitProp, got: $str",
+        )
+        seconds
+      }
 }
