@@ -1,5 +1,6 @@
 package esmeta.solver
 
+import esmeta.analyzer.tychecker.TyChecker
 import esmeta.cfg.{Branch, CFG, Call, Func}
 import esmeta.es.util.Coverage
 import esmeta.es.util.Coverage.Cond
@@ -28,6 +29,8 @@ class CoverageMiddleTest extends SolverTest {
   val name = "solverCovTest"
 
   lazy val cfg = ESMetaTest.cfg
+  private lazy val resultTypeInsensitive: Boolean =
+    CoverageMiddleTest.resultTypeInsensitive
 
   // -------------------------------------------------------------------------
   // XXX: remove later
@@ -94,6 +97,9 @@ class CoverageMiddleTest extends SolverTest {
     val runner = SymInterp(
       cfg,
       timeLimit = Some(solveTimeLimit),
+      tyCheckerConfig = TyChecker.Config(
+        resultTypeInsensitive = resultTypeInsensitive,
+      ),
     )
     import runner.tyChecker.{cfg => _, *}, AbsState.given
 
@@ -188,7 +194,8 @@ class CoverageMiddleTest extends SolverTest {
       println(
         s"  Solving ${targets.size} branch sides from " +
         s"${targetBranchEntries.size} branches with $nThreads threads " +
-        s"(timeout: $solveTimeout per side)...",
+        s"(timeout: $solveTimeout per side, " +
+        s"result-type-insensitive: $resultTypeInsensitive)...",
       )
 
       // per-case detail, written into one file per (branch, taken side)
@@ -434,6 +441,8 @@ class CoverageMiddleTest extends SolverTest {
       def writeReport(out: String => Unit): Unit = {
         // per-status breakdown: count, share, and elapsed time per status tag
         val totalCount = results.size
+        out("\n  Mode:")
+        out(f"    result-type-insensitive: $resultTypeInsensitive")
         out("\n  Status breakdown:")
         for (status <- orderedStatuses) {
           val rs = byStatus(status)
@@ -546,4 +555,20 @@ class CoverageMiddleTest extends SolverTest {
   }
 
   init
+}
+
+object CoverageMiddleTest {
+  private val resultTypeInsensitiveProp =
+    "esmeta.coverage.resultTypeInsensitive"
+  private val resultTypeInsensitiveEnv =
+    "ESMETA_COVERAGE_RESULT_TYPE_INSENSITIVE"
+
+  private def isTruthy(value: String): Boolean =
+    value.trim.toLowerCase match
+      case "1" | "true" | "yes" | "y" | "on" => true
+      case _                                 => false
+
+  lazy val resultTypeInsensitive: Boolean =
+    sys.props.get(resultTypeInsensitiveProp).exists(isTruthy) ||
+    sys.env.get(resultTypeInsensitiveEnv).exists(isTruthy)
 }

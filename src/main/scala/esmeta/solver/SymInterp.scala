@@ -417,8 +417,9 @@ object SymInterp {
     cfg: CFG,
     timeLimit: Option[Int] = None,
     detail: Boolean = false,
+    tyCheckerConfig: TyChecker.Config = TyChecker.Config(),
   ): SymInterpRunner = {
-    val tyChecker = TyChecker(cfg, silent = true)
+    val tyChecker = TyChecker(cfg, config = tyCheckerConfig, silent = true)
     tyChecker.analyze
     SymInterpRunner(tyChecker, timeLimit, detail)
   }

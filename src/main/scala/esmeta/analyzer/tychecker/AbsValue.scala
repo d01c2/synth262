@@ -53,6 +53,9 @@ trait AbsValueDecl { self: TyChecker =>
       val ty = this.ty
       this.copy(guard = (ty, this.guard) && (ty, guard))
 
+    /** remove type guard */
+    def withoutTypeGuard: AbsValue = this.copy(guard = TypeGuard.Empty)
+
     /** kill bases */
     def kill(bases: Set[Base], update: Boolean)(using AbsState): AbsValue =
       val ty = this.symty.bases.exists(bases.contains) match
@@ -68,10 +71,11 @@ trait AbsValueDecl { self: TyChecker =>
       entrySt: AbsState,
     ): AbsValue =
       given AbsState = givenSt
-      if (isTypeGuardCandidate(func)) {
+      val ret = if (isTypeGuardCandidate(func)) {
         val xs = givenSt.getImprecBases(entrySt)
         this.onlySym.kill(xs, update = false)
       } else AbsValue(this.ty)
+      if (config.resultTypeInsensitive) ret.withoutTypeGuard else ret
 
     /** get symbols */
     def bases: Set[Base] =

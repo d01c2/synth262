@@ -456,4 +456,5 @@ object TyChecker:
     checkReturnType: Boolean = true,
     checkUnaryOp: Boolean = true,
     checkBinaryOp: Boolean = true,
+    resultTypeInsensitive: Boolean = false,
   )
